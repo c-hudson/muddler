@@ -1,88 +1,38 @@
 #!/usr/bin/perl
-#-#                      ___   ___ __                
-#-#     _____  __ __  __| _/__| _/|  |  ___________ 
-#-#    /     \|  |  \/ __ |/ __ | |  | / __ \_  __ \
-#-#   |  Y Y  \  |  / /_/ / /_/ | |  |_\  __/|  | \/
-#-#   |__|_|__/____/\____/\_____/ |____/\___/|__|   
-#-#       A 1990dies mud client written yesterday   
+#-#             ( A 1990dies mud client written yesterday )      
+#-#          O                       ___   ___ _               
+#-#      o _____    _____  __ __  __| _/__| _/| |  ___________ 
+#-#    _||_| u |   /     \|  |  \/ __ |/ __ | | | / __ \_  __ \
+#-#   (        |==|  Y Y  \  |  / /_/ / /_/ | | |_\  __/|  | \/
+#-#   /-()---()   |__|_|__/____/\____/\_____/ |___/\___/|__|    
 
-use Text::Wrap;
-use strict;
-use Term::ReadKey;
 use Carp;
+use strict;
 use IO::Select;
 use IO::Socket;
-use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
+use Text::Wrap;
+use Term::ReadKey;
+use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
+                    TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
 
 my (%state,                                        #!# screen size / stats
     %sock,                                         #!# sock data
-    %sock_world,                                   #!#
-    %pending,                                      #!#
-    %world,                                        #!#
-    %world_history,                                #!# world(s) output buffer
+    %sock_world,                                   #!# socket -> world lookup
+    %pending,                                      #!# pending output
+    %world,                                        #!# world data
+    %more,                                         #!# timings for more
+    @history,                                      #!# history buffer
+    @kb_history,                                   #!# keyboard history
     %command,                                      #!# internal commands
     %world);                                       #!# world definitions
 
-sub init
-{
-   $| = 1;                                                  # unbuffer stdout
-   ReadMode 'cbreak';                               # set no-echo, unbuffered
-   printf("\033[2J");
- 
-   # get screen size and size accordingly
-   (@state{size_y},@state{size_x}) = GetTerminalSize();
-   @state{size_x}   = 24               if(@state{size_x} eq undef);
-   @state{size_y}   = 80               if(@state{size_y} eq undef);
-   $Text::Wrap::columns = 80;
-
-   @state{kbbuffer} = [];
-   @state{size_i}   = 2;
-   @state{key_x}    = @state{size_x} - @state{size_i} + 1;
-   @state{key_y}    = 1;
-   @state{pos_x}    = @state{size_x} - @state{size_i} + 1;
-   @state{pos_y}    = 1;
-
-   clear_screen();
-   update_bar();
-   display_cursor();
-
-   # read banner from top of script, this is probably silly but then banner
-   # doesn't need to be escaped out.
-
-   open(PROG,$0) || return;
-
-   while(<PROG>) {
-      s/\n|\r//g;
-      if(/^#-#   /) {
-         center($');
-      } elsif($. > 50) {                              # read only 50 lines
-         close(PROG);
-         last;
-      }
-   }
-   close(PROG);
-
-   out_nolog(' ');
-   center("Keys: Control-U    Erase keyboard line ");
-   center("      Arrow Up     Switch Worlds Up 1  ");
-   center("      Arrow Down   Switch Worlds Down 1");
-   out_nolog();
-   center("Commands: /dc             Disconnect from current world");
-   center("          /world <world>  Connect / switch to <world>  ");
-   center("          /dc             Disconnect from current world");
-   center("          /reload         Reload the client's code     ");
-   center("          /quit           Exit out of muTalk           ");
-   out_nolog();                                                           
-
-   read_tfworlds(".tfworlds");
-   out_nolog("%% %d worlds loaded from .tfworlds file.",scalar keys %world);
-};
 
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  commands                                                                  #
 #                                                                            #
 #----------------------------------------------------------------------------#
+
 @command{world}  = sub { return cmd_world(@_);                              };
 @command{quit}   = sub { return cmd_quit(@_);                               };
 @command{reload} = sub { return cmd_reload(@_);                             };
@@ -129,11 +79,6 @@ sub cmd_reload
              length($data) - $before
             );
 
-   open(CODE,"> code.txt") ||
-      die("Could not open code.txt for writing");
-   printf(CODE "%s",$data);
-   close(CODE);
-
    eval($data);
 
    if($@) {
@@ -141,33 +86,6 @@ sub cmd_reload
       for my $line (split(/\n/,$@)) {
          out_nolog("%s",$line);
       }
-   }
-}
-
-sub world_lookup
-{
-   my $txt = shift;
-   my @partial;
-
-   for my $key (keys %world) {
-      if(lc($key) eq lc($txt)) {
-         return $key;
-      } elsif(lc($key) eq substr(lc($key),1,length($txt))) {
-         push(@partial,$key);
-      }
-   }
-   return ($#partial > 0) ? undef : @partial[0];
-}
-
-
-sub snd
-{
-   my ($world,$fmt,@arg) = @_;
-
-   if(defined @sock{$world}
-      && defined @sock{$world}->{sock}) {
-      my $s = @sock{$world}->{sock};
-      printf($s "$fmt\r\n",@arg) if $s;
    }
 }
 
@@ -182,16 +100,12 @@ sub cmd_world
          socket_connect($world,@world{$world}->{host},@world{$world}->{port});
          update_bar(1);
 
-            out_nolog("%% attempt Sending conect '%s' '%s'",
-                 @world{$world}->{user},
-                 @world{$world}->{pass});
          if(@world{$world}->{user} ne undef &&
             @world{$world}->{pass} ne undef) {
-            snd($world,"connect %s %s",
-                 @world{$world}->{user},
-                 @world{$world}->{pass}
-                );
-            out_nolog("%% Sending conect");
+#            snd($world,"connect %s %s",
+#                 @world{$world}->{user},
+#                 @world{$world}->{pass}
+#                );
          }
       }
    } else {
@@ -203,75 +117,6 @@ sub cmd_quit
 {
    revert_console();
    exit(0);
-}
-
-sub read_tfworlds
-{
-   my $fn = shift;
-   my ($file, $bad);
-
-   open($file,$fn) ||
-      return out_nolog("%% Unable to open '%s' for reading",$fn);
- 
-   while(<$file>) {
-      s/\r|\n//g;
-      if(/^\/test addworld\("([^"]+)", "([^"]*)", "([^"]*)", "([^"]*)", "([^"]*)", "([^"]+)"\)$/) {
-         @world{$1} = {};
-         @world{$1}->{host}     = $3;
-         @world{$1}->{port}     = $4;
-         @world{$1}->{user}     = $5;
-         @world{$1}->{pass}     = $6;
-       } elsif(/^\/test addworld\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)\s*$/) {
-         @world{$1} = {};
-         @world{$1}->{host}     = $3;
-         @world{$1}->{port}     = $4;
-      } else {
-         $bad++;
-         out_nolog("%% Unknown data: '%s'",$_);
-      }
-   }
-}
-
-sub code
-{
-   my $type = shift;
-   my @stack;
-
-   if(!$type || $type eq "short") {
-      for my $line (split(/\n/,Carp::shortmess)) {
-         if($line =~ /at ([^ ]+) line (\d+)\s*$/) {
-            push(@stack,"$1:$2");
-         }
-      }
-      return join(',',@stack);
-   } else {
-      return Carp::shortmess;
-   }
-}
-
-sub next_world
-{
-   my ($first, $next);
-
-   for my $world (sort keys %sock) {
-      $first =  $world if($first eq undef);
-      return $world if($next);
-      $next = 1 if(@state{focus} eq $world);
-   }
-   return $first;
-}
-
-sub prev_world 
-{
-   my $prev;
-
-   for my $world (sort keys %sock) {
-      if(@state{focus} eq $world && $prev ne undef) {
-         return $prev;
-      }
-      $prev = $world;
-   }
-   return $prev;
 }
 
 #----------------------------------------------------------------------------#
@@ -417,6 +262,7 @@ sub socket_connect
 #   $listener->add($s);
    @sock{$world}->{sock} = $s;
    @sock_world{$s} = $world;
+   @pending{$world} = [];
 }
 
 sub socket_handle_input
@@ -443,6 +289,17 @@ sub socket_handle_input
     }
 }
 
+sub snd
+{
+   my ($world,$fmt,@arg) = @_;
+
+   if(defined @sock{$world}
+      && defined @sock{$world}->{sock}) {
+      my $s = @sock{$world}->{sock};
+      printf($s "$fmt\r\n",@arg) if $s;
+      @sock{$world}->{idle} = time();
+   }
+}
 
 #----------------------------------------------------------------------------#
 #                                                                            #
@@ -513,6 +370,15 @@ sub kb_append
 sub kb_new_line
 {
    my $kb = @state{kbbuffer};                                # add new line
+
+#   if($#$kb == 5) {
+#      set_scroll_region("remove");
+#      for my $i (0 .. $#$kb) {
+#         printf("key_%s: %s\n",$i,$$kb[$i]);
+#      }
+#      exit();
+#   }
+
    push(@$kb,"");
    delete @state{kbpos};
 }
@@ -568,15 +434,24 @@ sub  highlight
    return sprintf("\033[7m%s\033[m",$txt);
 }
 
+#
+# more
+#    show how many pending lines there are
+#
 sub more
 {
-   my $world = shift;
+   my $world = @state{focus};
 
-   if(!defined @sock{$world} || 
-      !defined @sock{$world}->{pause}) {
-      return @state{ch} x 6;
+   if($world eq undef || !defined @sock{$world} || 
+      !defined @sock{$world}->{paused} ||
+      (defined @pending{$world} && $#{@pending{$world}} == -1)) {
+      return @state{ch} x 8;
+   } elsif(!defined @pending{$world}) {
+      return highlight("MORE UNK");
+   } elsif($#{@pending{$world}} + 1 > 999) {
+      return highlight("MORE>BIG");
    } else {
-      return highlight(" MORE ");
+      return highlight(sprintf("MORE %3d",$#{@pending{$world}}+1));
    }
 }
 
@@ -632,6 +507,8 @@ sub update_bar
    if(screen_size_changed() ||
       @state{prev_time} ne $cur ||                             # time changed
       @state{focus} ne @state{prev_focus} ||                  # world changed
+      (defined @pending{$world} &&                          # pending changed
+       @state{prev_pending} ne $#{@pending{$world}}) ||
       $do_update) {                                 # caller reuqested update
 
       set_new_bar_style();
@@ -645,17 +522,19 @@ sub update_bar
           $world = @state{focus};
       }
 
-      set_scroll_region("remove");
+#      set_scroll_region("remove");
       goto_xy(@state{size_x} - 2,1);
 
-      printf("%s[%s]%s[%s]%s",
-         more($world),
+      printf("%s/%s/%s%s%s",
+         more(),
          substr($world,0,15),
          @state{ch} x (@state{size_y} - length($cur.substr($world,0,15))-12),
          $cur,
          @state{ch} x 2
       );
       @state{prev_time} = $cur;
+
+      @state{prev_pending} = $#{@pending{$world}} if defined @pending{$world};
       @state{prev_focus} = @state{focus};
       display_cursor();
    }
@@ -667,7 +546,7 @@ sub out_nolog
    my $txt = shift;
 
    set_scroll_region("out");
-   goto_xy(@state{size_x} - 3,1);
+   goto_xy(@state{size_x} - @state{size_i} - 1,1);
    printf("%s",wrap('','',sprintf("\n$fmt",@arg)));
    display_cursor();
 }
@@ -677,6 +556,147 @@ sub out_nolog
 #  misc                                                                      #
 #                                                                            #
 #----------------------------------------------------------------------------#
+
+sub code
+{
+   my $type = shift;
+   my @stack;
+
+   if(!$type || $type eq "short") {
+      for my $line (split(/\n/,Carp::shortmess)) {
+         if($line =~ /at ([^ ]+) line (\d+)\s*$/) {
+            push(@stack,"$1:$2");
+         }
+      }
+      return join(',',@stack);
+   } else {
+      return Carp::shortmess;
+   }
+}
+
+sub next_world
+{
+   my ($first, $next);
+
+   for my $world (sort keys %sock) {
+      $first =  $world if($first eq undef);
+      return $world if($next);
+      $next = 1 if(@state{focus} eq $world);
+   }
+   return $first;
+}
+
+sub prev_world 
+{
+   my $prev;
+
+   for my $world (sort keys %sock) {
+      if(@state{focus} eq $world && $prev ne undef) {
+         return $prev;
+      }
+      $prev = $world;
+   }
+   return $prev;
+}
+
+sub read_tfworlds
+{
+   my $fn = shift;
+   my ($file, $bad);
+
+   open($file,$fn) ||
+      return out_nolog("%% Unable to open '%s' for reading",$fn);
+ 
+   while(<$file>) {
+      s/\r|\n//g;
+      if(/^\/test addworld\("([^"]+)", "([^"]*)", "([^"]*)", "([^"]*)", "([^"]*)", "([^"]+)"\)$/) {
+         @world{$1} = {};
+         @world{$1}->{host}     = $3;
+         @world{$1}->{port}     = $4;
+         @world{$1}->{user}     = $5;
+         @world{$1}->{pass}     = $6;
+       } elsif(/^\/test addworld\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)\s*$/) {
+         @world{$1} = {};
+         @world{$1}->{host}     = $3;
+         @world{$1}->{port}     = $4;
+      } else {
+         $bad++;
+         out_nolog("%% Unknown data: '%s'",$_);
+      }
+   }
+}
+
+sub world_lookup
+{
+   my $txt = shift;
+   my @partial;
+
+   for my $key (keys %world) {
+      if(lc($key) eq lc($txt)) {
+         return $key;
+      } elsif(lc($key) eq substr(lc($key),1,length($txt))) {
+         push(@partial,$key);
+      }
+   }
+   return ($#partial > 0) ? undef : @partial[0];
+}
+
+#
+# ignoreit
+#    Ignore certain hash key entries at all depths or just the specified
+#    depth.
+#
+sub ignoreit
+{
+   my ($skip,$key,$depth) = @_;
+
+
+   if(!defined $$skip{$key}) {
+      return 0;
+   } elsif($$skip{$key} < 0 || ($$skip{$key} >= 0 && $$skip{$key} == $depth)) {
+     return 1;
+   } else {
+     return 0;
+   }
+}
+
+
+#
+# print_var
+#    Return a "text" printable version of a HASH / Array
+#
+sub print_var
+{
+   my ($var,$depth,$name,$skip,$recursive) = @_;
+   my ($PL,$PR) = ('{','}');
+   my $out;
+
+   if($depth > 4) {
+       return (" " x ($depth * 2)) .  " -> TO_BIG\n";
+   }
+   $depth = 0 if $depth eq "";
+   $out .= (" " x ($depth * 2)) . (($name eq undef) ? "UNDEFINED" : $name) .
+           " $PL\n" if(!$recursive);
+   $depth++;
+
+   for my $key (sort ((ref($var) eq "HASH") ? keys %$var : 0 .. $#$var)) {
+
+      my $data = (ref($var) eq "HASH") ? $$var{$key} : $$var[$key];
+
+      if((ref($data) eq "HASH" || ref($data) eq "ARRAY") &&
+         !ignoreit($skip,$key,$depth)) {
+         $out .= sprintf("%s%s $PL\n"," " x ($depth*2),$key);
+         $out .= print_var($data,$depth+1,$key,$skip,1);
+         $out .= sprintf("%s$PR\n"," " x ($depth*2));
+      } elsif(!ignoreit($skip,$key,$depth)) {
+         $out .= sprintf("%s%s = %s\n"," " x ($depth*2),$key,$data);
+      }
+   }
+
+   $out .= (" " x (($depth-1)*2)) . "$PR\n" if(!$recursive);
+   return $out;
+}
+
 
 #
 # reset the terminal, display the error
@@ -700,91 +720,92 @@ sub trim
    $txt =~ s/^\s+|\s+$//g;
    return $txt;
 }
-sub tick
-{
-    for my $world (keys %sock) {
-        next if (!defined @sock{$world}->{sock});
-
-        if(!defined @sock{$world}->{idle}) {
-           @sock{$world}->{idle} = time();
-        } elsif(time() - @sock{$world}->{idle} > 300) {
-           @sock{$world}->{idle} = time();
-           snd($world,"think # idle tick #");
-        } 
-    }
-}
 
 
-sub filter_modify
-{
-   my ($world,$fmt,@args) = @_;
-   my $txt = sprintf($fmt,@args);
-
-   if($txt=~ /^\[([^\]]+)\(([^\]]+)\)([^\]]*)\] /) {
-      return $';
-   } elsif($txt=~ /^\[([^:]+):\] /) {
-      return $';
-   } else {
-      return $txt;
-   }
-}
-
-sub filter_gag
-{
-   return 0;
-}
-
+#
+# to_fast
+#    Check the history buffer to detemermine if the output should be
+#    paused or not. 
+#
 sub to_fast
 {
    my $world = shift;
+   my $count = 0;
 
-   if(!defined @world_history{$world} ||
-      $#{@world_history{$world}} < 10) {
-      return 0;
-   }
-
-   my $array = @world_history{$world};
-   my $hash = $$array[$#$array - 10];
-
-   if(time() - $$hash{ts}  <=  1) {
+   return 0 if(!defined @more{$world} || $#{@more{$world}} <= 16);
+   my $array = @more{$world};
+   delete @$array[0 .. ($#$array - 16)];
+   if(time() - $$array[$#$array - 15] <= 2) {
       return 1;
    } else {
       return 0;
    }
 }
 
+sub paused
+{
+   my $world = shift;
+
+   return (defined @sock{$world} && defined @sock{$world}->{paused}) ? 1 : 0;
+}
+
 sub out
 {
    my ($world,$fmt,@arg) = @_;
-   my $filtered_txt;
+   my $show = 0;
+   my $hash;
 
-   my $filtered_txt = filter_modify($world,$fmt,@arg);
-
-   if(!filter_gag($world,$fmt,@arg)) {
-      if(defined @sock{$world} &&
-         !defined @sock{$world}->{pause} &&
-         to_fast($world)) {
-         @sock{$world}->{pause} = $#{@world_history{$world}} + 1;
-         update_bar(1) if($world eq @state{focus});
-      } elsif(defined @sock{$world} && defined @sock{$world}->{pause}) {
-         # do nothing
-      } elsif($world eq @state{focus}) {
-         set_scroll_region("out");
-         goto_xy(@state{size_x} - 3,1);
-         printf("\n%s",wrap('','',$filtered_txt));
-         display_cursor();
+   if($world eq "GLOBAL" || ref($world) eq "HASH") {
+      $show = 1;                                               # always show
+   } elsif(@state{focus} eq $world) {
+      if(paused($world)) {
+         # do nothing                                       # already paused
+      } elsif(to_fast($world)) {                                # set paused
+         @sock{$world}->{paused} = -1;
+      } else {                                                      # normal
+         $show = 1;
       }
    }
 
-   # initialize buffer if needed.
-   @world_history{@state{focus}} = [] if(!defined @world_history{$world});
+ 
+   if(ref($world) eq "HASH") {             # record message in history 
+      $hash = $world;
+      $$hash{code} = code();
+      if($fmt ne "NOLOG" && !paused()) {
+         push(@history,$hash) if $fmt ne "NOLOG";      # was pending message?
+      }
+   } else { 
+      $hash = { txt      => filter_modify($world,$fmt,@arg),     # new message
+                ts       => time(),
+                world    => $world,
+                original => sprintf($fmt,@arg),
+                gagged   => filter_gagged($world,$fmt,@arg),
+                code     => code()
+              };
+      push(@history,$hash) if(!paused());
+   }
 
-   my $history = @world_history{$world};
-   push(@$history,{ txt => $filtered_txt,
-                    ts => time(),
-                    original => sprintf($fmt,@arg)
-                  }
-       );
+
+   if(ref($world) ne "HASH") {
+      @more{$world} = [] if(!defined @more{$world});    # track timings for more
+      push(@{@more{$world}},time());
+   }
+
+   if($$hash{gagged}) {
+      # skip
+   } elsif($show) {                                          # output message
+      set_scroll_region("out");
+      goto_xy(@state{size_x} - @state{size_i} - 1,1);
+      printf("\n%s",wrap('','',$$hash{txt}));
+      display_cursor();
+   } else {                                                 # pending output
+      @pending{$world} = [] if(!defined @pending{$world});
+      push(@{@pending{$world}},$hash);
+      if(@sock{$world}->{paused} == -1) {
+         @sock{$world}->{paused} = 1;
+         update_bar(1);
+      }
+   }
 }
 
 sub key
@@ -825,9 +846,9 @@ sub key
       }
    }
 
-#   out_nolog("KEY: '%s' -> '%s'\n",$key,ord($key));
    if($key eq "\n") {                                            # end of line
       kb_handle_input();
+      delete @state{prev_pos};
       if(@state{key_x} + 1 < @state{size_x}) {
          @state{key_x}++;
       } else {
@@ -837,26 +858,50 @@ sub key
       @state{key_x}++;
       @state{key_y} = 1;
       goto_xy(@state{key_x},@state{key_y});
+   } elsif(ord($key) == 12) {                                      # control-l
+      my $tmp = @state{focus};
+      delete @state{focus};
+      set_focus($tmp);
+      display_cursor();
    } elsif(ord($key) == 9) {                                             # tab
-      if(defined @sock{@state{focus}} &&
-         defined @sock{@state{focus}}->{pause}) {
-         my $start = @sock{@state{focus}}->{pause};
-         my $end = $start + @state{size_x} - @state{size_i} - 1;
-         my $buf = @world_history{@state{focus}};
-         $end = $#$buf if($end > $#$buf);
 
-         for my $i ($start .. $end) {
-            out_nolog("%s",@{$$buf[$i]}{txt});
+      if(defined @sock{@state{focus}} &&
+         defined @sock{@state{focus}}->{paused} && 
+         defined @pending{@state{focus}} &&
+         defined $#{@pending{@state{focus}}} >= 0) {
+
+         delete @sock{@state{focus}}->{paused};
+         my $pend = @pending{@state{focus}};
+         for my $i (0 .. @state{size_x}) {
+            if($#$pend >= 0) {
+               out(shift(@$pend),"NOLOG");
+            } else {
+               last;
+            }
          }
-         if($end == $#$buf) {
-            delete @sock{@state{focus}}->{pause};
-            update_bar(1);
-         } else {
-            @sock{@state{focus}}->{pause} = $end;
-         }
+         @sock{@state{focus}}->{paused} = 1 if($#$pend != -1);
       }
+      update_bar(1);
    } elsif(ord($key) == 16) {                                      # control-p
-      out_nolog("Focus: @state{focus} == @state{prev_focus}");
+      my $kb = @state{kbbuffer};
+      if(!defined @state{prev_pos}) {
+         @state{prev_pos} = $#$kb - 1;
+      } elsif(defined $$kb[@state{prev_pos}-1] && @state{prev_pos} >= 1) {
+         out_nolog("STATE: @state{prev_pos}");
+         @state{prev_pos}--;
+      } else {                                              # kb buffer empty 
+         out_nolog("STATE: return @state{prev_pos}");
+         return;
+      }
+
+      @state{key_y} = 1;                           # delete all previous input
+      set_scroll_region("key");
+      goto_xy(@state{key_x},@state{key_y});
+
+      if(defined $$kb[@state{prev_pos}]) {
+         printf("\033[K%s",$$kb[@state{prev_pos}]);
+         @state{key_y} = length($$kb[@state{prev_pos}]) % @state{size_y};
+      }
    } elsif(ord($key) == 21) {                                      # control-U
       @state{key_y} = 1;                            # delete all previous input
       kb_new_line();
@@ -877,6 +922,11 @@ sub key
    }
 }
 
+sub out_size
+{
+    return @state{size_x} - @state{size_i} - 1;
+}
+
 sub display_cursor
 {
    set_scroll_region("key");
@@ -885,38 +935,76 @@ sub display_cursor
 
 sub clear_screen
 {
-    set_scroll_region("out");
-    for my $line (0 .. @state{size_x}) {
-       out_nolog("\n");
-       out_nolog("\033[K");
+    goto_xy(1,1);
+    for my $line (1 .. out_size()) {
+       printf("\033[K\n");
     }
 }
+#    return out_nolog("\033[H\033J");
+#    set_scroll_region("out");
+#    for my $line (0 .. @state{size_x}) {
+#       out_nolog("\n");
+#       out_nolog("\033[K");
+#    }
+#}
 
+#sub redraw_out
 sub set_focus
 {
    my $world = shift;
-   my $start;
 
    if($world eq undef) {
-      # ignore
-   } elsif(!defined @world{$world}) {
-      out_nolog("%% No such world '%s'.",$world);
-   } elsif($world ne @state{focus}) {
-      @state{focus} = $world;
+      return clear_screen();
+   } elsif($world eq @state{focus}) {
+      return;
+   }
 
-      @world_history{$world} = [] if(!defined @world_history{$world});
-      my $history = @world_history{$world};
-      for my $i (reverse 0 .. @state{size_x}) {
-         my $pos = $#$history - $i;
-         if($pos < 0) {
-            out_nolog("\n");
-            out_nolog("\033[K");
-         } else {
-            out_nolog("%s",@{$$history[$pos]}{txt});
+   @state{focus} = $world;
+   my @out;
+
+
+   open(HISTORY,"> history.txt");
+
+   for my $i (0 ..$#history) {
+       printf(HISTORY "%s\n",@{@history[$i]}{txt});
+   }
+   close(HISTORY);
+
+   for my $i (reverse 0 .. $#history) {
+      if($#out + 1 > out_size()) {
+         last;
+      } else {
+         my $hash = @history[$i];
+         if($$hash{world} eq $world) {
+            for my $line (split(/\n/,wrap('','',$$hash{txt}))) {
+               $line =~ s/\r|\n//g;
+               $line =~ s/\s+$//;
+               my $data = { txt      => $line,
+                            ts       => $$hash{ts},
+                            world    => $$hash{world},
+                            gagged   => $$hash{gagged},
+                            code     => $$hash{code},
+                          };
+               unshift(@out,$data);
+               last if $#out + 1 > out_size();
+            }
          }
       }
-      display_cursor();
    }
+
+   goto_xy(1,1);
+   set_scroll_region("out");
+
+   for my $i (($#out+1) .. out_size()) {             # send any "blank" lines
+       printf("\033[K\n");
+   }
+   for my $i (0 .. $#out) {                                   # send content
+      printf("\033[K%s%s",@{@out[$i]}{txt},
+#      @{@out[$i]}{code},
+      ($i == $#out) ? "" : "\n");
+   }
+
+   display_cursor();
 }
 
 sub center
@@ -925,6 +1013,106 @@ sub center
 
     out_nolog("%s%s",(" " x ((@state{size_y} - length($txt)) / 2)),$txt);
 }
+
+
+#----------------------------------------------------------------------------#
+#                                                                            #
+#  muddler main stuff                                                        #
+#                                                                            #
+#----------------------------------------------------------------------------#
+
+sub tick
+{
+    for my $world (keys %sock) {
+        next if (!defined @sock{$world}->{sock});
+
+        if(!defined @sock{$world}->{idle}) {
+           @sock{$world}->{idle} = time();
+        } elsif(time() - @sock{$world}->{idle} > 300) {
+           @sock{$world}->{idle} = time();
+           snd($world,"think # idle tick #");
+        } 
+    }
+}
+
+
+sub filter_modify
+{
+   my ($world,$fmt,@args) = @_;
+   my $txt = sprintf($fmt,@args);
+
+   if($txt=~ /^\[([^\]]+)\(([^\]]+)\)([^\]]*)\] /) {
+      return $';
+   } elsif($txt=~ /^\[([^:]+):\] /) {
+      return $';
+   } else {
+      return $txt;
+   }
+}
+
+sub filter_gagged
+{
+   return 0;
+}
+
+sub init
+{
+   $| = 1;                                                  # unbuffer stdout
+   ReadMode 'cbreak';                               # set no-echo, unbuffered
+   printf("\033[2J");
+ 
+   # get screen size and size accordingly
+   (@state{size_y},@state{size_x}) = GetTerminalSize();
+   @state{size_x}   = 24               if(@state{size_x} eq undef);
+   @state{size_y}   = 80               if(@state{size_y} eq undef);
+   $Text::Wrap::columns = @state{size_y};
+   $Text::Wrap::unexpand = 0;
+
+   @state{kbbuffer} = [];
+   @state{size_i}   = 2;
+   @state{key_x}    = @state{size_x} - @state{size_i} + 1;
+   @state{key_y}    = 1;
+   @state{pos_x}    = @state{size_x} - @state{size_i} + 1;
+   @state{pos_y}    = 1;
+
+   clear_screen();
+   update_bar();
+   display_cursor();
+
+   # read banner from top of script, this is probably silly but then banner
+   # doesn't need to be escaped out.
+
+   open(PROG,$0) || return;
+
+   while(<PROG>) {
+      s/\n|\r//g;
+      if(/^#-#   /) {
+         center($');
+      } elsif($. > 100) {                              # read only 50 lines
+         close(PROG);
+         last;
+      }
+   }
+   close(PROG);
+
+#   out_nolog(' ');
+#   center("= Keys: Control=U    Erase keyboard line                  =");
+#   center("=       Arrow Up     Switch Worlds Up 1                   =");
+#   center("=       Arrow Down   Switch Worlds Down 1                 =");
+#   center("=                                                         =");
+#   center("= Commands: /dc             Disconnect from current world =");
+#   center("=           /world <world>  Connect / switch to <world>   =");
+#   center("=           /dc             Disconnect from current world =");
+#   center("=           /reload         Reload the client's code      =");
+#   center("=           /quit           Exit out of muTalk            =");
+#   out_nolog();                                                           
+
+   read_tfworlds("@ENV{HOME}/.tfworlds");
+   out_nolog("\033D");
+   out_nolog("%% %d worlds loaded from .tfworlds file.",scalar keys %world);
+};
+
+
 
 sub main
 {
