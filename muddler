@@ -102,10 +102,10 @@ sub cmd_world
 
          if(@world{$world}->{user} ne undef &&
             @world{$world}->{pass} ne undef) {
-#            snd($world,"connect %s %s",
-#                 @world{$world}->{user},
-#                 @world{$world}->{pass}
-#                );
+            snd($world,"connect %s %s",
+                 @world{$world}->{user},
+                 @world{$world}->{pass}
+                );
          }
       }
    } else {
@@ -493,22 +493,47 @@ sub set_new_bar_style
    }
 }
 
+sub activity
+{
+   my $count = shift;
+
+   if($count == 0) {
+       return @state{ch} x 15;
+   } else {
+#      out_nolog("Activity: " . join(',',keys %pending));
+      return "(Activity: $count)" . (@state{ch} x (3 - length($count)));
+   }
+}
+
 sub update_bar
 {
    my $do_update = shift;
+   my ($hr,$min) = ((localtime())[2,1]);
+   my ($world, $size_y, $size_x, $activity);
 
    # check time
-   my ($hr,$min) = ((localtime())[2,1]);
    $hr -= 12 if($hr > 12);
    my $cur = sprintf("%s:%02d",$hr,$min);
 
-   my ($world, $size_y, $size_x);
+   for my $key (keys %pending) {
+      delete @pending{$key} if %#{@pending{$key}} == -1;
+   }
+#   for my $key (keys %pending) {
+#      out_nolog("update: $key $#{@pending{$key}}");
+#   }
+   if(defined @pending{@state{focus}}) {
+      $activity = (scalar keys %pending) - 1;
+   } else {
+      $activity = scalar keys %pending;
+   }
+
 
    if(screen_size_changed() ||
       @state{prev_time} ne $cur ||                             # time changed
       @state{focus} ne @state{prev_focus} ||                  # world changed
       (defined @pending{$world} &&                          # pending changed
        @state{prev_pending} ne $#{@pending{$world}}) ||
+      @state{prev_activity} ne $activity ||                # activity changed
       $do_update) {                                 # caller reuqested update
 
       set_new_bar_style();
@@ -525,10 +550,12 @@ sub update_bar
 #      set_scroll_region("remove");
       goto_xy(@state{size_x} - 2,1);
 
-      printf("%s/%s/%s%s%s",
+      printf("%s/%s/%s%s%s%s",
          more(),
          substr($world,0,15),
-         @state{ch} x (@state{size_y} - length($cur.substr($world,0,15))-12),
+         @state{ch} x (@state{size_y} - length($cur.substr($world,0,15))-27),
+         activity($activity),
+         @state{ch} x 2,
          $cur,
          @state{ch} x 2
       );
@@ -536,6 +563,7 @@ sub update_bar
 
       @state{prev_pending} = $#{@pending{$world}} if defined @pending{$world};
       @state{prev_focus} = @state{focus};
+      @state{prev_activity} = $activity;
       display_cursor();
    }
 }
@@ -771,9 +799,9 @@ sub out
    if(ref($world) eq "HASH") {             # record message in history 
       $hash = $world;
       $$hash{code} = code();
-      if($fmt ne "NOLOG" && !paused()) {
-         push(@history,$hash) if $fmt ne "NOLOG";      # was pending message?
-      }
+#      if($fmt ne "NOLOG" && !paused()) {
+#         push(@history,$hash) if $fmt ne "NOLOG";      # was pending message?
+#      }
    } else { 
       $hash = { txt      => filter_modify($world,$fmt,@arg),     # new message
                 ts       => time(),
@@ -782,7 +810,6 @@ sub out
                 gagged   => filter_gagged($world,$fmt,@arg),
                 code     => code()
               };
-      push(@history,$hash) if(!paused());
    }
 
 
@@ -792,12 +819,14 @@ sub out
    }
 
    if($$hash{gagged}) {
+      push(@history,$hash);
       # skip
    } elsif($show) {                                          # output message
       set_scroll_region("out");
       goto_xy(@state{size_x} - @state{size_i} - 1,1);
       printf("\n%s",wrap('','',$$hash{txt}));
       display_cursor();
+      push(@history,$hash);
    } else {                                                 # pending output
       @pending{$world} = [] if(!defined @pending{$world});
       push(@{@pending{$world}},$hash);
@@ -808,19 +837,44 @@ sub out
    }
 }
 
+sub keyboard_recall
+{
+   my $val = shift;
+
+   my $kb = @state{kbbuffer};
+
+   if(!defined @state{recall_pos}) {
+      return if($val > 0);                         # control-n, at end, done 
+      @state{recall_pos} = $#$kb - 1;                         # start at top
+   } elsif(defined $$kb[@state{recall_pos} + $val] && 
+      @state{recall_pos} + $val >= 0) {
+      @state{recall_pos} = @state{recall_pos} + $val;
+   } else {
+      return;                                                # out of bounds
+   }
+
+   @state{key_y} = 1;                           # delete all previous input
+   set_scroll_region("key");
+   goto_xy(@state{key_x},@state{key_y});
+
+   printf("\033[K%s",$$kb[@state{recall_pos}]);
+   @state{key_y} = (length($$kb[@state{recall_pos}]) % @state{size_y}) + 1;
+}
+
+
 sub key
 {
    my $key = shift;
 
 #   if(ord($key) != 127 && $key ne "\n") {
-#     out("pressed: %s $key",ord($key));
+#     out_nolog("pressed: %s $key",ord($key));
 #   }
 
    set_scroll_region("key");
 
    if(defined @state{key_buffer}) {
       my $buf = @state{key_buffer};
-      if($#$buf == 0 && $key eq "[") {
+      if($#$buf == 0 && ($key eq "[" || $key eq "O")) {
          push(@$buf,$key);
          return;
       } elsif($#$buf == 1 && $key eq "A") {                       # up arrow
@@ -848,7 +902,7 @@ sub key
 
    if($key eq "\n") {                                            # end of line
       kb_handle_input();
-      delete @state{prev_pos};
+      delete @state{recall_pos};
       if(@state{key_x} + 1 < @state{size_x}) {
          @state{key_x}++;
       } else {
@@ -879,29 +933,18 @@ sub key
                last;
             }
          }
-         @sock{@state{focus}}->{paused} = 1 if($#$pend != -1);
+         if($#$pend == -1) {
+            delete @pending{@state{focus}};
+         } else {
+            @sock{@state{focus}}->{paused} = 1;
+         }
       }
       update_bar(1);
    } elsif(ord($key) == 16) {                                      # control-p
-      my $kb = @state{kbbuffer};
-      if(!defined @state{prev_pos}) {
-         @state{prev_pos} = $#$kb - 1;
-      } elsif(defined $$kb[@state{prev_pos}-1] && @state{prev_pos} >= 1) {
-         out_nolog("STATE: @state{prev_pos}");
-         @state{prev_pos}--;
-      } else {                                              # kb buffer empty 
-         out_nolog("STATE: return @state{prev_pos}");
-         return;
-      }
-
-      @state{key_y} = 1;                           # delete all previous input
-      set_scroll_region("key");
-      goto_xy(@state{key_x},@state{key_y});
-
-      if(defined $$kb[@state{prev_pos}]) {
-         printf("\033[K%s",$$kb[@state{prev_pos}]);
-         @state{key_y} = length($$kb[@state{prev_pos}]) % @state{size_y};
-      }
+      update_bar(1);
+#      keyboard_recall(-1);
+   } elsif(ord($key) == 14) {                                      # control-n
+      keyboard_recall(1);
    } elsif(ord($key) == 21) {                                      # control-U
       @state{key_y} = 1;                            # delete all previous input
       kb_new_line();
@@ -961,14 +1004,31 @@ sub set_focus
 
    @state{focus} = $world;
    my @out;
+      push(@out,{ txt => "START PENDING"});
 
 
    open(HISTORY,"> history.txt");
 
-   for my $i (0 ..$#history) {
-       printf(HISTORY "%s\n",@{@history[$i]}{txt});
-   }
+   printf(HISTORY "%s\n", print_var(\%pending));
+
    close(HISTORY);
+
+   if(defined @pending{@state{focus}}) {
+      my $array = @pending{@state{focus}};
+      push(@out,{ txt => "PENDING: $#$array"});
+      for my $i (0 .. out_size()) {
+         if($#$array == -1) {
+            last;
+         } else {
+            my $data = shift(@$array);
+            $$data{txt} = "# " . $$data{txt};
+            push(@out,$data);
+         }
+      }
+      if($#$array == -1) {
+         delete @pending{@state{focus}};
+      }
+   }
 
    for my $i (reverse 0 .. $#history) {
       if($#out + 1 > out_size()) {
