@@ -355,10 +355,21 @@ sub kb_set
    $$kb[$#$kb] = $data;
 }
 
+
 sub kb_append
 {
    my $data = shift;
    my $kb = @state{kbbuffer};
+
+   # hit edge of screen, drop down a line 
+   if(++@state{key_y} >= @state{size_y}) {   # edge screen, drop down a line 
+      @state{key_y} = 1;
+
+      # move cursor down one but stay in bounds
+      @state{key_x} = @state{size_x} if(++@state{key_x} > @state{size_x});
+   } else {
+      @state{key_y}++;                                       # move over one
+   }
 
    if($#$kb == -1) {                                 # keyboard buffer empty
       push(@$kb,$data);                                      # add new entry
@@ -414,17 +425,14 @@ sub goto_xy
       $x = @state{size_x};
    }
 
-   if(@state{pos_x} != $x || @state{pos_y} != $y || $override) {# move as need
-      if($x >= @state{size_x} - @state{size_i} +1) {     # track keyboard pos
-         @state{key_x} = $x;
-         @state{key_y} = $y;
-      }
-      @state{pos_x} = $x;                                  # track actual pos
-      @state{pos_y} = $y;
-      printf("\033[%s;%sH",$x,$y);
-   } else {
-#      out("skip: @state{pos_x} == $x && @state{pos_y} == $y");
-   }
+   # no need to move?
+   return if(@state{pos_x} == $x && @state{pos_y} == $y && !$override);
+#   out_nolog("No move: $x $y\n");
+
+   @state{move} = "$x,$y";
+   @state{pos_x} = $x;                                  # track actual pos
+   @state{pos_y} = $y;
+   printf("\033[%s;%sH",$x,$y);
 }
 
 sub  highlight
@@ -547,7 +555,6 @@ sub update_bar
           $world = @state{focus};
       }
 
-#      set_scroll_region("remove");
       goto_xy(@state{size_x} - @state{size_i},1);
 
       printf("%s/%s/%s%s%s%s%s",
@@ -855,8 +862,8 @@ sub keyboard_recall
 
    if(!defined @state{recall_pos}) {                        # recall started
       return if($val > 0);                              # return, passed top
-      @state{recall_pos} = $#$kb - 1;                         # start at top
       push(@$kb,""); 
+      @state{recall_pos} = $#$kb - 1;                         # start at top
    } elsif(@state{recall_pos} + $val >= $#$kb) {       # done, passed bottom
       delete @state{recall_pos};
       return;
@@ -870,7 +877,8 @@ sub keyboard_recall
    # show results
    set_scroll_region("key");
    @state{key_y} = 1;
-   goto_xy(@state{key_x},@state{key_y});
+   goto_xy(@state{key_x},@state{key_y},1);
+
    my $line = $$kb[@state{recall_pos}];                # new data to show
 
    # determine where cursor will end up
@@ -883,13 +891,13 @@ sub keyboard_recall
 
    printf("\033[K%s",$line);                                       # show line
    $$kb[$#$kb] = $$kb[@state{recall_pos}];            # overwrite current line
-   display_cursor();
 }
 
 
 sub key
 {
    my $key = shift;
+   my $kb = @state{kbbuffer};
 
 #   if(ord($key) != 127 && $key ne "\n") {
 #     out_nolog("pressed: %s $key",ord($key));
@@ -928,20 +936,13 @@ sub key
    if($key eq "\n") {                                            # end of line
       kb_handle_input();
       delete @state{recall_pos};
+
       if(@state{key_x} + 1 <= @state{size_x}) {
          @state{key_x}++;
-      } else {
-         goto_xy(@state{key_x},@state{key_y});
-         printf("\n");
       }
-      #@state{key_x}++;
       @state{key_y} = 1;
       goto_xy(@state{key_x},@state{key_y});
-   } elsif(ord($key) == 12) {                                      # control-l
-      my $tmp = @state{focus};
-      delete @state{focus};
-      set_focus($tmp);
-      display_cursor();
+      printf("\n");
    } elsif(ord($key) == 9) {                                             # tab
 
       if(defined @sock{@state{focus}} &&
@@ -965,25 +966,34 @@ sub key
          }
       }
       update_bar(1);
-   } elsif(ord($key) == 16) {                                      # control-p
-      keyboard_recall(-1);
+   } elsif(ord($key) == 12) {                                      # control-l
+      my $tmp = @state{focus};
+      delete @state{focus};
+      set_focus($tmp);
+      display_cursor();
    } elsif(ord($key) == 14) {                                      # control-n
       keyboard_recall(1);
-   } elsif(ord($key) == 21) {                                      # control-U
+   } elsif(ord($key) == 16) {                                      # control-p
+      keyboard_recall(-1);
+   } elsif(ord($key) == 21) {                                      # control-u
       @state{key_y} = 1;                            # delete all previous input
       kb_new_line();
-      printf("\033[1K");
-      goto_xy(@state{key_x},@state{key_y});
+      printf("\r\033[J");
+   } elsif(ord($key) == 23) {                                      # control-w
+      if(@state{kbbuffer} =~ /(^|\s+)([^ ]+)(\s*)$/) {
+         $$kb[$#$kb] = $`;
+         my ($word,$spaces) = ($1,$2);
+      }
+   } elsif(ord($key) == 27) {                                         # escape
+      @state{key_buffer} = [ $key ];
    } elsif(ord($key) == 127) {                                    # delete key
       @state{key_y}--;
       kb_set(substr(kb(),0,length(kb())-1));
       goto_xy(@state{key_x},@state{key_y},1);
       printf("\033[P");
-   } elsif(ord($key) == 27) {                                         # escape
-      @state{key_buffer} = [ $key ];
    } else {                                                  # everything else
       kb_append($key);
-      goto_xy(@state{key_x},@state{key_y});
+#      goto_xy(@state{key_x},@state{key_y});
       @state{key_y}++;
       printf("%s",$key);
    }
