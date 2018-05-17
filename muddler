@@ -10,7 +10,6 @@ use Carp;
 use strict;
 use IO::Select;
 use IO::Socket;
-use Text::Wrap;
 use Term::ReadKey;
 use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
                     TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
@@ -102,10 +101,10 @@ sub cmd_world
 
          if(@world{$world}->{user} ne undef &&
             @world{$world}->{pass} ne undef) {
-            snd($world,"connect %s %s",
-                 @world{$world}->{user},
-                 @world{$world}->{pass}
-                );
+#            snd($world,"connect %s %s",
+#                 @world{$world}->{user},
+#                 @world{$world}->{pass}
+#                );
          }
       }
    } else {
@@ -279,11 +278,7 @@ sub socket_handle_input
            } else {
               my @lines= $conn->getlines(Timeout=>0); # get from pmc::telnet
         
-              for my $line (@lines) {
-                 next unless $line;
-                 $line =~ s/\r|\n//g;
-                 out($world,"%s",$line);
-              }
+              out($world,join("",@lines)) if($#lines >= 0);
            }
         }
     }
@@ -328,8 +323,10 @@ sub set_scroll_region
       printf("\033[%s;%sr",@state{size_x} - @state{size_i}+1,@state{size_x});
    } elsif($type eq "out") {
       printf("\033[1;%sr",@state{size_x} - @state{size_i} - 1);
+      @state{cursor_in_out} = 1;
    } elsif($type eq "remove") {
       printf("\033[r");
+      @state{cursor_in_out} = 1;
    } else {
       die("unknown scroll region '$type'");
    }
@@ -367,9 +364,9 @@ sub kb_append
 
       # move cursor down one but stay in bounds
       @state{key_x} = @state{size_x} if(++@state{key_x} > @state{size_x});
-   } else {
-      @state{key_y}++;                                       # move over one
    }
+
+   # 
 
    if($#$kb == -1) {                                 # keyboard buffer empty
       push(@$kb,$data);                                      # add new entry
@@ -412,6 +409,7 @@ sub kb_handle_input
 sub goto_xy
 {
    my ($x,$y,$override) = @_;
+   @state{move} = "no";
 
    if($y <= 0) {                              # handle some sanity checks
       $y = 1;
@@ -426,13 +424,28 @@ sub goto_xy
    }
 
    # no need to move?
-   return if(@state{pos_x} == $x && @state{pos_y} == $y && !$override);
-#   out_nolog("No move: $x $y\n");
+#   croak(@state{region}) if(@state{key_x} == $x && @state{key_y} == $y && !$override &&
+#      !@state{cursor_in_out});
+   return if(@state{key_x} == $x && @state{key_y} == $y && !$override &&
+      !@state{cursor_in_out});
 
    @state{move} = "$x,$y";
-   @state{pos_x} = $x;                                  # track actual pos
-   @state{pos_y} = $y;
+   if(in_key_region($x,$y)) {
+      delete @state{cursor_in_out};
+   } else {
+      @state{cursor_in_out} = 1;
+   }
    printf("\033[%s;%sH",$x,$y);
+    
+#   out_nolog("No move: $x $y\n");
+
+#   if(in_key_region($x,$y)) {
+#      @state{key_x} = $x;                           # track keyboard position
+#      @state{key_y} = $y;
+#      delete @state{cursor_in_out};
+#   } else {
+#      @state{cursor_in_out} = 1;
+#   }
 }
 
 sub  highlight
@@ -479,7 +492,6 @@ sub screen_size_changed
       my $tmp = @state{focus};
       delete @state{focus};
       set_focus($tmp);
-      $Text::Wrap::columns = $size_y;
       return 1;
    } else {
       return 0;
@@ -526,13 +538,9 @@ sub update_bar
    for my $key (keys %pending) {
       delete @pending{$key} if %#{@pending{$key}} == -1;
    }
-#   for my $key (keys %pending) {
-#      out_nolog("update: $key $#{@pending{$key}}");
-#   }
-   if(defined @pending{@state{focus}}) {
-      $activity = (scalar keys %pending) - 1;
-   } else {
-      $activity = scalar keys %pending;
+
+   for my $key (keys %pending) {
+      $activity++ if($#{@pending{$key}} >= 0 && $key ne @state{focus});
    }
 
 
@@ -545,6 +553,7 @@ sub update_bar
       $do_update) {                                 # caller reuqested update
 
       set_new_bar_style();
+      @state{ch} = "=";
 
       if(!defined @state{focus}) {
          $world = "None";
@@ -557,10 +566,10 @@ sub update_bar
 
       goto_xy(@state{size_x} - @state{size_i},1);
 
-      printf("%s/%s/%s%s%s%s%s",
+      printf("%s| %s |%s%s%s| %s |%s",
          more(),
          substr($world,0,15),
-         @state{ch} x (@state{size_y} - length($cur.substr($world,0,15))-29),
+         @state{ch} x (@state{size_y} - length($cur.substr($world,0,15))-35),
          activity($activity),
          @state{ch} x 2,
          $cur,
@@ -588,10 +597,103 @@ sub out_nolog
    if($txt eq undef) {                                           # blank line
       printf("\033D");
    } else {
-     printf("\n%s",wrap('','',sprintf($fmt,@arg)));
+     printf("\n%s",join("\n",wrap(sprintf($fmt,@arg))));
    }
    display_cursor();
 }
+
+#----------------------------------------------------------------------------#
+#                                                                            #
+#  wrapping                                                                  #
+#     Text::wrap worked but will eventually fall over when parsing ansi      #
+#     text. This doesn't yet, but will.
+#----------------------------------------------------------------------------#
+
+#
+# find_word_begin
+#    Find the begining position of a word that straddles the end of the
+#    screen.
+#
+sub find_word_begin
+{
+   my $txt = shift;
+
+   if(substr($txt,1,@state{size_y}) =~ /(\w+)$/) {
+      return @state{size_y} - length($1);
+   } else {
+      return 0;
+   }
+}
+
+#
+# find_word_begin
+#    Find the end position of a word that straddles the end of the
+#    screen.
+#
+sub find_word_end
+{
+   my $txt = shift;
+
+   if(substr($txt,@state{size_y}) =~ /^(\w+)/) {
+      return @state{size_y} + length($1);
+   } else {
+      return 0;
+   }
+}
+
+#
+# ltrim
+#    Trim off any leading spaces from the provided txt.
+#
+sub ltrim
+{
+   $_[0] =~ s/^\s+//;
+   return $_[0];
+}
+
+#
+# ltrim
+#    Trim off any preceeding spaces from the provided txt.
+#
+sub rtrim
+{
+   $_[0] =~ s/\s+$//;
+   return $_[0];
+}
+
+sub wrap
+{
+   my $txt = shift;
+   my @out;
+
+   open(FILE,">> history.txt") ||
+     die("Could not open history.txt for writing");
+   printf(FILE "%s\n",$txt);
+   close(FILE);
+
+   for my $line (split(/\n/,$txt)) {                             # wrap lines
+      while($line) {
+         if(length($line) <= @state{size_y}) {          # less than line size
+            push(@out,rtrim($line));
+            last;
+         } elsif(substr($line,@state{size_y},1) eq " ") {     # split at edge
+             push(@out,rtrim(substr($line,0,@state{size_y})));
+             $line = ltrim(substr($line,@state{size_y}));
+         } else {
+            my ($start,$stop) = (find_word_begin($line),find_word_end($line));
+            if($stop - $start > 25) {                   # split oversized word
+               push(@out,substr($line,0,@state{size_y}));
+               $line = ltrim(substr($line,@state{size_y}));
+            } else {                                       # split before word
+               push(@out,rtrim(substr($line,0,$start)));
+               $line = ltrim(substr($line,$start));
+            }
+         }
+      }
+   }
+   return @out;
+}
+
 
 #----------------------------------------------------------------------------#
 #                                                                            #
@@ -816,13 +918,14 @@ sub out
 #      if($fmt ne "NOLOG" && !paused()) {
 #         push(@history,$hash) if $fmt ne "NOLOG";      # was pending message?
 #      }
-   } else { 
+  } else { 
       $hash = { txt      => filter_modify($world,$fmt,@arg),     # new message
                 ts       => time(),
                 world    => $world,
                 original => sprintf($fmt,@arg),
                 gagged   => filter_gagged($world,$fmt,@arg),
-                code     => code()
+                code     => code(),
+                paused   => paused($world)
               };
    }
 
@@ -838,7 +941,10 @@ sub out
    } elsif($show) {                                          # output message
       set_scroll_region("out");
       goto_xy(@state{size_x} - @state{size_i} - 1,1);
-      printf("\n%s",wrap('','',$$hash{txt}));
+
+      for my $line (split(/\n/,$$hash{txt})) {
+          printf("\n%s",join("\n",wrap($line)));
+      }
       display_cursor();
       push(@history,$hash);
    } else {                                                 # pending output
@@ -937,12 +1043,15 @@ sub key
       kb_handle_input();
       delete @state{recall_pos};
 
+      goto_xy(@state{key_x},@state{key_y});
+      printf("\n");
+
       if(@state{key_x} + 1 <= @state{size_x}) {
          @state{key_x}++;
       }
       @state{key_y} = 1;
-      goto_xy(@state{key_x},@state{key_y});
-      printf("\n");
+   } elsif(ord($key) == 5) {                                      # control-e 
+      update_bar(1);
    } elsif(ord($key) == 9) {                                             # tab
 
       if(defined @sock{@state{focus}} &&
@@ -974,7 +1083,12 @@ sub key
    } elsif(ord($key) == 14) {                                      # control-n
       keyboard_recall(1);
    } elsif(ord($key) == 16) {                                      # control-p
+#      out_nolog("control-p: @state{key_x},@state{key_y}");
       keyboard_recall(-1);
+   } elsif(ord($key) == 18) {
+      my $data = print_var(\%state);
+      $data =~ s/\r$|\n$//g;
+      out_nolog($data);
    } elsif(ord($key) == 21) {                                      # control-u
       @state{key_y} = 1;                            # delete all previous input
       kb_new_line();
@@ -994,7 +1108,6 @@ sub key
    } else {                                                  # everything else
       kb_append($key);
 #      goto_xy(@state{key_x},@state{key_y});
-      @state{key_y}++;
       printf("%s",$key);
    }
 }
@@ -1002,6 +1115,23 @@ sub key
 sub out_size
 {
     return @state{size_x} - @state{size_i} - 1;
+}
+
+sub in_key_region
+{
+   my ($x,$y) = shift;
+
+   return ($x > @state{size_x} - @state{size_i})  ? 1 : 0;
+}
+
+sub key_start
+{
+    return @state{size_x} - @state{size_i};
+}
+
+sub key_end
+{
+    return @state{size_x};
 }
 
 sub display_cursor
@@ -1029,6 +1159,7 @@ sub clear_screen
 sub set_focus
 {
    my $world = shift;
+   my @out;
 
    if($world eq undef) {
       return clear_screen();
@@ -1037,67 +1168,48 @@ sub set_focus
    }
 
    @state{focus} = $world;
-   my @out;
-      push(@out,{ txt => "START PENDING"});
 
-
-   open(HISTORY,"> history.txt");
-
-   printf(HISTORY "%s\n", print_var(\%pending));
-
-   close(HISTORY);
-
-   if(defined @pending{@state{focus}}) {
-      my $array = @pending{@state{focus}};
-      push(@out,{ txt => "PENDING: $#$array"});
-      for my $i (0 .. out_size()) {
-         if($#$array == -1) {
-            last;
-         } else {
-            my $data = shift(@$array);
-            $$data{txt} = "# " . $$data{txt};
-            push(@out,$data);
-         }
-      }
-      if($#$array == -1) {
-         delete @pending{@state{focus}};
-      }
-   }
-
-   for my $i (reverse 0 .. $#history) {
-      if($#out + 1 > out_size()) {
-         last;
-      } else {
-         my $hash = @history[$i];
-         if($$hash{world} eq $world) {
-            for my $line (split(/\n/,wrap('','',$$hash{txt}))) {
-               $line =~ s/\r|\n//g;
-               $line =~ s/\s+$//;
-               my $data = { txt      => $line,
-                            ts       => $$hash{ts},
-                            world    => $$hash{world},
-                            gagged   => $$hash{gagged},
-                            code     => $$hash{code},
-                          };
-               unshift(@out,$data);
-               last if $#out + 1 > out_size();
+   if(!paused(@state{focus})) {                         # show pending data
+      while($#out + 1 <= out_size() && $#{@pending{$world}} >= 0) {
+         my $hash = shift(@{@pending{$world}});
+         for my $line (reverse wrap($$hash{txt})) {
+            if($#out + 1 >= out_size) {
+                 unshift(@{@pending{$world}},{ txt      => $line,
+                                               ts       => $$hash{ts},
+                                               world    => $$hash{world},
+                                               original => $$hash{original},
+                                               gagged   => $$hash{gagged},
+                                               code     => code(),
+                                               paused   => $$hash{paused},
+                                             }
+                        );
+            } else {
+               unshift(@out,$line . "\033[K");
             }
          }
       }
    }
 
+   my $pos = $#history;                                    # previous output
+   while($#out + 1 <= out_size() && $pos >= 0) {
+      if(@{@history[$pos]}{world} eq $world) {
+         for my $line (reverse wrap(@{@history[$pos]}{txt})) {
+            unshift(@out,$line . "\033[K");
+            last if $#out + 1 >= out_size();
+         }
+      }
+      $pos--;
+   }
+
+   for my $i (($#out + 1) .. out_size()) {                     # blank lines
+      unshift(@out,"\033[K");
+   }
+
    goto_xy(1,1);
    set_scroll_region("out");
-
-   for my $i (($#out+1) .. out_size()) {             # send any "blank" lines
-       printf("\033[K\n");
+   for my $i (0 .. $#out) {
+      printf("%s%s",@out[$i],($i == $#out) ? "" : "\n");
    }
-   for my $i (0 .. $#out) {                                   # send content
-      printf("\033[K%s%s",@{@out[$i]}{txt},
-#      @{@out[$i]}{code},
-      ($i == $#out) ? "" : "\n");
-   }
-
    display_cursor();
 }
 
@@ -1159,15 +1271,11 @@ sub init
    (@state{size_y},@state{size_x}) = GetTerminalSize();
    @state{size_x}   = 24               if(@state{size_x} eq undef);
    @state{size_y}   = 80               if(@state{size_y} eq undef);
-   $Text::Wrap::columns = @state{size_y};
-   $Text::Wrap::unexpand = 0;
 
    @state{kbbuffer} = [];
    @state{size_i}   = 3;
    @state{key_x}    = @state{size_x} - @state{size_i} + 1;
    @state{key_y}    = 1;
-   @state{pos_x}    = @state{size_x} - @state{size_i} + 1;
-   @state{pos_y}    = 1;
 
    clear_screen();
    update_bar();
