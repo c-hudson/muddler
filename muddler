@@ -1633,7 +1633,7 @@ sub read_tfworlds
    my $fn = shift;
    my ($file, $bad);
 
-   open($file,"/home/adrick/.tfworlds") ||
+   open($file,$fn) ||
       return echo("%% Unable to open '%s' for reading",$fn);
 
    while(<$file>) {
@@ -1818,7 +1818,7 @@ sub muddler
    command_init();
    redraw_screen();
    show_banner();
-   read_tfworlds("~/.tfworlds");
+   read_tfworlds("@ENV{HOME}/.tfworlds");
 #   Monitor::monitor(@pending{alpha}, "array");
 
     while(1) {

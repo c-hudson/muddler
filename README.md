@@ -3,10 +3,11 @@
    A simple perl based mudding client which should be run from a terminal.
 
 # Ideas to Impliment:
-```
-   These are things i plan to add in the furture. Most of them will be done
-   after the text based interface is extremely stable and usable.
+These are things i plan to add in the furture. Most of them will be done
+after the text based interface is extremely stable and usable.
 
+
+```
    o websocket support   the text interface will still run but you will be
                          able to point your web browser at the client and
                          get a web based client that you can connect /
@@ -20,6 +21,9 @@
                          something new, or maybe include code from teeny-
                          mush for a mush like language?
 ```
+# World Support
+   Worlds may be defined in your ~/.tfworlds directory. Currently the
+format of the file is exactly the same as tinyfugue's.
 # Supported Keys:
 ```
    Arrow Right & Left : Move one character in the buffer
