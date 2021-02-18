@@ -1,9 +1,9 @@
+# muddler
 
-muddler:
    A simple perl based mudding client which should be run from a terminal.
-   The expectation is that the screen size is 80x24.
 
-Ideas to Impliment:
+# Ideas to Impliment:
+```
    These are things i plan to add in the furture. Most of them will be done
    after the text based interface is extremely stable and usable.
 
@@ -19,10 +19,9 @@ Ideas to Impliment:
    o Scripting Language  Either impliment something tinyfugueish in nature,
                          something new, or maybe include code from teeny-
                          mush for a mush like language?
-                         
-          
-
-Supported Keys:
+```
+# Supported Keys:
+```
    Arrow Right & Left : Move one character in the buffer
    Arrow Up and Down  : Cycle to the next connected world.
    Escape-w           : Move to next active world
@@ -32,18 +31,21 @@ Supported Keys:
    Tab                : Move forward one screen full of text if the world is
                         paused by "more".
    Control-l          : Redraw the screen
-                       
-
-Debug Keys:
+```
+# Debug Keys:
+```
    Control-d          : Dump the contents of the history & pending buffer
                         to a file for debugging
    Control-r          : Reload muddler's perl code if there are any changes.
                         without dropping connections.
 
-Supported Commands:
+```
+# Supported Commands:
+```
    /world <world>     : Connect to the specified world as defined in the
                         .tfworlds file.
    /quit              : Quit muddler
    /reload            : Reload muddler's perl code if there are any changes.
                         without dropping connections.
    /dc                : Nothing yet.. not sure why this was added.
+```
