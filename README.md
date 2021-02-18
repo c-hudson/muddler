@@ -20,6 +20,7 @@ after the text based interface is extremely stable and usable.
    o Scripting Language  Either impliment something tinyfugueish in nature,
                          something new, or maybe include code from teeny-
                          mush for a mush like language?
+```
 # Installation
    Download the muddler perl script. The script is currently dependant upon 's Pmc's Telnet.pm which can be found at: https://sourceforge.net/projects/perlmudclient/files/perlmudclient/pmc%202.7/. Create a directoy named Pmc where muddler is located and place the Telnet.pm in this directory.
 # World Support
