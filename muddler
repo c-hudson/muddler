@@ -11,8 +11,10 @@ use strict;
 use Term::ReadKey;
 use Text::ParseWords;
 use Digest::MD5;
-use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
-                     TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
+#use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
+#                     TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
+use Net::Telnet ();
+
 use Carp;
 my %key;                            # key presses hash table for fast lookups
 my %history;                                                  # world history
@@ -296,77 +298,77 @@ sub ansi_remove
 #                                                                            #
 #----------------------------------------------------------------------------#
 
-sub TELQUAL_IS   { 0; }
-sub TELQUAL_SEND { 1; }
-sub TELOPT_MXP   { 91; }
-sub TELOPT_MSP   { 90; }
-
-sub negotiation {
-    my ($conn, $option, $is_remote, $is_enabled, $was_enabled,
-        $buf_position)= @_;
-    $is_remote||=0;
-    $is_enabled||=0;
-    $was_enabled||=0;
-    my ($noecho, $linemode);
-
-#    debug("negotiation: $option rem:$is_remote is_en:$is_enabled ".
-#          "was_en:$was_enabled");
-
-    if ($option==TELOPT_TTYPE) {
-        send_iac($conn,chr(TELNET_SB).
-                 chr(TELOPT_TTYPE).
-                 chr(TELQUAL_IS).
-                 $ENV{TERM}.
-                 chr(TELNET_IAC).
-                 chr(TELNET_SE)
-                );
-    } elsif($option == TELOPT_NAWS) {
-        send_naws($conn,1);
-    } elsif ($option==TELOPT_ECHO) {
-        if ($is_enabled) {
-            $noecho=1;
-        } else {
-            $noecho=0;
-        }
-        switch_echo();
-    } elsif ($option==TELOPT_SGA) {
-        if ($linemode && $is_enabled) {
-            debug('char-mode');
-            ReadMode(4);
-        } elsif (!$is_enabled && !$linemode) {
-            debug('line-mode');
-            ReadMode(0);
-        }
-        $linemode= !$is_enabled;
-    } elsif ($option==TELOPT_MXP || $option==TELOPT_MSP) {
-    } else {
-    }
-}
-
-sub send_iac {
-    my ($conn,$neg) = @_;
-
-    syswrite $conn, chr(TELNET_IAC).$neg, length($neg)+1, 0;
-}
-
-sub check_mcp_naws {
-   return 0;
-}
-
-sub send_naws {
-    my ($conn,$from_telopt)= @_;
-
-#    my ($height,$width)= $term->get_screen_size();
-    my ($height,$width) = (24,80);
-    if (check_mcp_naws() && !$from_telopt) {
-        mcp_send('dns-com-vmoo-client-screensize',
-                jols => $width, rows => $height);
-    } else {
-        send_iac($conn,chr(TELNET_SB).chr(TELOPT_NAWS).chr($width/256).
-                 chr($width%256).chr($height/256).chr($height%256).
-                 chr(TELNET_IAC).chr(TELNET_SE));
-    }
-}
+# sub TELQUAL_IS   { 0; }
+# sub TELQUAL_SEND { 1; }
+# sub TELOPT_MXP   { 91; }
+# sub TELOPT_MSP   { 90; }
+# 
+# sub negotiation {
+#     my ($conn, $option, $is_remote, $is_enabled, $was_enabled,
+#         $buf_position)= @_;
+#     $is_remote||=0;
+#     $is_enabled||=0;
+#     $was_enabled||=0;
+#     my ($noecho, $linemode);
+# 
+# #    debug("negotiation: $option rem:$is_remote is_en:$is_enabled ".
+# #          "was_en:$was_enabled");
+# 
+#     if ($option==TELOPT_TTYPE) {
+#         send_iac($conn,chr(TELNET_SB).
+#                  chr(TELOPT_TTYPE).
+#                  chr(TELQUAL_IS).
+#                  $ENV{TERM}.
+#                  chr(TELNET_IAC).
+#                  chr(TELNET_SE)
+#                 );
+#     } elsif($option == TELOPT_NAWS) {
+#         send_naws($conn,1);
+#     } elsif ($option==TELOPT_ECHO) {
+#         if ($is_enabled) {
+#             $noecho=1;
+#         } else {
+#             $noecho=0;
+#         }
+#         switch_echo();
+#     } elsif ($option==TELOPT_SGA) {
+#         if ($linemode && $is_enabled) {
+#             debug('char-mode');
+#             ReadMode(4);
+#         } elsif (!$is_enabled && !$linemode) {
+#             debug('line-mode');
+#             ReadMode(0);
+#         }
+#         $linemode= !$is_enabled;
+#     } elsif ($option==TELOPT_MXP || $option==TELOPT_MSP) {
+#     } else {
+#     }
+# }
+# 
+# sub send_iac {
+#     my ($conn,$neg) = @_;
+# 
+#     syswrite $conn, chr(TELNET_IAC).$neg, length($neg)+1, 0;
+# }
+# 
+# sub check_mcp_naws {
+#    return 0;
+# }
+# 
+# sub send_naws {
+#     my ($conn,$from_telopt)= @_;
+# 
+# #    my ($height,$width)= $term->get_screen_size();
+#     my ($height,$width) = (24,80);
+#     if (check_mcp_naws() && !$from_telopt) {
+#         mcp_send('dns-com-vmoo-client-screensize',
+#                 jols => $width, rows => $height);
+#     } else {
+#         send_iac($conn,chr(TELNET_SB).chr(TELOPT_NAWS).chr($width/256).
+#                  chr($width%256).chr($height/256).chr($height%256).
+#                  chr(TELNET_IAC).chr(TELNET_SE));
+#     }
+# }
 
 #----------------------------------------------------------------------------#
 #                                                                            #
@@ -396,6 +398,60 @@ sub send_naws {
 #    }
 # }
 
+# sub socket_connect
+# {
+#    my ($world,$host,$port,$ssl) = ( lc(shift), @_ );
+# 
+#    if(defined @socket{$world} && @socket{$world}->{sock}) {
+#       return echo("%% Already connected to %s",$world);
+#    }
+# 
+#    @history{$world} = [];
+#    @pending{$world} = [] if !defined @pending{$world};
+#    @socket{$world} = { name      => $world,
+#                        host      => $host,
+#                        port      => $port,
+#                        more      => 0,
+#                        more_last => 0,
+#                        last_read => -1,
+#                        lnum      => 0,
+#                      };
+#    @state{world} = $world;
+#    @socket{$world}->{pos} = scalar keys %socket;
+# 
+#    my $s = new Pmc::Telnet( $host, $port, $ssl, Timeout => 10);
+#    key_log("name=$world,host=$host,port=$port");
+# 
+#    if(!$s) {
+#       update_bar();
+#       return echo("%% Connection Failed.");
+#    }
+# 
+#    $s->option_callback(\&negotiation);
+#    $s->option_accept( Do   => TELOPT_SGA,
+#                       Do   => TELOPT_TTYPE,
+#                       Do   => TELOPT_NAWS,
+#                       Do   => TELOPT_ECHO,
+#                       Dont => TELOPT_MXP,
+#                       Dont => TELOPT_MSP,
+#                       Wont => TELOPT_MXP,
+#                       Wont => TELOPT_MSP,
+#                       Will => TELOPT_SGA,
+#                       Will => TELOPT_TTYPE,
+#                       Will => TELOPT_NAWS,
+#                       Will => TELOPT_ECHO);
+#    @socket{$world}->{sock} = $s;
+#    echo("%% Connection to %s succeeded.",$world);
+#    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
+#       out($world,
+#            "connect %s %s\n",
+#            @address{$world}->{user},
+#            @address{$world}->{pass}
+#           );
+#    }
+#    update_bar();
+# }
+
 sub socket_connect
 {
    my ($world,$host,$port,$ssl) = ( lc(shift), @_ );
@@ -417,27 +473,33 @@ sub socket_connect
    @state{world} = $world;
    @socket{$world}->{pos} = scalar keys %socket;
 
-   my $s = new Pmc::Telnet( $host, $port, $ssl, Timeout => 10);
-   key_log("name=$world,host=$host,port=$port");
+   my $s = Net::Telnet->new(host => $host,
+                            port => $port,
+                            binmode => 1,
+                            Timeout => 10,
+                            Errmode => "return");
+#   my $s = new Pmc::Telnet( $host, $port, $ssl, Timeout => 10);
+   key_log("name=$world,host=$host,port=$port,sock=$s");
+#   key_log("INPUT: '%s'\n",$s->getline(Timeout=>20));
 
    if(!$s) {
       update_bar();
       return echo("%% Connection Failed.");
    }
 
-   $s->option_callback(\&negotiation);
-   $s->option_accept( Do   => TELOPT_SGA,
-                      Do   => TELOPT_TTYPE,
-                      Do   => TELOPT_NAWS,
-                      Do   => TELOPT_ECHO,
-                      Dont => TELOPT_MXP,
-                      Dont => TELOPT_MSP,
-                      Wont => TELOPT_MXP,
-                      Wont => TELOPT_MSP,
-                      Will => TELOPT_SGA,
-                      Will => TELOPT_TTYPE,
-                      Will => TELOPT_NAWS,
-                      Will => TELOPT_ECHO);
+#    $s->option_callback(\&negotiation);
+#    $s->option_accept( Do   => TELOPT_SGA,
+#                       Do   => TELOPT_TTYPE,
+#                       Do   => TELOPT_NAWS,
+#                       Do   => TELOPT_ECHO,
+#                       Dont => TELOPT_MXP,
+#                       Dont => TELOPT_MSP,
+#                       Wont => TELOPT_MXP,
+#                       Wont => TELOPT_MSP,
+#                       Will => TELOPT_SGA,
+#                       Will => TELOPT_TTYPE,
+#                       Will => TELOPT_NAWS,
+#                       Will => TELOPT_ECHO);
    @socket{$world}->{sock} = $s;
    echo("%% Connection to %s succeeded.",$world);
    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
@@ -459,12 +521,20 @@ sub socket_handle_input
             pending($world,"% Connection closed to ". name($world));
             update_bar();
          } else {                 # favor keyboard input not socket in timeout
-            my @lines = @socket{$world}->{sock}->getlines(Timeout=>0);
-            if($#lines >= 0) {
-               for my $i (0 .. $#lines) { 
-                  pending($world,@lines[$i]);
+            # read all input
+            for(my $count=0;$count < 200;$count++) {
+               if(my $input = @socket{$world}->{sock}->getline(Timeout=>0)) {
+                  pending($world,$input);
+               } else {
+                  last;
                }
             }
+#            my @lines = @socket{$world}->{sock}->getlines(Timeout=>5);
+#            if($#lines >= 0) {
+#               for my $i (0 .. $#lines) { 
+#                  pending($world,@lines[$i]);
+#               }
+#            }
          }
       }
    }

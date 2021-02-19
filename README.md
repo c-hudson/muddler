@@ -22,7 +22,10 @@ after the text based interface is extremely stable and usable.
                          mush for a mush like language?
 ```
 # Installation
-   Download the muddler perl script. The script is currently dependant upon 's Pmc's Telnet.pm which can be found at: https://sourceforge.net/projects/perlmudclient/files/perlmudclient/pmc%202.7/. Create a directoy named Pmc where muddler is located and place the Telnet.pm in this directory.
+   Download the muddler perl script
+   chmod u+x muddler
+   ./muddler
+
 # World Support
    Worlds may be defined in your ~/.tfworlds directory. Currently the
 format of the file is exactly the same as tinyfugue's.
