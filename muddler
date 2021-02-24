@@ -423,7 +423,7 @@ sub ansi_remove
 #    key_log("name=$world,host=$host,port=$port");
 # 
 #    if(!$s) {
-#       update_bar();
+#       draw_bar();
 #       return echo("%% Connection Failed.");
 #    }
 # 
@@ -449,7 +449,7 @@ sub ansi_remove
 #            @address{$world}->{pass}
 #           );
 #    }
-#    update_bar();
+#    draw_bar();
 # }
 
 sub socket_connect
@@ -483,7 +483,7 @@ sub socket_connect
 #   key_log("INPUT: '%s'\n",$s->getline(Timeout=>20));
 
    if(!$s) {
-      update_bar();
+      draw_bar();
       return echo("%% Connection Failed.");
    }
 
@@ -509,7 +509,7 @@ sub socket_connect
            @address{$world}->{pass}
           );
    }
-   update_bar();
+   draw_bar();
 }
 
 sub socket_handle_input
@@ -519,7 +519,7 @@ sub socket_handle_input
          if(@socket{$world}->{sock}->eof()) {
             delete @socket{$world}->{sock};
             pending($world,"% Connection closed to ". name($world));
-            update_bar();
+            draw_bar();
          } else {                 # favor keyboard input not socket in timeout
             # read all input
             for(my $count=0;$count < 200;$count++) {
@@ -546,12 +546,25 @@ sub socket_handle_input
 #                                                                            #
 #----------------------------------------------------------------------------#
 
+sub echo
+{
+   my ($fmt,@args) = @_;
+
+   if(@state{world} eq undef ||
+      ($#{@pending{@state{world}}} == -1 && !defined @state{hist_pos})) {
+      echo_output($fmt,@args);
+   } else {
+      key_log("Pending_adds: %s",sprintf($fmt,@args));
+      pending(@state{world},sprintf($fmt,@args),0,1);
+   }
+}
+
 #
-# echo
+# echo_output
 #    Echo something to the screen and also log that output into the history
 #    see echo_nolog if it shouldn't be logged to the current history.
 #
-sub echo
+sub echo_output
 {
    my $txt;
 
@@ -571,12 +584,20 @@ sub echo
    }
 
    history(@state{world},$txt) if defined @state{world};
- 
-   update_scroll_region("output");
-   xy(output_end(),1);
+
+   if(@state{optimize_output} <= 1) { 
+      update_scroll_region("output");
+      xy(output_end(),1);
+      @state{optimize_output} = 2 if(@state{optimize_output} == 1);
+   }
+
+#   key_log("echo output: $$txt{txt} %s",code());
    printf("\n%s",$$txt{txt});
-   update_scroll_region("input");
-   xy(input_x(),input_y());
+
+   if(@state{optimize_output} == 0) {
+      update_scroll_region("input");
+      xy(input_x(),input_y());
+   }
 }
 
 sub echo_nolog
@@ -598,11 +619,17 @@ sub echo_nolog
 
 #   pending($txt);
  
-   update_scroll_region("output");
-   xy(output_end(),1);
+   if(@state{optimize_output} <= 1) { 
+      update_scroll_region("output");
+      xy(output_end(),1);
+      @state{optimize_output} = 2 if(@state{optimize_output} == 1);
+   }
    printf("\n%s",$$txt{txt});
-   update_scroll_region("input");
-   xy(input_x(),input_y());
+
+   if(@state{optimize_output} == 0) {
+      update_scroll_region("input");
+      xy(input_x(),input_y());
+   }
 }
 #
 # pausable_check
@@ -654,7 +681,7 @@ sub more_update
 
    return if(!defined @pending{$w} || !more($w));
 
-   update_bar();
+   draw_bar();
    if($#{@pending{$w}} >= 0) {
       @socket{$w}->{more_needed} = 1;
    } else {
@@ -667,7 +694,11 @@ sub paused
 {
    my $w = shift;
 
-   if(@socket{$w}->{more} == 1 && @socket{$w}->{more_needed} == 1) {
+   if(defined @state{hist_pos}) {
+      return 1;
+   } elsif((@socket{$w}->{more} == 1 && 
+      @socket{$w}->{more_needed} == 1) ||
+      defined @state{hist_pos}) {
       return 1;
    } else {
       return 0;
@@ -687,7 +718,9 @@ sub more
 {
   my $world = shift;
   $world = @state{world} if($world eq undef);
-  if(@socket{$world}->{more} == 1) {
+  if(@state{hist_pos}) {
+     return 1;
+  } elsif(@socket{$world}->{more} == 1) {
      if($#{@pending{$world}} == -1) {
         delete @socket{$world}->{more};
         return 0;
@@ -703,15 +736,12 @@ sub recent
    my ($world,$howlong) = @_;
    my $count = 0;
 
-   key_log("recent: start");
-
    my $array = @pending{$world};
    for(my $i = $#$array;$i >= 0 && time() - $$array[$i]->{ts} < $howlong; $i--){
       $count++;
    }
 
    my $array = @history{$world};
-   key_log("LAST: '%s' '%s'\n",@socket{$world}->{more_last},$#$array);
    for(my $i = $#$array;
        $i >= 0 && $i >= @socket{$world}->{more_last} && 
        time() - $$array[$i]->{ts} < $howlong;
@@ -725,7 +755,6 @@ sub recent
          $count++;
       }
    }
-   key_log("recent: end [$count]");
    return $count;
 }
 
@@ -742,32 +771,19 @@ sub replace
 
 sub pending_add
 {
-   my ($world,$line) = @_;
+   my ($world,$line,$gagged,$original) = @_;
 
    my $array = @pending{$world};
-   my $gagged = 0;
-
-   my $modified= replace($world,$line);
-   if($modified ne undef) {
-      $$array[$#$array+1] = { txt       => $modified,
-                              id        => @socket{@state{world}}->{lnum}++,
-                              ts        => time(),             # add entry
-                              gagged    => 0,             # was line gagged?
-                              pend_code => code(),
-                              original  => $#$array + 2,
-                              internal  => 0,
-                             };
-      $gagged = 1;
-   }
 
    $$array[$#$array+1] = { txt       =>  $line,
-                           id        => @socket{@state{world}}->{lnum}++,
+                           id        => @socket{@state{world}}->{lnum},
                            ts        => time(),             # add entry
                            gagged    => $gagged,     # was line gagged?
                            pend_code => code(),
-                           original  => 1
+                           original  => $original
                           };
 
+   return if !$original;
    if(!more($world) && on_world($world) && 
       recent($world,30)  > @state{size_x} * .55) {
       @socket{$world}->{more} = 1;
@@ -795,8 +811,17 @@ sub pending
    if($txt eq undef) {
       pending_add($world,"");
    } else {
+      @socket{@state{world}}->{lnum}++;
+
+      my $modified=replace($world,$txt);
+      if($modified ne undef) {
+         for my $line (ansi_wrap($modified)) {
+            pending_add($world,$line,0,0);
+         }
+      }
+
       for my $line (ansi_wrap($txt)) {
-         pending_add($world,$line);
+         pending_add($world,$line,($modified eq undef) ? 0 : 1,1);
       }
    }
 
@@ -831,11 +856,12 @@ sub show_output
    more_check($w);
    return if(paused($w));
 
+   optimize_start();
    while($#{@pending{$w}} >= 0 && $count < @state{size_x} - 3) {
       my $txt = shift(@{@pending{$w}});
 
       if(!$$txt{gagged}) {
-         echo($txt);
+         echo_output($txt);
       } else {
          history($w,$txt);
       }
@@ -844,6 +870,7 @@ sub show_output
    delete @state{activity}->{$w} if defined @state{activity}->{$w};
 
    more_update($w);
+   optimize_end();
 }
 
 sub line_start_pos
@@ -883,24 +910,27 @@ sub input_y
 sub key_init
 {
    delete @key{keys %key};
-   @key{def}         = sub { return key_default(@_);             };
-   @key{4}           = sub { return key_dump(@_);                };
-   @key{9}           = sub { return key_tab(@_);                 };
-   @key{10}          = sub { return key_return(@_);              };
-   @key{12}          = sub { return key_ctl_l(@_);               };
-   @key{14}          = sub { return key_ctl_n(@_);               };
-   @key{16}          = sub { return key_ctl_p(@_);               };
-   @key{18}          = sub { return key_ctl_r(@_);               };
-   @key{21}          = sub { return key_ctl_u(@_);               };
-   @key{23}          = sub { return key_ctl_w(@_);               };
-   @key{27}          = sub { return key_escape(@_);              };
-   @key{127}         = sub { return key_delete(@_);              };
-   @key{multi}       = sub { return key_multi(@_);               };
-   @key{multi_119}   = sub { return key_esc_w(@_);               };
-   @key{multi_91_65} = sub { return key_up(@_);                  };
-   @key{multi_91_66} = sub { return key_down(@_);                };
-   @key{multi_91_67} = sub { return key_right(@_);               };
-   @key{multi_91_68} = sub { return key_left(@_);                };
+   @key{def}             = sub { return key_default(@_);             };
+   @key{4}               = sub { return key_dump(@_);                };
+   @key{9}               = sub { return key_tab(@_);                 };
+   @key{10}              = sub { return key_return(@_);              };
+   @key{12}              = sub { return key_ctl_l(@_);               };
+   @key{14}              = sub { return key_ctl_n(@_);               };
+   @key{16}              = sub { return key_ctl_p(@_);               };
+   @key{18}              = sub { return key_ctl_r(@_);               };
+   @key{21}              = sub { return key_ctl_u(@_);               };
+   @key{23}              = sub { return key_ctl_w(@_);               };
+   @key{27}              = sub { return key_escape(@_);              };
+   @key{127}             = sub { return key_delete(@_);              };
+   @key{multi}           = sub { return key_multi(@_);               };
+   @key{multi_119}       = sub { return key_esc_w(@_);               };
+   @key{multi_113}       = sub { return key_esc_q(@_);               };
+   @key{multi_91_53_126} = sub { return key_pgup(@_);                };
+   @key{multi_91_54_126} = sub { return key_pgdn(@_);                };
+   @key{multi_91_65}     = sub { return key_up(@_);                  };
+   @key{multi_91_66}     = sub { return key_down(@_);                };
+   @key{multi_91_67}     = sub { return key_right(@_);               };
+   @key{multi_91_68}     = sub { return key_left(@_);                };
 }
 
 
@@ -918,13 +948,13 @@ sub ansi_wrap
    my ($start,$last,$len,@out) = (0);
 
    for my $i (0 .. $#{$$str{ch}}) {
-      if(ansi_char($str,$i) =~ /[ ,]/ && $i - $start <= @state{size_y} - 1) {
+      if(ansi_char($str,$i) =~ /[ ,\/\\]/ && $i-$start <= @state{size_y} - 1) {
          $len = $i + 1;                           # scan for breaking points
       }
 
-      if($i - $start >= @state{size_y} - 1) {       # past max, use last point
+      if($i - $start >= @state{size_y} - 2) {       # past max, use last point
          # use $len unless at end of string or no breakpoints found
-         my $cut = ($#{$$str{ch}} == $i || $len eq undef) ? $i : $len;
+         my $cut = (ansi_length($str) == $i+1 || $len eq undef) ? ($i+1) : $len;
          push(@out,ansi_substr($str,$start,$cut - $start));
          $start = $cut;
          $len = undef;
@@ -960,7 +990,7 @@ sub rewrap
 
 sub redraw_output
 {
-   my $flag = shift;                       # don't show internal messages?
+   my ($flag) = @_;                        # don't show internal messages?
    my ($y,@out,$paused);
    my ($start,$last) = @_;
    my $count;
@@ -973,7 +1003,7 @@ sub redraw_output
          # populate history with some new entries
          
          my $pend = @pending{$w};
-         for(my $i=0;$#$pend >= 0 && $count <= output_end() * 0.55;$i++) {
+            for(my $i=0;$#$pend >= 0 && $count <= output_end() * 0.55;$i++) {
             $count++ if(!$$pend[$#$pend]->{gagged});
             history($w,shift(@$pend));
          }
@@ -982,7 +1012,17 @@ sub redraw_output
 
       # show old history + recently added entries
       my $hist = @history{$w};
-      for(my $i=$#$hist;$#out <= output_end()-1 && $i >= 0;$i--) {
+      if(defined @state{hist_pos}) {
+         $start = @state{hist_pos};
+      } else {
+         $start = $#$hist;
+      }
+
+      if($start > $#$hist) {
+         key_log("### HIST IS TO BIG: $start $#$hist");
+      }
+      
+      for(my $i=$start;$#out <= output_end()-1 && $i >= 0;$i--) {
          if(!$$hist[$i]->{gagged} && (!$flag ||
             $flag && $$hist[$i]->{internal} == 0)) {
             if($$hist[$i]->{internal} <= 1) {
@@ -998,9 +1038,11 @@ sub redraw_output
    }
 
    # send the screen
+   optimize_start();
    for my $i (0 .. $#out) { 
       echo_nolog("%s",@out[$i]);
    }
+   optimize_end();
 
    # move cursor back to input area
    xy(input_x(),input_y());
@@ -1009,7 +1051,6 @@ sub redraw_output
 sub redraw_input
 {
    update_scroll_region("input",1);
-   key_log("input_start: '%s' '%s'\n",input_start(),input_x());
    xy(input_start(),1,1);
    my $start = @state{input_offset}+1;
    my $end = $start + @state{input_size} - 1;
@@ -1028,9 +1069,74 @@ sub redraw_screen
    printf("\033[r\033[2J") if $clear;
    clear_screen();
    redraw_output($flag);
-   update_bar(1);
+   draw_bar(1);
    redraw_input();
    key_log("redraw_screen: end`");
+}
+
+sub scan_history
+{
+   my $inc = shift;
+   my $count = 0;
+   my $pos;
+   
+    if($inc > 0 &&
+       (@state{hist_pos} == $#{@history{@state{world}}} ||
+       !defined @state{hist_pos} || @state{hist_pos} eq undef)) {
+       delete @state{hist_pos};
+       return 1;
+    } elsif(abs($inc) != 1) {
+       die("scan_history incrament must be -1 or +1");
+    } elsif($inc < 0 && (!defined @state{hist_pos} || 
+            @state{hist_pos} eq undef)) {
+       $pos = $#{@history{@state{world}}};
+    } else {
+       $pos = @state{hist_pos};
+    }
+      
+   my $hist = @history{@state{world}};
+   while($pos > 0 && $pos <= $#$hist && $count <= output_end() - 5) {
+      if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
+         @state{hist_start} += $inc;
+         $count++;
+      }
+      $pos += $inc;
+   }
+
+   $pos++ if($pos == 0);
+   $pos = $#$hist if ($pos > $#$hist);
+
+   if($pos == $#$hist && $inc > 0) {
+      delete @state{hist_pos};
+      return 1;
+   } elsif($count == 0) {
+      # do nothing;
+      return 0;
+   } else {
+      @state{hist_pos} = $pos;
+      return 1;
+   }
+}
+
+sub key_pgup
+{
+   my $w = @state{world};
+   my $count = -1;
+
+   if(scan_history(-1)) {
+      redraw_output();
+   }
+   draw_bar();
+}
+
+sub key_pgdn
+{
+   my $w = @state{world};
+
+   if(scan_history(1)) {
+      redraw_output();
+   }
+   draw_bar();
 }
 
 sub key_dump
@@ -1101,12 +1207,18 @@ sub key_ctl_l
 
 sub key_tab
 {
-#   key_log("key_tab: called");
    return if @state{world} eq undef;
-   delete @socket{@state{world}}->{more_needed};
-   @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
-   show_output(@state{world});
-   delete @socket{@state{world}}->{more} if($#{@pending{@state{world}}} == 1);
+
+   if(@state{hist_pos}) {                 # same as key_pgdn, just call it
+      key_pgdn();
+   } else {
+      delete @socket{@state{world}}->{more_needed};
+      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
+      show_output(@state{world});
+      if($#{@pending{@state{world}}} == 1) {
+         delete @socket{@state{world}}->{more};
+      }
+   }
 }
 
 # key_ctl_u
@@ -1159,7 +1271,7 @@ sub out
    $world = @state{world} if($world eq undef);
    if(defined @socket{$world} && defined @socket{$world}->{sock}) {
       my $sock = @socket{@state{world}}->{sock};
-      key_log("$world> $fmt",@args);
+#      key_log("$world> $fmt",@args);
       printf($sock "$fmt",@args);
       @socket{$world}->{last_send} = time();
    }
@@ -1172,16 +1284,13 @@ sub key_return
 
    if($input =~ /^\/([^ ]+)\s*/) {
       if(defined @command{lc($1)}) {
-         key_log("CMD: '%s'\n",$input);
          &{@command{lc($1)}}($');
       } else {
-         key_log("!CMD: '%s'\n",$input);
-         echo("%% %s: no such command or macro",lc($1));
+         pending(@state{world},"%% %s: no such command or macro",lc($1));
       }
    } elsif(!defined @state{world}) {
-      key_log("RETURN: '%s'\n",$input);
+     # do nothing
    } elsif(defined @socket{@state{world}}->{sock}) {
-      key_log("RETURN: '%s'\n",$input);
       out(@state{world},"%s\n",$input);
    }
    unshift(@input,@state{line});                        # store keyboard history
@@ -1193,7 +1302,6 @@ sub key_return
    @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
    input_clear();
    xy(input_x(),input_y());
-   key_log("key_return: done");
 }
 
 sub input_lines
@@ -1341,12 +1449,8 @@ sub key_up
    $pos++;
    $pos = 1 if $pos > scalar keys %socket;
 
-   @state{world} = (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
-                    keys %socket)[$pos-1];
-   delete @state{activity}->{@state{world}};
-   redraw_output();
-   update_bar();
-   sort keys %socket
+   switch_world((sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
+                    keys %socket)[$pos-1])
 }
 
 sub key_down
@@ -1359,11 +1463,8 @@ sub key_down
       $pos--;
    }
 
-   @state{world} = (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
-                     keys %socket)[$pos-1];
-   redraw_output();
-   update_bar();
-   sort keys %socket
+   switch_world((sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
+                 keys %socket)[$pos-1]);
 }
 
 sub key_right
@@ -1379,6 +1480,18 @@ sub key_right
    }
 }
 
+sub switch_world
+{
+   my $world = shift;
+
+   return if $world eq undef;
+   @state{world_last} = @state{world};
+   @state{world} = $world;
+   delete @state{activity}->{$world};
+   redraw_output();
+   draw_bar();
+}
+
 #
 # key_esc_w
 #   Go to the next active world
@@ -1390,12 +1503,7 @@ sub key_esc_w
    my $new = (keys %{@state{activity}})[0];
    return if $new eq undef;
 
-   @state{world} = $new;
-   delete @state{activity}->{@state{world}};
-
-   redraw_output();
-   update_bar();
-   sort keys %socket
+   switch_world($new);
 }
 
 #
@@ -1426,6 +1534,16 @@ sub update_scroll_region
    }
 }
 
+sub is_in
+{
+   my ($txt,@list) = @_;
+
+   for my $i (0 .. $#list) {
+      return 1 if($txt eq @list[$i]);
+   }
+   return 0;
+}
+
 #
 # key_multi
 #   Process multiple character keys. key_escape will start the sequence
@@ -1437,18 +1555,17 @@ sub key_multi
    my $ch = shift;
 
    my $array = @state{multikey};
-
-   if($#$array == -1) {                         # second character recieved
-      if($ch eq "[") {
-         return push(@$array,$ch);
-      } elsif(defined @key{"multi_" . ord($ch)}) {
-         return &{@key{"multi_" . ord($ch)}}($ch);
-      }
-   } elsif($#$array == 0) {                       # third character recieved
-      if(defined @key{"multi_" . ord($$array[0]) . "_" . ord($ch)}) {
-         return &{@key{"multi_" . ord($$array[0]) . "_" . ord($ch)}}($ch);
-      }
+   push(@$array,ord($ch));
+   if(defined @key{"multi_" . join('_',@$array)}) {
+       return &{@key{"multi_" . join('_',@$array)}}($ch);
    }
+
+   if($#$array == 0) {                         # second character recieved
+      return if($ch eq "[");
+   } elsif($#$array == 1) {                       # third character recieved
+      return if(is_in(ord($ch),53,54));                    # pgup/pgdn 4 char
+   }
+
    delete @state{multikey};                              # no match or error, 
    key_process($ch);                          # process character generically
 }
@@ -1465,10 +1582,10 @@ sub key_process
    return unless defined $input;
 
    for my $ch (split(//,$input)) {
-#      key_log("ch: '%s'",ord($ch));
+#      key_log("ch: '%s' -> '%s'",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
          &{@key{ord($ch)}}($ch);
-      } elsif(defined @state{multikey} && $#{@state{multikey}} <=2) {
+      } elsif(defined @state{multikey} && $#{@state{multikey}} <= 2) {
          &{@key{multi}}($ch);
       } else {
          &{@key{def}}($ch);
@@ -1478,7 +1595,7 @@ sub key_process
 
 sub clear_screen
 {
-    xy(1,1);
+#    xy(1,1);
     for my $line (1 .. @state{size_x}) {
        if($line == @state{size_x}) {
           printf("\033[K");
@@ -1492,40 +1609,65 @@ sub xy
 {
    my ($x,$y,$use_the_force_luke) = @_;
 
-   if(@state{prev_xy} ne "$x,$y" || $use_the_force_luke) {
+#   if(@state{prev_xy} ne "$x,$y" || $use_the_force_luke) {
       printf("\033[%s;%sH",$x,$y);
 #      key_log("POS: '%s','%s' [%s]",$x,$y,code());
-      @state{prev_xy} = "$x,$y";
+#      @state{prev_xy} = "$x,$y";
+#   }
+}
+
+sub more_bar
+{
+   if(!defined @state{world} || @state{world} eq undef) {
+      return;
+   } elsif(defined @state{hist_pos}) {
+      return sprintf("\033[7mHist %4s\033[0m",@state{hist_pos});
+   } elsif($#{@pending{@state{world}}} >= 0) {
+      return sprintf("\033[7mMore %4s\033[0m",$#{@pending{@state{world}}} + 1);
    }
 }
 
-sub update_bar
+sub more_count
+{
+   if(@state{world} ne undef) {
+      return $#{@pending{@state{world}}} + 1;
+   }
+}
+
+sub hist_pos
+{
+   if(!defined @state{hist_pos}) {
+      return undef;
+   } else {
+      return @state{hist_pos};
+   }
+}
+
+#
+# draw_bar
+#    draw/redraw the input bar if need.
+#
+sub draw_bar
 {
    my $force = shift;
    my $new = time();
-   my ($hr,$min,$active,$more) = ((localtime($new))[2,1]);
+   my ($hr,$min,$active) = ((localtime($new))[2,1]);
    $hr -= 12 if($hr > 12);
 
    if($force || "$hr$min" ne @state{bar_time} ||
-      (@state{world} ne undef && @state{bar_world} ne @state{world}) ||
-      scalar keys %{@state{activity}} > 0 ||
+      @state{bar_activity} ne scalar keys %{@state{activity}} ||
       @state{bar_name} ne name(@state{world}) ||
-      (@state{world} ne undef && 
-      @state{bar_more} != $#{@pending{@state{world}}} + 1)) {
-
-      xy(@state{size_x} - @state{input_size},0);
+      @state{bar_more} ne more_count() ||
+      @state{bar_pos} ne hist_pos()) {
       @state{bar_time} = "$hr$min";
       @state{bar_name} = name(@state{world});
+      @state{bar_more} = more_count();
+      @state{bar_pos} = hist_pos();
+      my $more = more_bar();
 
-      if(@state{world} ne undef) {
-         @state{bar_world} = @state{world};
-         @state{bar_more} = $#{@pending{@state{world}}} + 1;
-         if(more(@state{world})) {
-            $more = sprintf("\033[7mMore %s%s\033[0m",
-                " " x (4-length(@state{bar_more})),@state{bar_more});
-         }
-      }
-      $more = "_" x 9 if($more eq undef);
+      @state{bar_activity} = scalar keys %{@state{activity}};
+
+      xy(@state{size_x} - @state{input_size},0);
 
       if(defined @state{activity}->{@state{world}}) {
          delete @state{activity}->{@state{world}};
@@ -1534,18 +1676,18 @@ sub update_bar
          $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
       }
 
-      printf("%s_%s%s_%s______%s:%02d",
+      printf("%s%s_%s%s_%s______%s:%02d",
+             "_" x (9 - ansi_length($more)),
              $more,
              name(),
-             "_" x (@state{size_y} - length(name() . "$more$active$hr") - 11),
+             "_" x (@state{size_y} - length(name()."$active$hr")-20),
              $active,
              $hr,
              $min
             );
+      update_scroll_region("input");
+      xy(input_x(),input_y());
    }
-         
-   update_scroll_region("input");
-   xy(input_x(),input_y());
 }
 
 sub input_start
@@ -1583,10 +1725,18 @@ sub code
    my $type = shift;
    my @stack;
 
+   my $prev = @state{chksum};
    if(!$type || $type eq "short") {
       for my $line (split(/\n/,Carp::shortmess)) {
          if($line =~ /at ([^ ]+) line (\d+)\s*$/) {
-            push(@stack,$2);
+            my ($fun,$ln) = ($1,$2);
+            if(defined $$prev{$fun}) {
+#               key_log("code: $line");
+               push(@stack,(@{$$prev{$fun}}{line} + $ln) . "[$fun]");
+            } else {
+#               key_log("!code: $line");
+               push(@stack,"$ln*");
+            }
          }
       }
       return join(',',@stack);
@@ -1620,7 +1770,20 @@ sub command_init
    @command{dc}          = sub { return cmd_dc(@_);                        };
    @command{listsockets} = sub { return cmd_dc(@_);                        };
    @command{l}           = sub { return cmd_listsockets(@_);               };
+}
 
+sub key_esc_q
+{
+   my $spell;
+   my $input = join('',@{@state{line}});
+   $input =~ s/[^a-zA-Z0-9]+//g;
+   open($spell,"echo $input | /home/adrick/mush/tfspell |") ||
+      return echo("%% Unable to run tfspell");
+   while(<$spell>) {
+      $_ =~ s/\r|\n//g;
+      echo("%% $_") if($_ !~ /^\s*$/);
+   }
+   close($spell);
 }
 
 sub cmd_listsockets
@@ -1646,12 +1809,17 @@ sub cmd_reload
 
 sub cmd_world
 {
-   my $txt = trim(shift);
+   my $txt = lc(trim(shift));
 
    key_log("cmd_world: called\n");
-   if(!defined @address{lc($txt)}) {
+   if(!defined @address{$txt}) {
+      key_log("# non-existing world");
       return echo("% CONNECT: no such world '%s'",$txt);
+   } elsif(defined @socket{$txt} && defined @socket{$txt}->{sock}) {
+      key_log("# existing world");
+      switch_world($txt);
    } else {
+      key_log("# connecting to world");
       echo("% Trying to connect to: '%s' => '%s'",$txt,@address{$txt}->{host});
       socket_connect(@address{$txt}->{name},
                      @address{$txt}->{host},
@@ -1678,10 +1846,23 @@ sub center
     return sprintf("%s%s",(" " x ((@state{size_y} - length($txt)-1) / 2)),$txt);
 }
 
+sub optimize_start
+{
+   @state{optimize_output} = 1;
+}
+
+sub optimize_end
+{
+   @state{optimize_output} = 0;
+   update_scroll_region("input");
+   xy(input_x(),input_y());
+}
+
 sub show_banner
 {
    open(PROG,$0) || return;
 
+   optimize_start();
    while(<PROG>) {
       s/\n|\r//g;
       if($. > 24) {                                  # read only 24 lines
@@ -1696,6 +1877,7 @@ sub show_banner
    for my $i (0 .. 2) {
       echo("%s","");
    }
+   optimize_end();
 }
 
 sub read_tfworlds
@@ -1728,6 +1910,7 @@ sub read_tfworlds
 sub get_checksums
 {
    my ($file,$pos,%data);
+   my $ln = 1;
 
    open($file,$0) ||
      return echo("%% Unable to read source file, /reload will be disabled");
@@ -1738,7 +1921,7 @@ sub get_checksums
          @data{$pos} = { chk => Digest::MD5->new };
          @data{$pos}->{chk}->add($line);
          @data{$pos}->{src} .= qq[#line 0 "$pos"\n] . $line;
-         @data{$pos}->{line} = $.;
+         @data{$pos}->{line} = $ln;
       } elsif($pos ne undef && $line =~ /^}\s*$/) {
          @data{$pos}->{src} .= $line;
          @data{$pos}->{chk}->add($line);
@@ -1749,6 +1932,7 @@ sub get_checksums
          @data{$pos}->{src} .= $line;
          @data{$pos}->{chk}->add($line);
       }
+      $ln++;
    }
    close($file);
 
@@ -1771,21 +1955,27 @@ sub reload_code
    my $old = @state{chksum};
    $old = {} if $old eq undef;
 
+   key_log("reload_code: start");
+   echo("%% reload_code: start");
    for my $key (keys %$new) {
-      if(!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}
+      if((@state{state} eq "init" || 
+         (!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}))
          && $key ne "muddler") {
          
-         echo("%% Reloading: %s",$key);
+         key_log("%% Reloading: %s",$key) if @state{state} ne "init";
+         echo("%% Reloading: %s",$key) if @state{state} ne "init";
          eval($$new{$key}->{src});
          if($@) {
-            echo("%% Error reloading $key: %s",$@)
+            echo("%% Error reloading $key: %s",$@);
+            $$new{$key}->{chk} = -1;
          } else {
-            echo("%% Reloading: %s [done]",$key);
+            echo("%% Reloading: %s [done]",$key) if @state{state} ne "init";
          }
       }
    }
    @state{chksum} = $new;
    command_init();
+   key_log("reload_code: done");
 }
 
 #
@@ -1859,7 +2049,7 @@ sub tick
 {
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && time()-@socket{$w}->{last_send} > 300){
-         key_log("tick: $w");
+         key_log("tick: $w [%s]",time()-@socket{$w}->{last_send});
          if($w eq "del") {
             out($w,"score\n");
          } else {
@@ -1868,6 +2058,7 @@ sub tick
          @socket{$w}->{last_send} = time();
       }
    }
+
    my $prev = "@state{size_y},@state{size_x}";
    (@state{size_y},@state{size_x}) = GetTerminalSize();
    if($prev ne "@state{size_y},@state{size_x}") {
@@ -1878,6 +2069,9 @@ sub tick
 
 sub muddler
 {
+   @state{state} = "init";
+   (@state{size_y},@state{size_x}) = GetTerminalSize();
+
    `del key.log`;
    @state{activity} = {};
    @state{chksum} = get_checksums();
@@ -1889,7 +2083,9 @@ sub muddler
    redraw_screen();
    show_banner();
    read_tfworlds("@ENV{HOME}/.tfworlds");
+   reload_code();
 #   Monitor::monitor(@pending{alpha}, "array");
+   @state{state} = "post-init";
 
     while(1) {
 
@@ -1901,7 +2097,7 @@ sub muddler
          if($@) {
            key_log("Crash? $@");
          }
-         update_bar();
+         draw_bar();
 
          if(time() - @state{tick_last} >= 10) {
             tick();
@@ -1915,4 +2111,32 @@ sub muddler
    }
 }
 
+sub read_file
+{
+   my $fn =shift;
+   my $file;
+
+   open($file,$fn) || 
+      die("Could not open '$fn' for reading");
+   my $result = join("",<$file>);
+   close($file);
+   return $result;
+}
 muddler();
+# 
+# my $txt = <<__EOF__;
+# +-----+-------------------+------------+------------+-------------------------+
+# | Obvious Exits:          |                         |                         |
+# | Ecksperta <104>         | Eternal Peace <EP>      |                         |
+# \\-------------------------+-------------------------+-------------------------/
+# __EOF__
+# # #my $txt = "  QR Code, a pair of dice, whatchamadingy, HIGHlow Park Map, 'object', Mayan calendar, Pog(tm), BFG - Brazil's Fat Globals, Vending Machine, Holiday Hawk, christmas knob, Newspaper of Shame, Mood Ring, charset sampler, Mandelbrot, taco soup, Hypnotoad, SIGN: Feed the Adrick, Oracle, temperature converter, Rowex-sized Deep Fryer, SIGN: Don't Feed the Adrick, Ball-O-Shame, metroid, kebab, Sign: cHia Blog Zone and Narcissism Station, Deadbolt, the goat, can of Dr. Pepper, Kitty, the Godpidgeon, RPG Dice, A pack of dingos, Ominous HAT rack, Lucien, hug-o-matic wearing an Eratl mask, pickles the quote-o-matic, Pog Jr., pony, Boggle, AcroPhobia, Yahtzee Object From Hell, and Fake shelf";
+# # 
+# 
+# 
+# for my $line (split(/\n/,read_file("../mush/iweb.txt"))) {
+# #   printf("#$line#\n");
+#    for my $sub (ansi_wrap($line)) {
+#       printf("#$sub#\n");
+#    }
+# }
