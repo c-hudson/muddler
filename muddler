@@ -1,11 +1,10 @@
 #!/usr/bin/perl -I .
-#-#             ( A 1990dies mud client written today )    
-#-#          O                       ___   ___ _               
-#-#      o _____    _____  __ __  __| _/__| _/| |  ___________ 
-#-#    _||_| u |   /     \|  |  \/ __ |/ __ | | | / __ \_  __ \
-#-#   (        |==|  Y Y  \  |  / /_/ / /_/ | | |_\  __/|  | \/
-#-#   /-()---()   |__|_|__/____/\____/\_____/ |___/\___/|__|   
-
+#-#         ( A 90dies mud client written today ) 
+#-#       o               v1.0a                   
+#-#      o _____                __  __ _          
+#-#    _||_| u |    _ _  _ _ __| /_| /| |  __ ____
+#-#   (        |== / v \| | |  _ | _ || |/ -_) __/
+#-#   /-()---()   |_|_|_|___/\___\___/|_|\__/_/   
 use strict;
 # use Monitor qw(monitor);
 use Term::ReadKey;
@@ -22,6 +21,7 @@ my %socket;                                              # socket information
 my %command;                            # command hash table for fast lookups
 my %pending;                                            # unseen world output
 my %address;                                                # world addresses 
+my %help;
 my @input;                                                    # input history
 
 my %state = (
@@ -546,12 +546,68 @@ sub socket_handle_input
 #                                                                            #
 #----------------------------------------------------------------------------#
 
+#
+# in_hist
+#    Is the current world reviewing the history buffer?
+#
+sub in_hist
+{
+   if(no_world() || !defined @socket{@state{world}}) {
+      return 0;
+   } elsif(defined @socket{@state{world}}->{hist_pos}) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
+#
+# hist_pos
+#    Return if the history buffer position, set it, or delete it.
+#
+sub hist_pos
+{
+   my $action = shift;
+
+   if(no_world()) {
+      return;
+   } elsif($action eq "delete") {
+      delete @socket{@state{world}}->{hist_pos};
+   } elsif($action ne undef) {
+      @socket{@state{world}}->{hist_pos} = $action;
+   } else {
+      return @socket{@state{world}}->{hist_pos};
+   }
+}
+
+#
+# has_pending
+#    Does the currently opened world have any pending output
+#
+sub has_pending
+{
+   return ($#{@pending{@state{world}}} >= 0) ? 1 : 0;
+}
+
+#
+# no_world
+#   test to see if no worlds have been opened yet.
+#
+sub no_world
+{
+   return (!defined @state{world} || @state{world} eq undef) ? 1 : 0;
+}
+
+#
+# echo
+#    Echo output to the console. If there is pending output or we're in the
+#    history buffer, through the output into the pending queue.
+#
 sub echo
 {
    my ($fmt,@args) = @_;
 
-   if(@state{world} eq undef ||
-      ($#{@pending{@state{world}}} == -1 && !defined @state{hist_pos})) {
+   if(@state{world} eq undef || !has_pending()  && !in_hist()) {
       echo_output($fmt,@args);
    } else {
       key_log("Pending_adds: %s",sprintf($fmt,@args));
@@ -563,6 +619,11 @@ sub echo
 # echo_output
 #    Echo something to the screen and also log that output into the history
 #    see echo_nolog if it shouldn't be logged to the current history.
+#
+#    This subroutine support an output optimization via optimize_start /
+#    optimize_end when multiple lines may be sent to the output window.
+#    This will disable moving the cursor back to the input window when
+#    done which will send less output.
 #
 sub echo_output
 {
@@ -600,6 +661,17 @@ sub echo_output
    }
 }
 
+#
+# echo_nolog
+#    The same thing as echo_output but does not log anything. This should
+#    be a flag or something to echo_output but a reasonable interface has
+#    not been determined.
+#
+#    This subroutine support an output optimization via optimize_start /
+#    optimize_end when multiple lines may be sent to the output window.
+#    This will disable moving the cursor back to the input window when
+#    done which will send less output.
+#
 sub echo_nolog
 {
    my $txt;
@@ -631,6 +703,8 @@ sub echo_nolog
       xy(input_x(),input_y());
    }
 }
+
+
 #
 # pausable_check
 #    Check to see if the socket should have "more" turned on based upon
@@ -675,6 +749,19 @@ sub more_check
    }
 }
 
+#
+# more_update
+#
+#    Manage the more and more_needed. This should be called after more
+#    has been set and after a page full of lines have been shown.
+#
+#    Events should flow like this:
+#
+#       o Signal more should be turned on by setting the more variable.
+#       o Show a page full of lines
+#       o Require that a tab be pressed by setting the more_needed variable
+#         before any more pending output is shown.
+#
 sub more_update
 {
    my $w = shift;
@@ -690,21 +777,27 @@ sub more_update
    }
 }
 
+#
+# paused
+#    More might be on but should new output be paused?
+#
 sub paused
 {
    my $w = shift;
 
-   if(defined @state{hist_pos}) {
+   if(in_hist()) {
       return 1;
-   } elsif((@socket{$w}->{more} == 1 && 
-      @socket{$w}->{more_needed} == 1) ||
-      defined @state{hist_pos}) {
+   } elsif(@socket{$w}->{more} == 1 && @socket{$w}->{more_needed} == 1) { 
       return 1;
    } else {
       return 0;
    }
 }
 
+#
+# on_world
+#   Determine if the current world is the one specified.
+#
 sub on_world
 {
    return (@state{world} eq @_[0]) ? 1 : 0;
@@ -718,7 +811,8 @@ sub more
 {
   my $world = shift;
   $world = @state{world} if($world eq undef);
-  if(@state{hist_pos}) {
+
+  if(in_hist()) {             # in history buffer is just a version of more
      return 1;
   } elsif(@socket{$world}->{more} == 1) {
      if($#{@pending{$world}} == -1) {
@@ -731,6 +825,12 @@ sub more
    }
 }
 
+#
+# recent
+#   Scan through the most recent output from the world and determine how
+#   many lines have happened in $howlong seconds. This is used by to determine
+#   if more should be turned on.
+#
 sub recent
 {
    my ($world,$howlong) = @_;
@@ -758,6 +858,11 @@ sub recent
    return $count;
 }
 
+#
+# replace
+#    This should be replaced by something more generic. Currently it is
+#    being used to remove the nospoof flag output by mushes.
+#
 sub replace
 {
    my ($world,$txt) = @_;
@@ -769,12 +874,22 @@ sub replace
    return undef;
 }
 
+#
+# pending_add
+#    Add a line to the pending input buffer and determine if more needs
+#    to be turned on. This function probably should have been run against
+#    unwrapped text but its probably more accurate to treat a really big
+#    line as multiple hits instead of just one for weighted accuracy.
+#
 sub pending_add
 {
    my ($world,$line,$gagged,$original) = @_;
 
    my $array = @pending{$world};
 
+   # this should be a push() but i muffed something up and it was
+   # screwing up the array.. so i just rewrote it this way since i didn't
+   # see the obvious problem.
    $$array[$#$array+1] = { txt       =>  $line,
                            id        => @socket{@state{world}}->{lnum},
                            ts        => time(),             # add entry
@@ -783,16 +898,13 @@ sub pending_add
                            original  => $original
                           };
 
-   return if !$original;
+   return if !$original; # don't count the text twice, so just count the
+                         # original entry.
+
    if(!more($world) && on_world($world) && 
       recent($world,30)  > @state{size_x} * .55) {
       @socket{$world}->{more} = 1;
       @socket{$world}->{more_needed} = 1;
-#   } else {
-#      key_log("SPEED_COUNT: %s < %s[%s]",
-#              recent($world,30),
-#              @state{size_x} * .55,
-#              @socket{$world}->{more});
   }
 }
 
@@ -911,7 +1023,9 @@ sub key_init
 {
    delete @key{keys %key};
    @key{def}             = sub { return key_default(@_);             };
+   @key{2}               = sub { return key_left(@_);                };
    @key{4}               = sub { return key_dump(@_);                };
+   @key{6}               = sub { return key_right(@_);               };
    @key{9}               = sub { return key_tab(@_);                 };
    @key{10}              = sub { return key_return(@_);              };
    @key{12}              = sub { return key_ctl_l(@_);               };
@@ -1012,11 +1126,9 @@ sub redraw_output
 
       # show old history + recently added entries
       my $hist = @history{$w};
-      if(defined @state{hist_pos}) {
-         $start = @state{hist_pos};
-      } else {
-         $start = $#$hist;
-      }
+
+      # find starting point in history or at bottom
+      $start = (in_hist()) ? hist_pos() : $#$hist;
 
       if($start > $#$hist) {
          key_log("### HIST IS TO BIG: $start $#$hist");
@@ -1080,18 +1192,15 @@ sub scan_history
    my $count = 0;
    my $pos;
    
-    if($inc > 0 &&
-       (@state{hist_pos} == $#{@history{@state{world}}} ||
-       !defined @state{hist_pos} || @state{hist_pos} eq undef)) {
-       delete @state{hist_pos};
+    if($inc > 0 && (!in_hist() || hist_pos() == $#{@history{@state{world}}})) {
+       hist_pos("delete");
        return 1;
     } elsif(abs($inc) != 1) {
        die("scan_history incrament must be -1 or +1");
-    } elsif($inc < 0 && (!defined @state{hist_pos} || 
-            @state{hist_pos} eq undef)) {
+    } elsif($inc < 0 && !in_hist()) {
        $pos = $#{@history{@state{world}}};
     } else {
-       $pos = @state{hist_pos};
+       $pos = hist_pos();
     }
       
    my $hist = @history{@state{world}};
@@ -1107,13 +1216,13 @@ sub scan_history
    $pos = $#$hist if ($pos > $#$hist);
 
    if($pos == $#$hist && $inc > 0) {
-      delete @state{hist_pos};
+      hist_pos("delete");
       return 1;
    } elsif($count == 0) {
       # do nothing;
       return 0;
    } else {
-      @state{hist_pos} = $pos;
+      hist_pos($pos);
       return 1;
    }
 }
@@ -1202,6 +1311,7 @@ sub key_ctl_r
 
 sub key_ctl_l
 {
+   key_log("ctl_l: %s,%s",input_x(),input_y());
    redraw_screen(@state{world},1);
 }
 
@@ -1209,7 +1319,7 @@ sub key_tab
 {
    return if @state{world} eq undef;
 
-   if(@state{hist_pos}) {                 # same as key_pgdn, just call it
+   if(in_hist()) {                        # same as key_pgdn, just call it
       key_pgdn();
    } else {
       delete @socket{@state{world}}->{more_needed};
@@ -1238,10 +1348,9 @@ sub key_ctl_w
    my $count = 0;
    my $found = 0;
 
-   key_log("control_w: pressed: '%s'",@state{line_pos});
+#   key_log("control_w: pressed: '%s'",@state{line_pos});
    for(my $i = @state{line_pos};$i >= 0;$i--) {
       if(@state{line}->[$i] ne " ") {
-         key_log("Found non space: '%s'",@state{line}->[$i]);
          $count++;
          if(@state{line}->[$i] ne undef) {
             $found = 1;
@@ -1249,7 +1358,6 @@ sub key_ctl_w
       } elsif(@state{line}->[$i] eq " " && !$found) {
          $count++;
       } else {
-         key_log("Found space: '%s'",@state{line}->[$i]);
          last;
       }
    }
@@ -1277,6 +1385,10 @@ sub out
    }
 }
 
+#
+# key_return
+#    The return key has been pressed, now what?
+#
 sub key_return
 {
    my $array = @state{line};
@@ -1286,9 +1398,9 @@ sub key_return
       if(defined @command{lc($1)}) {
          &{@command{lc($1)}}($');
       } else {
-         pending(@state{world},"%% %s: no such command or macro",lc($1));
+         echo("%% %s: no such command or macro",lc($1));
       }
-   } elsif(!defined @state{world}) {
+   } elsif(no_world()) {
      # do nothing
    } elsif(defined @socket{@state{world}}->{sock}) {
       out(@state{world},"%s\n",$input);
@@ -1297,9 +1409,12 @@ sub key_return
    @state{input_pos} = -1;                        # reset keyboard history pos
    @state{line} = [];
    @state{line_pos} = 0;
+   delete @state{input_offset};
 
    # just entered input, don't be so quick to show the more
-   @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
+   if(!no_world()) {
+      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
+   }
    input_clear();
    xy(input_x(),input_y());
 }
@@ -1500,7 +1615,13 @@ sub key_esc_w
 {
    return if not defined @state{world};
 
+   # try next active world
    my $new = (keys %{@state{activity}})[0];
+
+   # fall back to previous world the client was showing.
+   $new = @state{world_last} if($new eq undef && defined @state{world_last});
+
+   # nothing found, do nothing.
    return if $new eq undef;
 
    switch_world($new);
@@ -1605,6 +1726,11 @@ sub clear_screen
     }
 }
 
+#
+# x,y
+#    Move the cursor to a location. This should be able to be optimized
+#    when we are sure we always know where the cursor is all the time.
+#
 sub xy
 {
    my ($x,$y,$use_the_force_luke) = @_;
@@ -1616,12 +1742,16 @@ sub xy
 #   }
 }
 
+#
+# more_bar
+#    Determine what the more text should look like on the bar.
+#
 sub more_bar
 {
    if(!defined @state{world} || @state{world} eq undef) {
       return;
-   } elsif(defined @state{hist_pos}) {
-      return sprintf("\033[7mHist %4s\033[0m",@state{hist_pos});
+   } elsif(in_hist()) {
+      return sprintf("\033[7mHist %4s\033[0m",hist_pos());
    } elsif($#{@pending{@state{world}}} >= 0) {
       return sprintf("\033[7mMore %4s\033[0m",$#{@pending{@state{world}}} + 1);
    }
@@ -1631,15 +1761,6 @@ sub more_count
 {
    if(@state{world} ne undef) {
       return $#{@pending{@state{world}}} + 1;
-   }
-}
-
-sub hist_pos
-{
-   if(!defined @state{hist_pos}) {
-      return undef;
-   } else {
-      return @state{hist_pos};
    }
 }
 
@@ -1690,16 +1811,30 @@ sub draw_bar
    }
 }
 
+#
+# input_start
+#    Return the starting line number of the input window.
+#
 sub input_start
 {
    return @state{size_x} - @state{input_size} + 1;
 }
 
+#
+# input_end
+#    Return the line ending line of the console. This function exists
+#    mostly to make things more readable.
+#
 sub input_end
 {
    return @state{size_x};
 }
 
+#
+# revert_console
+#    Send whatever is needed to reset the terminal to normal operation.
+#    i.e. turning off scroll regions.
+#
 sub revert_console
 {
    ReadMode 'normal';
@@ -1708,6 +1843,14 @@ sub revert_console
 }
 
 
+#
+# key_log
+#    This script was originally called "key" as i was just focused on
+#    the keyboard input window.
+#
+#    This function logs to a key.log file so that it can be tailed
+#    so the output can be seen without screwing up the console output.
+#
 sub key_log
 {
    my ($fmt,@args) = @_;
@@ -1720,6 +1863,12 @@ sub key_log
    close($file);
 }
 
+#
+# code
+#    Provide just the list of line numbers from perl's stack of what sub-
+#    routines or optionally the full output. The line numbers will be
+#    adjusted as code is reloaded because the numbers will change.
+#
 sub code
 {
    my $type = shift;
@@ -1770,13 +1919,16 @@ sub command_init
    @command{dc}          = sub { return cmd_dc(@_);                        };
    @command{listsockets} = sub { return cmd_dc(@_);                        };
    @command{l}           = sub { return cmd_listsockets(@_);               };
+   @command{recall}      = sub { return cmd_recall(@_);                    };
+   @command{version}     = sub { return cmd_version(@_);                   };
+   @command{help}        = sub { return cmd_help(@_);                      };
 }
 
 sub key_esc_q
 {
    my $spell;
    my $input = join('',@{@state{line}});
-   $input =~ s/[^a-zA-Z0-9]+//g;
+   $input =~ s/[^a-zA-Z0-9 ]+//g;
    open($spell,"echo $input | /home/adrick/mush/tfspell |") ||
       return echo("%% Unable to run tfspell");
    while(<$spell>) {
@@ -1786,8 +1938,109 @@ sub key_esc_q
    close($spell);
 }
 
+#
+# glob2re
+#    Convert a global pattern into a regular expression
+#
+sub glob2re
+{
+    my ($pat) = trim(shift);
+
+    return "^\s*\$" if $pat eq undef;
+    $pat =~ s{(\W)}{
+        $1 eq '?' ? '(.)' :
+        $1 eq '*' ? '(*PRUNE)(.*?)' :
+        '\\' . $1
+    }eg;
+
+    $pat =~ s/\\\(.\)/?/g;
+
+#    return "(?mnsx:\\A$pat\\z)";
+    return "(?msix:\\A$pat\\z)";
+}
+
+
+sub cmd_help
+{
+#-# ------------------------------------------------------------------------
+#-# /help [<command>]
+#-#      Shows the help for the specified command.
+#-#
+#-# Availible Commands:
+#-#      /version, /world, /recall, /listsockets, /quit, /reload
+#-# ------------------------------------------------------------------------
+   my $cmd = shift;
+
+   if(!defined @state{help}) {
+      echo("% No help loaded.");
+   } elsif(trim($cmd) eq undef) {
+      echo("\n%s",@state{help}->{cmd_help});
+   } elsif(defined @state{help}->{"cmd_" . lc(trim($cmd))}) {
+      echo("\n%s",@state{help}->{"cmd_" . lc(trim($cmd))});
+   } else {
+      echo("%% Help on subject %s not found.",lc(trim($cmd)));
+   }
+}
+
+sub cmd_version
+{
+#-# ------------------------------------------------------------------------
+#-# /version
+#-#      Shows the current version at startup of muddler. This is currently
+#-#      not refreshed when the code is reloaded.
+#-# ------------------------------------------------------------------------
+   for my $line (split(/\n/,@state{version})) {
+      echo("%s",center($line));
+   }
+}
+
+sub cmd_recall
+{
+#-# ------------------------------------------------------------------------
+#-# /recall [<count>] <pattern>
+#-#      Does a recall of ten lines from the current world's history
+#-#      buffer that matches pattern. The amount of lines can be
+#-#      changed by specifying a count.
+#-#
+#-# Patterns:
+#-#      Patterns may contain text that will be matched as is but also
+#-#      May contain * as a wild card or ? to match a single character.   
+#-#
+#-# Example:
+#-#      /recall *pages*
+#-# ------------------------------------------------------------------------
+   my $txt = shift;
+   my ($count,$pat)  = 10;
+
+   return echo("%% Not connected to a world.") if(no_world());
+
+   if($txt =~ /^(\d+) /) {
+      $count = $1;
+      $pat = $';
+   } else {
+      $pat = $txt;
+   }
+
+   $pat = glob2re($pat);
+   key_log("PAT: $pat");
+   for(my $i=$#{@history{@state{world}}};$i >= 0 && $count > 0;$i--) {
+      eval {
+         key_log("TXT: '%s'",@history{@state{world}}->[$i]->{txt});
+         if(!@history{@state{world}}->[$i]->{gagged} &&
+            ansi_remove(@history{@state{world}}->[$i]->{txt}) =~ /$pat/) {
+            echo_nolog("%s",@history{@state{world}}->[$i]->{txt});
+            $count--;
+         }
+      };
+   }
+}
+
 sub cmd_listsockets
 {
+#-# ------------------------------------------------------------------------
+#-# /list_sockets
+#-#      Shows all open connections and some minimal data about them.
+#-# ------------------------------------------------------------------------
    echo("%-16s %-26s %-5s","NAME","HOST","PORT");
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
@@ -1798,17 +2051,34 @@ sub cmd_listsockets
 }
 sub cmd_quit
 {
+#-# ------------------------------------------------------------------------
+#-# /quit
+#-#      Exits out of muddler
+#-# ------------------------------------------------------------------------
    revert_console();
    exit(1);
 }
 
 sub cmd_reload
 {
+#-# ------------------------------------------------------------------------
+#-# /reload
+#-#      Reloads the perl code for muddler without dropping connections.
+#-#      As long as no new variables are set, there is a 80% chance
+#-#      that the client will continue and not have issues.
+#-# ------------------------------------------------------------------------
    reload_code();
 }
 
 sub cmd_world
 {
+#-# ------------------------------------------------------------------------
+#-# /world <world>
+#-#      Connects to the specified world if not connected or switches over
+#-#      to that world if it is connected.
+#-#
+#-# Ex: /world puggy
+#-# ------------------------------------------------------------------------
    my $txt = lc(trim(shift));
 
    key_log("cmd_world: called\n");
@@ -1819,8 +2089,6 @@ sub cmd_world
       key_log("# existing world");
       switch_world($txt);
    } else {
-      key_log("# connecting to world");
-      echo("% Trying to connect to: '%s' => '%s'",$txt,@address{$txt}->{host});
       socket_connect(@address{$txt}->{name},
                      @address{$txt}->{host},
                      @address{$txt}->{port},
@@ -1868,11 +2136,14 @@ sub show_banner
       if($. > 24) {                                  # read only 24 lines
          last;
       } elsif(/^#-#   /) {
+         @state{version} .= "$'\n";
          echo("%s",center($'));
       } elsif($. > 100) {                              # read only 50 lines
          last;
       }
    }
+
+   @state{version} =~ s/\n$//g;
    close(PROG);
    for my $i (0 .. 2) {
       echo("%s","");
@@ -1922,13 +2193,28 @@ sub get_checksums
          @data{$pos}->{chk}->add($line);
          @data{$pos}->{src} .= qq[#line 0 "$pos"\n] . $line;
          @data{$pos}->{line} = $ln;
+         if($pos =~ /^cmd_/) {
+            @state{help} = {} if not defined @state{help};
+            delete @state{help}->{$pos} if defined @state{help}->{$pos};
+         }
       } elsif($pos ne undef && $line =~ /^}\s*$/) {
          @data{$pos}->{src} .= $line;
          @data{$pos}->{chk}->add($line);
          @data{$pos}->{chk} = @data{$pos}->{chk}->hexdigest;
          @data{$pos}->{done} = 1;
+         if($pos =~ /cmd_/) {
+            @state{help}->{$pos} =~ s/\n$//;
+         }
          $pos = undef;
       } elsif($pos ne undef) {
+         if($pos =~ /cmd_/) {
+            if($line =~ /^#-# -+$/) {
+               # header ignored
+            } elsif($line =~ /^#-# {0,1}/) {
+               @state{help}->{$pos} .= $';
+            }
+         }
+
          @data{$pos}->{src} .= $line;
          @data{$pos}->{chk}->add($line);
       }
@@ -1951,20 +2237,21 @@ sub get_checksums
 #
 sub reload_code
 {
+   my $count = 0;
    my $new = get_checksums();
    my $old = @state{chksum};
    $old = {} if $old eq undef;
 
    key_log("reload_code: start");
-   echo("%% reload_code: start");
    for my $key (keys %$new) {
       if((@state{state} eq "init" || 
          (!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}))
          && $key ne "muddler") {
          
          key_log("%% Reloading: %s",$key) if @state{state} ne "init";
-         echo("%% Reloading: %s",$key) if @state{state} ne "init";
+#         echo("%% Reloading: %s",$key) if @state{state} ne "init";
          eval($$new{$key}->{src});
+         $count++;
          if($@) {
             echo("%% Error reloading $key: %s",$@);
             $$new{$key}->{chk} = -1;
@@ -1975,7 +2262,11 @@ sub reload_code
    }
    @state{chksum} = $new;
    command_init();
+   key_init();
    key_log("reload_code: done");
+   if($count == 0) {
+      echo("%% No changes found to reload.");
+   }
 }
 
 #
@@ -2049,7 +2340,7 @@ sub tick
 {
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && time()-@socket{$w}->{last_send} > 300){
-         key_log("tick: $w [%s]",time()-@socket{$w}->{last_send});
+#         key_log("tick: $w [%s]",time()-@socket{$w}->{last_send});
          if($w eq "del") {
             out($w,"score\n");
          } else {
