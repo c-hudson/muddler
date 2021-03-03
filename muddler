@@ -10,14 +10,11 @@ use strict;
 use POSIX;
 use IO::Select;
 use IO::Socket;
-use Term::ReadKey;
 use Text::ParseWords;
 use Digest::MD5;
-use Net::WebSocket::Server;
 use URI::Escape;
 #use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
 #                     TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
-use Net::Telnet ();
 
 use Carp;
 my %key;                            # key presses hash table for fast lookups
@@ -50,6 +47,59 @@ my %state = (
    port         => 9000,
    password     => "xyzzy"
 );
+
+#----------------------------------------------------------------------------#
+#                                                                            #
+#  modules                                                                   #
+#                                                                            #
+#----------------------------------------------------------------------------#
+
+sub module_enabled
+{
+   my $txt = shift;
+
+   if(!defined @state{"mod_$txt"} || @state{"mod_$txt"} == -1) {
+      return 0;
+   } else {
+      return 1;
+   }
+ 
+}
+sub load_modules
+{
+   my %mod = (
+      'Term::ReadKey'          => { fatal => 1, fix => "apt install libterm-readkey-perl" },
+      'Net::WebSocket::Server' => {  fatal => 0, fix => 'perl -MCPAN -e "install Net::WebSocket::Server"',
+                                     disable => 'web/websocket server'
+                                  },
+      'Net::Telnet'            => { fatal => 1, fix => "apt install libnet-telnet-perl" }
+ 
+   );
+
+   for my $key (keys %mod) {
+      if(!defined @state{"mod_@mod{$key}"} || @state{"mod_@mod{$key}"} == -1) {
+         @state{"mod_@mod{$key}"} = 1;
+         eval "use $key; 1;" or @state{"mod_@mod{$key}"} = -1;
+
+         if(@state{"mod_@mod{$key}"} == -1) {
+            if(@mod{$key}->{fatal}) {
+               @state{fatal} = 1;
+               printf("FATAL: perl $key module is required for muddler.\n   " . 
+                       "Fix?   @mod{$key}->{fix}\n");
+            } else {
+               printf("WARNING: perl %s module is required for muddler.\n   %s will be disabled.\n" .
+                      "   Fix?   %s\n",
+                      $key,
+                      @mod{$key}->{disable},
+                      @mod{$key}->{fix}
+                     );
+            }
+         }
+      }
+   }
+    
+   exit() if @state{fatal};
+}
 
 
 #----------------------------------------------------------------------------#
@@ -4871,8 +4921,9 @@ sub input_end
 sub revert_console
 {
    return if !console();
+   return if(@state{fatal});       # modules didn't load, no need to reset
 
-   ReadMode 'normal';
+   eval("ReadMode 'normal';");
    printf("\033[r");
    xy(24,1);
 }
@@ -5027,8 +5078,8 @@ sub cmd_web_port
 #-# ------------------------------------------------------------------------
    my $port = trim(shift);
 
-   if($$port =~ /^\d+$/) {
-      @state{web_port} = $port;
+   if($port =~ /^\d+$/) {
+      @state{port} = $port;
    } else {
       echo("%% Websocket port must be numeric.");
    }
@@ -5042,7 +5093,9 @@ sub cmd_web
 #-# ------------------------------------------------------------------------
    my $status = shift;
 
-   if($status =~ /^\s*on\s*$/i) {
+   if(!module_enabled("Net::WebSocket::Server")) {
+      return echo("%% Web/Websocket disabled due to missing module");
+   } elsif($status =~ /^\s*on\s*$/i) {
       echo("%% Web enabled, connect via: http://localhost:@state{port}");
       echo("%%    Password: @state{password}");
       if(@state{web} == 0) {
@@ -5127,10 +5180,8 @@ sub cmd_recall
    }
 
    $pat = glob2re($pat);
-   key_log("PAT: $pat");
    for(my $i=$#{@history{@state{world}}};$i >= 0 && $count > 0;$i--) {
       eval {
-         key_log("TXT: '%s'",@history{@state{world}}->[$i]->{txt});
          if(!@history{@state{world}}->[$i]->{gagged} &&
             ansi_remove(@history{@state{world}}->[$i]->{txt}) =~ /$pat/) {
 
@@ -5193,10 +5244,8 @@ sub cmd_world
    my $txt = lc(trim(shift));
 
    if(!defined @address{$txt}) {
-      key_log("# non-existing world");
       return echo("% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{$txt} && defined @socket{$txt}->{sock}) {
-      key_log("# existing world");
       switch_world($txt);
    } else {
       socket_connect(@address{$txt}->{name},
@@ -5518,7 +5567,7 @@ sub muddler_init
 
    if(console()) {
       $| = 1;                                                  # unbuffer stdout
-      ReadMode 'cbreak';
+      eval ("ReadMode 'cbreak';");
    }
    key_init();
    command_init();
@@ -5563,6 +5612,8 @@ for my $i (0 .. $#ARGV) {
      die("Invalid Option: '@ARGV[$i]'");
    }
 }
+
+load_modules();
 
 ws_init() if !console();
 
