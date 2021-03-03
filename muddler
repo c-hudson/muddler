@@ -28,6 +28,7 @@ my %pending;                                            # unseen world output
 my %address;                                                # world addresses 
 my %help;
 my @input;                                                    # input history
+my %ws;                                             # websocket specific data
 my $ws_listen;                                           # websocket listener
 my $ws_server;                                             # websocket server
 my $http_listen;                                              # http listener
@@ -45,6 +46,9 @@ my %state = (
    pending      => {},
    webport      => 9001,                               # websocket port to use
    web          => 0,                             # websocket enabled/disabled
+   console      => 1,                                 # disable console output
+   port         => 9000,
+   password     => "xyzzy"
 );
 
 
@@ -105,7 +109,6 @@ sub ansi_reset
 
    my $string = (is_ansi_string($data)) ? $data : ansi_init($data);
 
-   printf("Ansi_reset: returning\n") if $pos < 0;
    return $string if $pos < 0;                               # sanity check
 
    my $code = $$string{code};
@@ -483,7 +486,7 @@ sub socket_connect
                        lnum      => 0,
                      };
    @state{world} = $world;
-   @socket{$world}->{pos} = scalar keys %socket;
+   @socket{$world}->{pos} = ++@state{pos_sequence};
 
    my $s = Net::Telnet->new(host => $host,
                             port => $port,
@@ -569,14 +572,18 @@ sub server_hostname
 sub ws_init
 {
   
+   if(!console()) {
+      printf("%% Web enabled, connect via: http://localhost:@state{port}\n");
+      printf("%%    Password: @state{password}\n");
+   }
    @state{web} = 1;
-   $http_listen = IO::Socket::INET->new( LocalPort => 9000,
+   $http_listen = IO::Socket::INET->new( LocalPort => @state{port},
                                          Listen    => 1,
                                          Reuse     => 1,
                                        )
    or die "failed to set up httpd listener: $!";
 
-   $ws_listen = IO::Socket::INET->new( LocalPort => 9001,
+   $ws_listen = IO::Socket::INET->new( LocalPort => @state{port} + 1,
                                        Listen    => 1,
                                        Reuse     => 1,
                                        )
@@ -595,17 +602,24 @@ sub ws_init
    $ws_server->{select_readable}->add($ws_listen);
    $ws_server->{select_readable}->add($http_listen);
    $ws_server->{conns} = {};
-   key_log("HTTP: $http_listen");
 }
 
 sub ws_disconnect
 {
+   my $conn = shift;
+
+   my $sock = $conn->{socket};
+   $sock->close;
+   $ws_server->{select_readable}->remove( $sock );
+   delete $ws_server->{conns}{$sock};
 }
 
 sub ws_login_screen
 {
    my $ws = shift;
-   redraw_screen();
+   ws_echo($ws,@state{version},1);
+   ws_echo($ws,"\n\nEnter password into input window and hit enter\n",1);
+#   redraw_screen();
 }
 
 #
@@ -616,7 +630,10 @@ sub ws_login_screen
 #
 sub ws_echo
 {
-   my ($ws, $msg) = @_;
+   my ($ws, $msg,$force) = @_;
+
+   # only show something if authorized or those exceptions when logging in
+   return if(@ws{$ws}->{auth} eq 0 && !$force);
 
    # this might crash if the websocket dies, the evals should
    # probably be removed once this is more stable. With that in mind,
@@ -626,8 +643,7 @@ sub ws_echo
    };
 
    if($@) {
-      key_log("Got this far: 5\n");
-       ws_disconnect($ws);
+      ws_disconnect($ws);
    }
 }
 
@@ -660,16 +676,20 @@ sub ws_io
 
    for my $sock (@$sockets) {
       if( $sock == $ws_listen ) {
-         my $sock = $ws_listen->accept;
+         my $s = $ws_listen->accept;
          my $conn = new Net::WebSocket::Server::Connection(
-                    socket => $sock, server => $ws_server );
+                    socket => $s, server => $ws_server );
    
-         $ws_server->{conns}{$sock} = { conn     => $conn,
-                                        lastrecv => time,
-                                        ip       => server_hostname($sock)
-                                      };
-         $ws_server->{select_readable}->add( $sock );
+         $ws_server->{conns}{$s} = { conn     => $conn,
+                                     lastrecv => time,
+                                     ip       => server_hostname($s)
+                                   };
+         $ws_server->{select_readable}->add( $s );
          $ws_server->{on_connect}($ws_server, $conn );
+         @ws{$conn} = {};
+         @ws{$conn}->{conn} = $conn;
+         @ws{$conn}->{start} = time();
+         @ws{$conn}->{auth} = 0;
       } elsif($sock == $http_listen) {
          my $s = $sock->accept;
          $ws_server->{select_readable}->add($s);
@@ -3282,12 +3302,14 @@ sub http_process_line
       $$data{get} = uri_unescape($$data{get});
       $$data{get} =~ s/\// /g;
       $$data{get} =~ s/^\s+|\s+$//g;
-      $$data{get} = "muddler_client.html" if($$data{get} =~ /^\s*$/);
 
       if($$data{get} eq undef) {
-         http_error($sock,"Malformed Request");
+         $$data{get} = "muddler_client.html";
+         my $tmp = @http_data{$$data{get}};
+         my $port = @state{port} + 1;
+         $tmp =~ s/9001/$port/;
+         http_reply($sock,$data,"%s",$tmp);
       } elsif(!defined @http_data{$$data{get}}) {
-         key_log("GET '$$data{get}'");
          http_error($sock,"%s","Invalid path");
       } elsif(-e $$data{get}) {
          http_reply($sock,$data,"%s",getfile($$data{get}));
@@ -3436,7 +3458,18 @@ sub ws_process
 
    my $input = substr($msg,1);
 
-   if($input =~ /^\/([^ ]+)\s*/) {
+   # if unathorized check password before allowing any input. Websize
+   # is sent on connect, so exclude that.
+   if(@ws{$conn}->{auth} eq 0 && $input !~ /^\/web_size /) {
+      if($input eq @state{password}) {
+         @ws{$conn}->{auth} = 1;
+         redraw_screen();
+      } else {
+         key_log("Disconnecting");
+         ws_echo($conn,"%% Invalid Password.",1);
+         ws_disconnect($conn);
+      }
+   } elsif($input =~ /^\/([^ ]+)\s*/) {
       if(defined @command{lc($1)}) {
          &{@command{lc($1)}}($');
       } else {
@@ -3458,6 +3491,7 @@ sub ws_all
 
    for my $key ( keys %$hash) {
       my $client = $$hash{$key}->{conn};
+      next if(@ws{$client}->{auth} eq 0);
 
       eval {
           $client->send('',"$type$txt");
@@ -3473,6 +3507,11 @@ sub ws_all
 #  console code                                                              #
 #                                                                            #
 #----------------------------------------------------------------------------#
+
+sub console
+{
+   return @state{console};
+}
 
 #
 # in_hist
@@ -3538,7 +3577,6 @@ sub echo
    if(@state{world} eq undef || !has_pending()  && !in_hist()) {
       echo_output($fmt,@args);
    } else {
-      key_log("Pending_adds: %s",sprintf($fmt,@args));
       pending(@state{world},sprintf($fmt,@args),0,1);
    }
 }
@@ -3582,7 +3620,7 @@ sub echo_output
 
 #   key_log("echo output: $$txt{txt} %s",code());
    ws_all("t","$$txt{txt}\n") if(web());
-   printf("\n%s",$$txt{txt});
+   printf("\n%s",$$txt{txt}) if(console());
 
    if(@state{optimize_output} == 0) {
       update_scroll_region("input");
@@ -3626,7 +3664,7 @@ sub echo_nolog
       @state{optimize_output} = 2 if(@state{optimize_output} == 1);
    }
    ws_all("t","$$txt{txt}\n") if(web());
-   printf("\n%s",$$txt{txt});
+   printf("\n%s",$$txt{txt}) if console();
 
    if(@state{optimize_output} == 0) {
       update_scroll_region("input");
@@ -4103,6 +4141,8 @@ sub redraw_output
 
 sub redraw_input
 {
+   return if !console();
+
    update_scroll_region("input",1);
    xy(input_start(),1,1);
    my $start = @state{input_offset}+1;
@@ -4118,7 +4158,7 @@ sub redraw_screen
    my $flag = shift;
 
    my $clear = shift;
-   printf("\033[r\033[2J") if $clear;
+   printf("\033[r\033[2J") if $clear && console();
    clear_screen();
    redraw_output($flag);
    draw_bar(1);
@@ -4277,7 +4317,7 @@ sub key_ctl_u
    @state{line_pos} = 0;
    delete @state{input_offset};
    xy(input_start(),1);
-   printf("\033[J");
+   printf("\033[J") if console();
 }
 
 sub key_ctl_w
@@ -4374,6 +4414,8 @@ sub input_online
 sub key_delete
 {
    my $ch = shift;
+
+   return if !console();
    update_scroll_region("input");
    
    if(@state{line_pos} < 1) {                        # nothing left to delete
@@ -4410,6 +4452,7 @@ sub key_default
    my $ch = shift;
    my $out;
 
+   return if !console();
    update_scroll_region("input");
 
    splice(@{@state{line}},@state{line_pos},0,$ch);         # add ch to buffer
@@ -4446,6 +4489,8 @@ sub key_default
 
 sub key_left
 {
+   return if !console();
+
    my $ret = "\n";
    if(@state{input_offset} > 0 && @state{line_pos} % (@state{size_y}-1)==0 &&
       input_x() == input_start()) {
@@ -4493,34 +4538,69 @@ sub name
       return "(Unnamed)";
    }
 }
-
+#
+# key_up
+#   Move up one world and switch to it.
+#
+#   The structure is less then ideal for switching up a world, so it
+#   needs to scanned for and then optionally a backup instead of just
+#   grabbing the next entry (which may or may not exist any more).
+#   
 sub key_up
 {
+   my $first;
+
    return if not defined @state{world};
    my $pos = @socket{@state{world}}->{pos};
-   $pos++;
-   $pos = 1 if $pos > scalar keys %socket;
 
-   switch_world((sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
-                    keys %socket)[$pos-1]);
+   for my $key (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} keys %socket){
+      if(@socket{$key}->{pos} > $pos &&
+         (defined @socket{$key}->{sock} || 
+         (defined @pending{$key} && $#{@pending{$key}} >= 0))) {
+         return switch_world($key);
+      }
+      $first = $key if($first eq undef);
+   }
+   switch_world($first) if($first ne undef);
 }
 
+#
+# key_down
+#   Move down one world and switch to it.
+#
+#   The structure is less then ideal for switching up a world, so it
+#   needs to scanned for and then optionally a backup instead of just
+#   grabbing the next entry (which may or may not exist any more).
+#   
 sub key_down
 {
+   my ($prev,$last);
+
    return if not defined @state{world};
    my $pos = @socket{@state{world}}->{pos};
-   if($pos == 1) {
-      $pos = scalar keys %socket;
-   } else {
-      $pos--;
-   }
 
-   switch_world((sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} 
-                 keys %socket)[$pos]);
+   for my $key (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} keys %socket){
+      if(@socket{$key}->{pos} < $pos &&
+         (defined @socket{$key}->{sock} || 
+         (defined @pending{$key} && $#{@pending{$key}} >= 0))) {
+         $prev = $key;
+      }
+      if(defined @socket{$key}->{sock} || 
+         (defined @pending{$key} && $#{@pending{$key}} >= 0)) {
+         $last = $key;
+      }
+   }
+   if($prev ne undef) {
+      switch_world($prev);
+   } elsif($last ne undef) {
+      switch_world($last);
+   }
 }
 
 sub key_right
 {
+   return if !console();
+
    if(@state{line_pos} <= $#{@state{line}}) {
       if(@state{line_pos} % (@state{size_y}-1)==78 &&
          input_x() == @state{size_x}) {
@@ -4572,6 +4652,8 @@ sub key_esc_w
 #
 sub update_scroll_region
 {
+   return if !console();
+
    my ($region,$force) = @_;
    my ($start,$stop);
 
@@ -4654,6 +4736,7 @@ sub key_process
 sub clear_screen
 {
 #    xy(1,1);
+    return if !console();
     for my $line (1 .. @state{size_x}) {
        if($line == @state{size_x}) {
           printf("\033[K");
@@ -4672,6 +4755,7 @@ sub xy
 {
    my ($x,$y,$use_the_force_luke) = @_;
 
+   return if !console();
 #   if(@state{prev_xy} ne "$x,$y" || $use_the_force_luke) {
       printf("\033[%s;%sH",$x,$y);
 #      key_log("POS: '%s','%s' [%s]",$x,$y,code());
@@ -4744,6 +4828,8 @@ sub draw_bar
                        )
                );
       }
+
+      return if !console();
       printf("%s%s_%s%s_%s______%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
@@ -4784,6 +4870,8 @@ sub input_end
 #
 sub revert_console
 {
+   return if !console();
+
    ReadMode 'normal';
    printf("\033[r");
    xy(24,1);
@@ -4843,6 +4931,7 @@ sub code
 
 sub input_clear
 {
+   return if !console();
    update_scroll_region("input");
    my $start = @state{size_x} - @state{input_size} + 1;
    xy($start,0);
@@ -4954,7 +5043,8 @@ sub cmd_web
    my $status = shift;
 
    if($status =~ /^\s*on\s*$/i) {
-      echo("%% Web enabled, connect via: http://localhost:9000");
+      echo("%% Web enabled, connect via: http://localhost:@state{port}");
+      echo("%%    Password: @state{password}");
       if(@state{web} == 0) {
          ws_init();
      }
@@ -5369,6 +5459,15 @@ sub tick
       }
    }
 
+   if(web()) {
+      for my $key (keys %ws) {
+         if(@ws{$key}->{auth} eq 0 && time() - @ws{$key}->{start} > 60) {
+            ws_echo(@ws{$key}->{conn},"%% Password entry timed out",1);
+            ws_disconnect(@ws{$key}->{conn});
+         }
+      }
+   }
+
    my $prev = "@state{size_y},@state{size_x}";
    (@state{size_y},@state{size_x}) = GetTerminalSize();
    if($prev ne "@state{size_y},@state{size_x}") {
@@ -5416,8 +5515,11 @@ sub muddler_init
    @state{activity} = {};
    @state{chksum} = get_checksums();
    key_log("### START ###");
-   $| = 1;                                                  # unbuffer stdout
-   ReadMode 'cbreak';
+
+   if(console()) {
+      $| = 1;                                                  # unbuffer stdout
+      ReadMode 'cbreak';
+   }
    key_init();
    command_init();
    redraw_screen();
@@ -5448,6 +5550,21 @@ sub muddler
       @state{tick_last} = time();
    }
 }
+
+for my $i (0 .. $#ARGV) {
+   if(@ARGV[$i] eq "--noconsole") {
+      @state{console} = 0;
+   } elsif(@ARGV[$i] =~ /^--port=(\d+)$/) {
+      @state{port} = $1;
+   } elsif(@ARGV[$i] =~ /^--password=(.*)$/  ||
+           @ARGV[$i] =~ /^--pass=(.*)$/) {
+      @state{password} = $1;
+   } else {
+     die("Invalid Option: '@ARGV[$i]'");
+   }
+}
+
+ws_init() if !console();
 
 muddler_init();
 
