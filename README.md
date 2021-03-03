@@ -34,7 +34,7 @@ format of the file is exactly the same as tinyfugue's.
    Control-N          : Move up in the keyboard history
    Tab                : Move forward one screen full of text if the world is
                         paused by "more".
-   Control-l          : Redraw the screen
+   Control-l          : Redraw the screen [console only]
    PgUp               : Scroll up one page in the history buffer
    PgDown             : Scroll down one page in the history buffer
 ```
