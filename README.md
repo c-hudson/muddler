@@ -8,11 +8,6 @@ after the text based interface is extremely stable and usable.
 
 
 ```
-   o websocket support   the text interface will still run but you will be
-                         able to point your web browser at the client and
-                         get a web based client that you can connect /
-                         disconnect from. This will assume that i can "trap"
-                         enough of the needed keys to make the client usable.
    o Native GUI          Axmud has a perl based Gtk3 gui. The idea will be
                          that the gui can be turned on/off as needed. The
                          terminal interface will be the only always running
@@ -40,6 +35,8 @@ format of the file is exactly the same as tinyfugue's.
    Tab                : Move forward one screen full of text if the world is
                         paused by "more".
    Control-l          : Redraw the screen
+   PgUp               : Scroll up one page in the history buffer
+   PgDown             : Scroll down one page in the history buffer
 ```
 # Debug Keys:
 ```
@@ -50,10 +47,28 @@ format of the file is exactly the same as tinyfugue's.
 ```
 # Supported Commands:
 ```
+   /version           : Show the current version information for muddler.
    /world <world>     : Connect to the specified world as defined in the
                         .tfworlds file.
+   /listsockets       : List currently open worlds.
    /quit              : Quit muddler
    /reload            : Reload muddler's perl code if there are any changes.
                         without dropping connections.
-   /dc                : Nothing yet.. not sure why this was added.
+   /recall <cnt> <pat>: Recall <cnt> lines matching <pattern> from the
+                        current world's history. 
+   /help [<topic>]    : Online help command
+   /web <on/off>      : Enable the web/websocket interface
+   /web_port <port>   : Change the web/websocket port. THe port specified
+                        will be that of the web server. The websocket server
+                        will be one port number higher.
+```
+# Command line:
+```
+   ./muddler <options>
+
+       --noconsole     : disable the text based console and enable the
+                         web/websocket server.
+       --password      : specify the password for the websocket interface.
+       --port          : specify the port for the web server. The websocket
+                         server will be one port number higher.
 ```
