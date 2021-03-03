@@ -17,9 +17,12 @@ after the text based interface is extremely stable and usable.
                          mush for a mush like language?
 ```
 # Installation
+```
    Download the muddler perl script
+   Install required perl modules
    chmod u+x muddler
    ./muddler
+```
 
 # World Support
    Worlds may be defined in your ~/.tfworlds directory. Currently the
