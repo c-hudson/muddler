@@ -78,10 +78,10 @@ sub load_modules
 
    for my $key (keys %mod) {
       if(!defined @state{"mod_@mod{$key}"} || @state{"mod_@mod{$key}"} == -1) {
-         @state{"mod_@mod{$key}"} = 1;
-         eval "use $key; 1;" or @state{"mod_@mod{$key}"} = -1;
+         @state{"mod_$key"} = 1;
+         eval "use $key; 1;" or @state{"mod_$key"} = -1;
 
-         if(@state{"mod_@mod{$key}"} == -1) {
+         if(@state{"mod_$key"} == -1) {
             if(@mod{$key}->{fatal}) {
                @state{fatal} = 1;
                printf("FATAL: perl $key module is required for muddler.\n   " . 
@@ -1956,10 +1956,10 @@ __ANSI__
      padding: 0;
      border: none;
      background: white;
-     left: 1em;
-     right: 1em;
-     top: 1em;
-     bottom: 1em;
+     left: 5px;
+     right: 5px;
+     top: 5px;
+     bottom: 5px;
      box-shadow: 0 0 0.2em 0.1em gray;
      overflow: hidden;
    }
