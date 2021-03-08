@@ -3519,6 +3519,7 @@ sub ws_process
       if($input eq @state{password}) {
          @ws{$conn}->{auth} = 1;
          redraw_screen();
+         ws_echo($conn,"%% Password validated.") if (no_world());
       } else {
          key_log("Disconnecting");
          ws_echo($conn,"%% Invalid Password.",1);
@@ -3584,6 +3585,41 @@ sub ws_all_wrap
       };
       if($@) {                                         # error, disconnect
          ws_disconnect($c);
+      }
+   }
+}
+
+sub echo_wrap
+{
+   my $txt = shift;
+
+   if(console()) {
+      for my $line (ansi_wrap($txt)) {
+         echo_console("%s",$line);
+      }
+   }
+   if(web()) {
+      my $hash = $ws_server->{conns};
+   
+      for my $key ( keys %$hash) {            # cycle all websocket connections
+         my $c = $$hash{$key}->{conn};
+         next if(@ws{$c}->{auth} eq 0);
+   
+         # get width of the websocket session, or default to console
+         my $y=(defined @ws{$c}->{size_y}) ? @ws{$c}->{size_y} : @state{size_y}; 
+   
+         eval {                                   # protect against the unknown
+            if($txt eq undef) {
+               $c->send('',"t\r\n");
+            } else {
+               for my $line (ansi_wrap($txt,$y)) {
+                  $c->send('',"t$line\r\n");
+               }
+            }
+         };
+         if($@) {                                         # error, disconnect
+            ws_disconnect($c);
+         }
       }
    }
 }
@@ -4744,10 +4780,10 @@ sub key_down
    for my $key (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} < $pos &&
          (defined @socket{$key}->{sock} || 
-         pending($key) >= 0)) {
+         pending($key) > 0)) {
          $prev = $key;
       }
-      if(defined @socket{$key}->{sock} || pending($key) >= 0) {
+      if(defined @socket{$key}->{sock} || pending($key) > 0) {
          $last = $key;
       }
    }
@@ -4952,6 +4988,7 @@ sub draw_bar
    my $new = time();
    my ($hr,$min,$active) = ((localtime($new))[2,1]);
    $hr -= 12 if($hr > 12);
+   $hr = 12 if $hr == 0;
 
    if($force || "$hr$min" ne @state{bar_time} ||
       @state{bar_activity} ne scalar keys %{@state{activity}} ||
@@ -4983,7 +5020,7 @@ sub draw_bar
             next if(@ws{$client}->{auth} eq 0);
 
             eval {
-               $client->send('',sprintf("b%s  %s    %s%s%s%s:%s",
+               $client->send('',sprintf("b%s  %s    %s%s%s%s:%02d",
                      " " x (9 - ansi_length($more)),
                      $more,
                      name(),
@@ -5303,6 +5340,9 @@ sub cmd_recall
    if($txt =~ /^(\d+) /) {
       $count = $1;
       $pat = $';
+   } elsif($txt =~ /^\/(\d+) /) {
+      $count = $1;
+      $pat = $';
    } else {
       $pat = $txt;
    }
@@ -5321,7 +5361,7 @@ sub cmd_recall
       };
    }
    for my $i (0 .. $#out) {
-      echo(@out[$i]);                       # output in correct order
+      echo_wrap(@out[$i]);                       # output in correct order
    }
 }
 
