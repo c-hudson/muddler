@@ -20,6 +20,8 @@ after the text based interface is extremely stable and usable.
 ```
    Download the muddler perl script
    Install required perl modules
+      muddler will tell you what modules are missing and how to install
+      them if on a linux/deb system.
    chmod u+x muddler
    ./muddler
 ```
@@ -32,7 +34,7 @@ format of the file is exactly the same as tinyfugue's.
    Arrow Right & Left : Move one character in the buffer
    Arrow Up and Down  : Cycle to the next connected world.
    Escape-w           : Move to next active world
-   Control-w          : Delete previous word
+   Control-w          : Delete previous word [console only]
    Control-P          : Move down in the keyboard history
    Control-N          : Move up in the keyboard history
    Tab                : Move forward one screen full of text if the world is
