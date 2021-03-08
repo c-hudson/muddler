@@ -5,6 +5,7 @@
 #-#    _||_| u |    _ _  _ _ __| /_| /| |  __ ____
 #-#   (        |== / v \| | |  _ | _ || |/ -_) __/
 #-#   /-()---()   |_|_|_|___/\___\___/|_|\__/_/   
+use utf8;
 use strict;
 # use Monitor qw(monitor);
 use POSIX;
@@ -76,7 +77,8 @@ sub load_modules
                                      disable => 'web/websocket server'
                                   },
       'Net::Telnet'            => { fatal => 1, fix => "apt install ' .
-                                    'libnet-telnet-perl" }
+                                    'libnet-telnet-perl" },
+      'Encode'                 => { fatal => 1, fix => "install Encode module"},
  
    );
 
@@ -675,8 +677,8 @@ sub ws_disconnect
 sub ws_login_screen
 {
    my $ws = shift;
-   ws_echo($ws,@state{version},1);
-   ws_echo($ws,"\n\nEnter password into input window and hit enter\n",1);
+   ws_echo($ws,"t",@state{version},1);
+   ws_echo($ws,"t","\n\nEnter password into input window and hit enter\n",1);
 #   redraw_screen();
 }
 
@@ -688,7 +690,7 @@ sub ws_login_screen
 #
 sub ws_echo
 {
-   my ($ws, $msg,$force) = @_;
+   my ($ws, $type, $msg,$force) = @_;
 
    # only show something if authorized or those exceptions when logging in
    return if(@ws{$ws}->{auth} eq 0 && !$force);
@@ -696,8 +698,9 @@ sub ws_echo
    # this might crash if the websocket dies, the evals should
    # probably be removed once this is more stable. With that in mind,
    # currently crash will be treated as a disconnect.
+
    eval {
-      $ws->send('','t'.$msg);
+      $ws->send('',$type . encode_utf8($msg) . "\r\n");
    };
 
    if($@) {
@@ -3519,10 +3522,10 @@ sub ws_process
       if($input eq @state{password}) {
          @ws{$conn}->{auth} = 1;
          redraw_screen();
-         ws_echo($conn,"%% Password validated.") if (no_world());
+         ws_echo($conn,"t","%% Password validated.") if (no_world());
       } else {
          key_log("Disconnecting");
-         ws_echo($conn,"%% Invalid Password.",1);
+         ws_echo($conn,"t","%% Invalid Password.",1);
          ws_disconnect($conn);
       }
    } elsif($input =~ /^\/([^ ]+)\s*/) {
@@ -3551,13 +3554,29 @@ sub ws_all
       next if(@ws{$client}->{auth} eq 0);
 
       eval {
-          $client->send('',"$type$txt");
+          if($txt !~ /Party comes to power/) {
+             ws_echo($client,$type,$txt);
+          }
       };
       if($@) {
          ws_disconnect($client);
       }
    }
 }
+
+sub lord
+{
+   my $txt = shift;
+   my @result;
+#   $txt =~ s/\e/<ESC>/g;
+#   return $txt;
+
+   for my $i (0 .. (length($txt)-1)) {
+      push(@result,ord(substr($txt,$i,1)));
+   }
+   return join(',',@result);
+}
+
 
 sub ws_all_wrap
 {
@@ -3574,17 +3593,12 @@ sub ws_all_wrap
       # get width of the websocket session, or default to console
       my $y=(defined @ws{$c}->{size_y}) ? @ws{$c}->{size_y} : @state{size_y}; 
 
-      eval {                                   # protect against the unknown
-         if($txt eq undef) {
-            $c->send('',"t\r\n");
-         } else {
-            for my $line (ansi_wrap($txt,$y)) {
-               $c->send('',"t$line\r\n");
-            }
+      if($txt eq undef) {
+         ws_echo($c,"t");
+      } else {
+         for my $line (ansi_wrap($txt,$y)) {
+            ws_echo($c,"t",$line);
          }
-      };
-      if($@) {                                         # error, disconnect
-         ws_disconnect($c);
       }
    }
 }
@@ -3610,10 +3624,10 @@ sub echo_wrap
    
          eval {                                   # protect against the unknown
             if($txt eq undef) {
-               $c->send('',"t\r\n");
+               ws_echo($c,'t',$txt);
             } else {
                for my $line (ansi_wrap($txt,$y)) {
-                  $c->send('',"t$line\r\n");
+                  ws_echo($c,"t",$line);
                }
             }
          };
@@ -3773,7 +3787,7 @@ sub echo
    my $fmt = shift;
    my $msg = sprintf("$fmt",@_);
  
-   ws_all("t","$msg\n");
+   ws_all("t",$msg);
    echo_console("%s",$msg);
 }
 
@@ -3795,7 +3809,7 @@ sub echo_console
       @state{optimize_output} = 2 if(@state{optimize_output} == 1);
    }
 
-   printf("\n%s",$msg);
+   printf("\n%s",encode_utf8($msg));
 
    if(@state{optimize_output} == 0) {
       update_scroll_region("input");
@@ -3961,10 +3975,8 @@ sub replace
 {
    my ($world,$txt) = @_;
 
-   key_log("replace: $txt");
    if($txt =~ /^\[([^\]]+)\(([^\]]+)\)([^\]]*)\] / ||
       $txt =~ /^\[([^:]+):\] /)  {
-      key_log("    *MATCH* '$''");
       return $';
    }
    return undef;
@@ -4093,11 +4105,14 @@ sub release_pending_pagefull
    my $hash = $ws_server->{conns};
 
    for(my $i=$start;$i <= $end && $count < $max;$i++){
-      next if @history{$w}->[$i]->{gagged};
 
       my @list = ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
       history_pos($w,$i);                                # update history_pos
 
+      if(@history{$w}->[$i]->{gagged}) {
+         history_pos_partial($w,-1);
+         next;
+      }
       # entry is read but how much of it?
       if($#list > 0 && $count + $#list + 1>= $max) {
          # find how many lines can be shown.
@@ -4319,8 +4334,10 @@ sub redraw_output
             next if(@ws{$client}->{auth} eq 0);
 
             eval {
-               for my $line(get_output($client)) {
-                  $client->send('',"t$line\r\n");
+               for my $line (get_output($client)) {
+                  if($line !~ /d'.*tat/) {
+                     ws_echo($client,"t",$line);
+                  }
                }
             };
             if($@) {
@@ -4362,6 +4379,7 @@ sub scan_history
    my $inc = shift;
    my $count = 0;
    my ($pos, $size);
+   my $done = 0;
    
    my $w = @state{world};
    if($inc > 0 && (!in_hist() || hist_pos($w) == $#{@history{$w}})) {
@@ -4382,12 +4400,17 @@ sub scan_history
    }
       
    my $hist = @history{@state{world}};
-   while($pos > 0 && $pos <= $#$hist && $count <= $size) {
+   while($pos > 0 && $pos <= $#$hist && $count <= $size && !$done) {
       if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
          @state{hist_start} += $inc;
          for my $line (ansi_wrap($$hist[$pos])) {
             $count++;
-            $pos += $inc if $count <= $size;
+            if($count <= $size) {
+               $pos += $inc;
+            } else {
+               $done = 1;
+               last;
+            }
          }
       }
    }
@@ -5020,12 +5043,13 @@ sub draw_bar
             next if(@ws{$client}->{auth} eq 0);
 
             eval {
-               $client->send('',sprintf("b%s  %s    %s%s%s%s:%02d",
+               ws_echo($client,"b",sprintf("%s  %s    %s        %s%s%s:%02d",
                      " " x (9 - ansi_length($more)),
                      $more,
                      name(),
                      $active,
-                     " " x (@ws{$client}->{size_y} - 3 - length(name()) - 16),
+                     " " x (@ws{$client}->{size_y} - length(name()) -
+                            length($active) - 26),
                      $hr,
                      $min
                     )
@@ -5176,6 +5200,7 @@ sub command_init
    @command{key_pgdn}    = sub { return key_pgdn(@_);                      };
    @command{key_pgup}    = sub { return key_pgup(@_);                      };
    @command{web_size}    = sub { return cmd_web_size(@_);                  };
+   @command{foo}         = sub { return cmd_foo(@_);                       };
 }
 
 sub key_esc_q
@@ -5214,6 +5239,10 @@ sub glob2re
 }
 
 
+sub cmd_foo
+{
+   echo("FOO: d'�tat");
+}
 #
 # cmd_web_size
 #    Set tell muddler the size of the websocket connection.
@@ -5679,7 +5708,7 @@ sub tick
    if(web()) {
       for my $key (keys %ws) {
          if(@ws{$key}->{auth} eq 0 && time() - @ws{$key}->{start} > 60) {
-            ws_echo(@ws{$key}->{conn},"%% Password entry timed out",1);
+            ws_echo(@ws{$key}->{conn},"t","%% Password entry timed out",1);
             ws_disconnect(@ws{$key}->{conn});
          }
       }
