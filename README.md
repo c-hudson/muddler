@@ -1,4 +1,6 @@
 ![Screenshot](screenshot.jpg)
+muddler connected to GlobalMUSH via a terminal in the background. The forground s the same session running in firefox via websockets. Changes to one session show up in the other except for the keyboard input window.
+
 # muddler
 
    A simple perl based mudding client which should be run from a terminal or your web browser.
