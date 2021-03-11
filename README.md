@@ -1,6 +1,7 @@
+![Screenshot](screenshot.jpg)
 # muddler
 
-   A simple perl based mudding client which should be run from a terminal.
+   A simple perl based mudding client which should be run from a terminal or your web browser.
 
 # Ideas to Impliment:
 These are things i plan to add in the furture. Most of them will be done
@@ -31,6 +32,7 @@ after the text based interface is extremely stable and usable.
 format of the file is exactly the same as tinyfugue's.
 # Supported Keys:
 ```
+   
    Arrow Right & Left : Move one character in the buffer
    Arrow Up and Down  : Cycle to the next connected world.
    Escape-w           : Move to next active world
@@ -40,6 +42,7 @@ format of the file is exactly the same as tinyfugue's.
    Tab                : Move forward one screen full of text if the world is
                         paused by "more".
    Control-l          : Redraw the screen [console only]
+   Escape-L           : Redraw the screen [web]
    PgUp               : Scroll up one page in the history buffer
    PgDown             : Scroll down one page in the history buffer
 ```
