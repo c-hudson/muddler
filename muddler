@@ -589,12 +589,6 @@ sub socket_handle_input
                   last;
                }
             }
-#            my @lines = @socket{$world}->{sock}->getlines(Timeout=>5);
-#            if($#lines >= 0) {
-#               for my $i (0 .. $#lines) { 
-#                  history($world,@lines[$i]);
-#               }
-#            }
          }
       }
    }
@@ -2054,7 +2048,8 @@ __STYLE__
 
      function displaywheel(e){
          var evt=window.event || e //equalize event object
-         var delta=evt.detail? evt.detail*(-500) : evt.wheelDelta //check for detail first so Opera uses that instead of wheelDelta
+         var delta=evt.detail? evt.detail*(-500) : evt.wheelDelta 
+         //check for detail first so Opera uses that instead of wheelDelta
          window.console.log(delta);
          if(delta < 0)
              input.onEnter('/key_pgdn 5')
@@ -2220,7 +2215,8 @@ __STYLE__
          break;
    
        case Connection.CHANNEL_CLEAR:
-           document.getElementById('output').innerHTML = "";
+           document.getElementById('output').innerHTML = ""
+
    //      this.innerHTML = '';
    //      this.clear();
          break;
@@ -2234,6 +2230,7 @@ __STYLE__
      };
    
      Connection.prototype.onText = null;
+     Connection.prototype.onClear = null;
      Connection.prototype.onBar = null;
      Connection.prototype.onObject = null;
      Connection.prototype.onHTML = null;
@@ -3585,9 +3582,7 @@ sub ws_all
       next if(@ws{$client}->{auth} eq 0);
 
       eval {
-          if($txt !~ /Party comes to power/) {
-             ws_echo($client,$type,$txt);
-          }
+          ws_echo($client,$type,$txt);
       };
       if($@) {
          ws_disconnect($client);
@@ -5234,6 +5229,7 @@ sub command_init
    @command{kill}          = sub { return cmd_kill(@_);                    };
    @command{def}           = sub { return cmd_def(@_);                     };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
+   @command{color}         = sub { return cmd_color(@_);                   };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
@@ -5284,6 +5280,11 @@ sub glob2re
     return "(?msix:\\A$pat\\z)";
 }
 
+sub cmd_color
+{
+   my ($w,$txt) = @_;
+   ws_all("c","red");
+}
 sub cmd_null
 {
    # do nothing for now
@@ -5296,25 +5297,25 @@ sub cmd_listdef
 
    my $str = getopt("sSm:t:b:B:E:T:h:a:P:iI");
 
-   echo("%-15s %4s %-8s %s","NAME","ATTR","WORLD","STRING");
+   history($w,sprintf("%-15s %4s %-8s %s","NAME","ATTR","WORLD","STRING"));
    for my $key (keys %def) {
       next if @def{$key}->{atr} !~ /g/;
       my $count = 0;
       for my $line (ansi_wrap(@def{$key}->{txt},49)) {
         if($count++ == 0) {
-            echo("%-15s %4s %-8s %s",
+            history($w,sprintf("%-15s %4s %-8s %s",
                  $key,
                  @def{$key}->{atr},
                  @def{$key}->{world},
                  $line
-                );
+                ));
          } else {
-            echo("%-15s %4s %-8s %s",
+            history($w,sprintf("%-15s %4s %-8s %s",
                  "",
                  "",
                  "",
                  $line
-                );
+                ));
          }
       }
    }
@@ -6104,7 +6105,7 @@ sub muddler_init
    redraw_screen();
    show_banner();
    read_tfworlds("@ENV{HOME}/.tfworlds");
-   # read_tfrc("@ENV{HOME}/.tfrc");
+   read_tfrc("@ENV{HOME}/.tfrc");
    reload_code();
 #   Monitor::monitor(@pending{alpha}, "array");
    @state{state} = "post-init";
@@ -6117,9 +6118,6 @@ sub muddler_init
 #
 sub muddler
 {
-   
-use Time::HiRes "ualarm";
-
    local $SIG{ALRM} = sub {
       delete @pid{keys %pid};
       key_log("### Fatal ### Alarm timeout");
