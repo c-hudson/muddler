@@ -63,7 +63,8 @@ These are things things i plan to add in the future. Most of them will be done a
          password are supplied, the user will be logged into at startup
       /world <world>
          Connect to an already defined world or switch to that world if
-         the world has already ben opened.
+         the world has already ben opened. This can be done with the up/down
+         arrow keys or escape-w.
       /help [<command>]
          Lists all commands or provides help on an individual command.
       /quit
@@ -112,3 +113,11 @@ These are things things i plan to add in the future. Most of them will be done a
       PgDown             : Both      : Scroll down one page in history buffer
       Scroll Wheel       : Web       : Scroll up / Down in history buffer
 ```
+# TinyFugue info/differences
+```
+   If you wish to use your TinyFugue world file, just rename it to ~/.tfworlds.
+   This file will be read on startup as long as there is not a .muddler file
+   to read. The TinyFugue world file will not be modified by muddler.
+
+   Saving stuff? TinyFugue requires you to do a /saveworld as needed.
+   Muddler automatically saves data as needed to its .muddler file.
