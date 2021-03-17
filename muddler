@@ -178,14 +178,14 @@ sub module_enabled
 sub load_modules
 {
    my %mod = (
-      'Term::ReadKey'          => { fatal => 1, fix => "apt install ' .
-                                     'libterm-readkey-perl" },
-      'Net::WebSocket::Server' => {  fatal => 0, fix => 'perl -MCPAN -e ' .
-                                     '"install Net::WebSocket::Server"',
+      'Term::ReadKey'          => { fatal => 1, fix => "apt install " .
+                                     "libterm-readkey-perl" },
+      'Net::WebSocket::Server' => {  fatal => 0, fix => "perl -MCPAN -e " .
+                                     "\"install Net::WebSocket::Server\"",
                                      disable => 'web/websocket server'
                                   },
-      'Net::Telnet'            => { fatal => 1, fix => "apt install ' .
-                                    'libnet-telnet-perl" },
+      'Net::Telnet'            => { fatal => 1, fix => "apt install " .
+                                    "libnet-telnet-perl" },
       'Encode'                 => { fatal => 1, fix => "install Encode module"},
       'Digest::MD5'            => { fatal => 0, fix => "install Digest::MD5"},
    );
@@ -195,7 +195,7 @@ sub load_modules
          @state{"mod_$key"} = 1;
          eval "use $key; 1;" or @state{"mod_$key"} = -1;
 
-         if(@state{"mod_@mod{$key}"} == -1) {
+         if(@state{"mod_$key"} == -1) {
             if(@mod{$key}->{fatal}) {
                @state{fatal} = 1;
                printf("FATAL: perl $key module is required for muddler.\n   " . 
@@ -6178,7 +6178,9 @@ sub cmd_world
 #----------------------------------------------------------------------------#
 
 END {
-  revert_console();
+  if(module_enabled("Term::ReadKey")) {
+     revert_console();
+  }
 }
 
 sub center
