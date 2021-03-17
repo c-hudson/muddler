@@ -6,6 +6,14 @@ This screenshot is showing the two interfaces to muddler. In the background is m
    A simple perl based mudding client which hopes to be a drop in replacement for TinyFugue at some point. muddler can be run from your terminal and/or host sessions for your browser via websockets.
    The key 
 
+# Features
+```
+   o console support - Mudding via your favorite terminal
+   o http/websocket support - Think mudding via your browser
+   o utf8 support
+   o connect to multiple worlds at the same time
+   o more / pausing output as needed
+```
 # muddler goals
 ```
    o drop in replacement for TinyFugue. Not everything will be supported but
@@ -37,66 +45,70 @@ These are things things i plan to add in the future. Most of them will be done a
       muddler will tell you what modules are missing and how to install
       them if on a linux/deb system.
    chmod u+x muddler
-   ./muddler
-```
-
-# World Support
-   Worlds may be defined in your ~/.tfworlds directory. Currently the
-format of the file is exactly the same as tinyfugue's.
-# Supported Keys:
-```
-   Keys                 INTERFACE   DESCRIPTION
-   Arrow Right & Left : Both      : Move one character in the buffer
-   Arrow Up and Down  : Both      : Cycle to the next connected world.
-   Escape-w           : Both      : Move to next active world
-   Control-w          : Both      : Delete previous word [console only]
-   Control-p          : Both      : Move down in the keyboard history
-   Control-n          : Both      : Move up in the keyboard history
-   Tab                : Both      : Move forward one screen full of text
-                                    if the world is paused by "more".
-   Control-l          : Console   : Redraw the screen 
-   Escape-L           : Web       : Redraw the screen
-   PgUp               : Both      : Scroll up one page in the history buffer
-   PgDown             : Both      : Scroll down one page in the history buffer
-   Scroll Wheel       : Web       : Scroll up / Down in history buffer
-```
-# Debug Keys:
-```
-   Control-d          : Dump the contents of the history & pending buffer
-                        to a file for debugging
-   Control-r          : Reload muddler's perl code if there are any changes.
-                        without dropping connections.
-```
-# Supported Commands:
-```
-   /version           : Show the current version information for muddler.
-   /world <world>     : Connect to the specified world as defined in the
-                        .tfworlds file.
-   /listsockets       : List currently open worlds.
-   /quit              : Quit muddler
-   /reload            : Reload muddler's perl code if there are any changes.
-                        without dropping connections.
-   /recall <cnt> <pat>: Recall <cnt> lines matching <pattern> from the
-                        current world's history. 
-   /help [<topic>]    : Online help command
-   /web <on/off>      : Enable the web/websocket interface
-   /web_port <port>   : Change the web/websocket port. THe port specified
-                        will be that of the web server. The websocket server
-                        will be one port number higher.
-   /def               : Define text to be gagged
-   /listdef           : List defines
-   /ps                : List currently running processes
-   /kill <pid>        : Kill a currently running process
-   /repeat <args>     : Runs a command at a specified interval
-   /echo <text>       : Echo text to the screen
-```
-# Command line:
-```
    ./muddler <options>
 
-       --noconsole     : disable the text based console and enable the
-                         web/websocket server.
-       --password      : specify the password for the websocket interface.
-       --port          : specify the port for the web server. The websocket
-                         server will be one port number higher.
+   Options:
+      --noconsole     : disable the text based console and enable the
+                        web/websocket server.
+      --password      : specify the password for the websocket interface.
+      --port          : specify the port for the web server. The websocket
+                        server will be one port number higher.
+```
+# Quick Start
+   
+```
+   Basic Commands:
+      /add <world> [<user> <password] <address> <port>
+         Define a world so that muddler can connect with it. If a user and
+         password are supplied, the user will be logged into at startup
+      /world <world>
+         Connect to an already defined world or switch to that world if
+         the world has already ben opened.
+      /help [<command>]
+         Lists all commands or provides help on an individual command.
+      /quit
+         Had enough, quit muddler.
+
+   Web Commands:
+      /web <status>
+         Turn the web interace "on" or "off". Default is off.
+      /password <password>
+         Sets the password that must be entered when connecting vai the web.
+      /port <port>
+         This command sets the port that muddler will use when you connect
+         to muddler via your browser. Just type in http://localhost:<port>
+         to connect. The default port is port 9000.
+
+         Note: If you plan to connect outside your network to muddler, the
+               program uses <port> for web traffic and <port> + 1 for web-
+               sockets. i.e. /port 9000 would use ports 9000 and 9001.
+
+   Command Line:
+      ./muddler <options>
+
+          --noconsole     : disable the text based console and enable the
+                            web/websocket server.
+          --password      : specify the password for the websocket interface.
+          --port          : specify the port for the web server. The websocket
+                            server will be one port number higher.
+   Saving stuff:
+      muddler saves your data automatically. This is only pointed out because
+      programs like TinyFugue require you to issue a command.
+
+   Supported Keys:
+
+      Keys                 INTERFACE   DESCRIPTION
+      Arrow Right & Left : Both      : Move one character in the buffer
+      Arrow Up and Down  : Both      : Cycle to the next connected world.
+      Escape-w           : Both      : Move to next active world
+      Control-w          : Both      : Delete previous word [console only]
+      Control-p          : Both      : Move down in the keyboard history
+      Control-n          : Both      : Move up in the keyboard history
+      Tab                : Both      : Move forward one screen full of text
+                                       if the world is paused by "more".
+      Control-l          : Console   : Redraw the screen 
+      Escape-L           : Web       : Redraw the screen
+      PgUp               : Both      : Scroll up one page in history buffer
+      PgDown             : Both      : Scroll down one page in history buffer
+      Scroll Wheel       : Web       : Scroll up / Down in history buffer
 ```
