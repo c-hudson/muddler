@@ -69,6 +69,7 @@ my %state = (
    p_password      => "xyzzy",
    p_color         => "light",                     # default websocket theme
    p_port          => 9000,                 # web/websock port starting port
+   p_debug         => 0,               # store debuging info to key_log file
    overlap         => 3,                        # keep X lines from previous
                                                      # output when scrolling
    world           => "muddler",    # starting "world" to make coding easier
@@ -5324,6 +5325,8 @@ sub key_log
 {
    my ($fmt,@args) = @_;
    my $file;
+
+   return if !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
    $msg .= "\n" if($msg !~ /\n/);
