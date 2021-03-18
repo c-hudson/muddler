@@ -143,6 +143,7 @@ sub command_init
    @command{keepalive}     = sub { return cmd_keepalive(@_);               };
    @command{color}         = sub { return cmd_color(@_);                   };
    @command{password}      = sub { return cmd_password(@_);                };
+   @command{update}        = sub { return cmd_update(@_);                  };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -4300,6 +4301,7 @@ sub release_pending_pagefull
    optimize_start();
    my $hash = $ws_server->{conns};
 
+   
    for(my $i=$start;$i <= $end && $count < $max;$i++) {
       my @list = ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
       history_pos($w,$i);                                # update history_pos
@@ -4486,6 +4488,7 @@ sub redraw_output
 
    my $w = @state{world};
 
+   echo("=====");
    release_pending_pagefull($w);                           # show new lines?
 
    if(!$web_only) {                                         # console output
@@ -4699,6 +4702,7 @@ sub key_ctl_r
 sub key_ctl_l
 {
    redraw_screen(@state{world},1);
+   echo("%% foobar");
 }
 
 #
@@ -5442,6 +5446,15 @@ sub single
     return $txt;
 }
 
+sub cmd_update
+{
+   open($update,"wget -q -O muddler https://github.com/c-hudson/muddler/blob/e5d7f0da0f564f369d2b1999c5762b856e8dc1d7/muddler 2&>1 |") ||
+      return echo("%% Unable to update muddler at this time. Does wget exist?");
+   while(<$update>) {
+   }
+   close($update);
+   reload_code();
+}
 sub cmd_more
 {
 #-# ------------------------------------------------------------------------
