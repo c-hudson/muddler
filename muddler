@@ -5457,10 +5457,11 @@ sub cmd_update
    my $update;
 
    open($update,"wget -q -O muddler.tmp --no-cache " .
-        "https://github.com/c-hudson/muddler/master/muddler " .
-        "2>&1 |") ||
+        "https://github.com/c-hudson/muddler/raw/master/muddler " .
+        " |") ||
       return echo("%% Unable to update muddler at this time. Does wget exist?");
    while(<$update>) {
+      echo("# $_");
    }
    close($update);
 
