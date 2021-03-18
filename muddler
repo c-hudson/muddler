@@ -5450,11 +5450,15 @@ sub cmd_update
 {
    my $update;
 
-   open($update,"wget -q -O muddler https://raw.githubusercontent.com/c-hudson/muddler/master/muddler 2&>1 |") ||
+   open($update,"wget -q -O muddler.tmp https://raw.githubusercontent.com" .
+        "/c-hudson/muddler/master/muddler 2&>1 |") ||
       return echo("%% Unable to update muddler at this time. Does wget exist?");
    while(<$update>) {
    }
    close($update);
+
+   unlink("muddler");
+   rename("muddler.tmp","muddler");
    reload_code();
 }
 sub cmd_more
