@@ -7,9 +7,9 @@
 #-#   /-()---()   |_|_|_|___/\___\___/|_|\__/_/   
 #
 # Note: A large section of the javascript, html, css came from Grapenut's
-#       websocket client. and has been embeded into this perl script.
-#       The license is described as: There is no license. Just make a neato
-#       game with it.
+#       websocket client and has been embeded into this perl script.
+#       I'm betting this is okay considering the license is described as:
+#       There is no license. Just make a neato game with it.
 #
 #       Project's location: https://github.com/grapenut/websockclient
 
@@ -86,6 +86,7 @@ sub key_init
    @key{2}               = sub { return key_left(@_);                };
    @key{4}               = sub { return key_dump(@_);                };
    @key{6}               = sub { return key_right(@_);               };
+   @key{8}               = sub { return key_delete(@_);              };
    @key{9}               = sub { return key_tab(@_);                 };
    @key{10}              = sub { return key_return(@_);              };
    @key{12}              = sub { return key_ctl_l(@_);               };
@@ -175,6 +176,7 @@ sub module_enabled
    }
  
 }
+
 sub load_modules
 {
    my %mod = (
@@ -197,22 +199,29 @@ sub load_modules
 
          if(@state{"mod_$key"} == -1) {
             if(@mod{$key}->{fatal}) {
+               @state{modules} = [] if(!defined @state{modules});
                @state{fatal} = 1;
-               printf("FATAL: perl $key module is required for muddler.\n   " . 
-                       "Fix?   @mod{$key}->{fix}\n");
+               push(@{@state{modules}},sprintf("FATAL: perl $key module is required for muddler.\n   " . 
+                       "Fix?   @mod{$key}->{fix}\n"));
             } else {
-               printf("WARNING: perl %s module is required for muddler.\n" .
-                      "   %s will be disabled.\n" .
-                      "   Fix?   %s\n",
+               @state{modules} = [] if(!defined @state{modules});
+               push(@{@state{modules}},sprintf("WARNING: perl %s module is required for muddler.\n" .
+                      "         %s will be disabled.\n" .
+                      "         Fix?   %s\n",
                       $key,
                       @mod{$key}->{disable},
                       @mod{$key}->{fix}
-                     );
+                     ));
             }
          }
       }
    }
-    
+   
+   if(@state{fatal}) {
+      for my $i (0 .. $#{@state{modules}}) {
+         printf("%s",@state{modules}->[$i]);
+      }
+   }
    exit() if @state{fatal};
 }
 
@@ -4108,6 +4117,8 @@ sub more
 
   if(in_hist()) {             # in history buffer is just a version of more
      return 1;
+  } elsif(!@state{p_more}) {
+     return 0;
   } elsif(@socket{$world}->{more} >= 0) {
      if(pending($world) == 0) {
         @socket{$world}->{more} = -1;
@@ -4260,7 +4271,9 @@ sub release_pending_pagefull
    more_check();
    return if(in_hist() && paused($w));
 
-   if(!console()) {
+   if(!@state{p_more}) {
+      $max = history_max($w);
+   } elsif(!console()) {
       $max = @socket{$w}->{size_x} - overlap() - @socket{$w}->{more_count};
    } else {
       $max = @state{size_x} - overlap() - @socket{$w}->{more_count}; 
@@ -5429,8 +5442,36 @@ sub single
     return $txt;
 }
 
+sub cmd_more
+{
+#-# ------------------------------------------------------------------------
+#-# /more [on|off]
+#-#
+#-#      Enables or disables more prompting that pauses the screen if
+#-#      text is arriving to quickly.
+#-#
+#-# ------------------------------------------------------------------------
+   my ($w,$txt) = @_;
+
+   if($txt =~ /^\s*(1|on)\s*$/) {
+      save("p_more",1);
+   } elsif($txt =~ /^\s*(0|off)\s*$/) {
+      save("p_more",0);
+   } elsif($txt =~ /^\s*$/) {
+      echo("%% more is %s",(@state{p_more} eq 1) ? "on" : "off");
+   } else {
+      echo("% Invalid more syntax, syntax is: /more [on|off]");
+   }
+}
 sub cmd_password
 {
+#-# ------------------------------------------------------------------------
+#-# /password <password>
+#-#
+#-#      Set the password that is required when connecting to muddler via
+#-#      the web.
+#-#
+#-# ------------------------------------------------------------------------
    my ($w,$txt) = @_;
 
    @state{p_password} = trim($txt);
@@ -5440,6 +5481,13 @@ sub cmd_password
 
 sub cmd_color
 {
+#-# ------------------------------------------------------------------------
+#-# /color [dark|light]
+#-#
+#-#      Set the theme of muddler when used in the web to either dark or
+#-#      light.
+#-#
+#-# ------------------------------------------------------------------------
    my ($w,$txt) = @_;
 
    if($txt =~ /^\s*(dark|light)\s*$/) {
@@ -5453,6 +5501,13 @@ sub cmd_color
 
 sub cmd_keepalive
 {
+#-# ------------------------------------------------------------------------
+#-# /keepalive <text>
+#-#
+#-#      Set what is sent to the current world when the socket is idle
+#-#      to keep the connection from timing out.
+#-#
+#-# ------------------------------------------------------------------------
    my ($w,$txt) = @_;
 
    if($txt eq undef) {
@@ -5463,6 +5518,7 @@ sub cmd_keepalive
       }
    } else {
       @address{$w}->{keepalive} = $txt;
+      save($w,$w,1);
       echo("% Keepalive for $w set to: $txt");
    }
 }
@@ -5472,7 +5528,7 @@ sub cmd_addworld
 #-# ------------------------------------------------------------------------
 #-# /addworld <name> [<user> <pass>] <host> <port>
 #-#
-#-1      Adds a world or overwrites an existing world.
+#-#      Adds a world or overwrites an existing world.
 #-#
 #-# ------------------------------------------------------------------------
    my ($w,$txt) = @_;
@@ -5864,6 +5920,14 @@ sub do_cmd
 #
 sub cmd_web_size
 {
+#-# ------------------------------------------------------------------------
+#-# /web_size <height>,<width>
+#-#
+#-#      Sets the height and width of the browser in number of characters
+#-#      that can be displayed. This is used internally and should not be
+#-#      needed to be set by the user.
+#-#
+#-# ------------------------------------------------------------------------
    my ($world,$txt,$conn) = @_;
 
    if($conn ne undef) {
@@ -6229,11 +6293,13 @@ sub show_banner
 
 sub read_tfworlds
 {
-   my $fn = shift;
+   my ($fn,$quiet) = @_;
    my ($file, $bad);
 
-   open($file,$fn) ||
-      return echo("%% Unable to open '%s' for reading",$fn);
+   if(!open($file,$fn)) {
+      echo("%% Unable to open '%s' for reading",$fn) if (!$quiet);
+      return;
+   }
 
    while(<$file>) {
       s/\r|\n//g;
@@ -6518,8 +6584,8 @@ sub muddler_init
    show_banner();
    load(1);
 
-   read_tfworlds("@ENV{HOME}/.tfworlds") if(!-e ".muddler");
-   read_tfrc("@ENV{HOME}/.tfrc");
+   read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e ".muddler");
+   read_tfrc("@ENV{HOME}/.tfrc",1);
    reload_code();
 #   Monitor::monitor(@pending{alpha}, "array");
    @state{state} = "post-init";
@@ -6578,11 +6644,15 @@ for my $i (0 .. $#ARGV) {
 }
 
 load_modules();
-
 ws_init() if !console();
 
 muddler_init();
 
+if(defined @state{modules}) {
+   for my $i (0 .. $#{@state{modules}}) {
+      echo("%s",@state{modules}->[$i]);
+   }
+}
 # keep the main loop small.
 while(1) {
    eval { muddler(); };
