@@ -5461,7 +5461,6 @@ sub cmd_update
         " |") ||
       return echo("%% Unable to update muddler at this time. Does wget exist?");
    while(<$update>) {
-      echo("# $_");
    }
    close($update);
 
