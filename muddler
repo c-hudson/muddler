@@ -5448,6 +5448,13 @@ sub single
 
 sub cmd_update
 {
+#-# ------------------------------------------------------------------------
+#-# /update
+#-#
+#-#      Downloads the newest copy of muddler from github and loads it.
+#-#      muddler may need to be restarted to work properly but also may not.
+#-#
+#-# ------------------------------------------------------------------------
    my $update;
 
    open($update,"wget -q -O muddler.tmp --no-cache " .
