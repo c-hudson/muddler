@@ -5448,7 +5448,9 @@ sub single
 
 sub cmd_update
 {
-   open($update,"wget -q -O muddler https://github.com/c-hudson/muddler/raw/master/muddler 2&>1 |") ||
+   my $update;
+
+   open($update,"wget -q -O muddler https://raw.githubusercontent.com/c-hudson/muddler/master/muddler 2&>1 |") ||
       return echo("%% Unable to update muddler at this time. Does wget exist?");
    while(<$update>) {
    }
