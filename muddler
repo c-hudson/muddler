@@ -4702,7 +4702,6 @@ sub key_ctl_r
 sub key_ctl_l
 {
    redraw_screen(@state{world},1);
-   echo("%% foobar");
 }
 
 #
