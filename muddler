@@ -70,6 +70,7 @@ my %state = (
    p_color         => "light",                     # default websocket theme
    p_port          => 9000,                 # web/websock port starting port
    p_debug         => 0,               # store debuging info to key_log file
+   p_more          => 1,                                      # enable /more
    overlap         => 3,                        # keep X lines from previous
                                                      # output when scrolling
    world           => "muddler",    # starting "world" to make coding easier
@@ -5469,6 +5470,7 @@ sub cmd_update
    system("chmod u+x muddler");
    reload_code();
 }
+
 sub cmd_more
 {
 #-# ------------------------------------------------------------------------
