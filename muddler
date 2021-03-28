@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 #-#         ( A 90dies mud client written today ) 
 #-#       o               v1.0a                   
 #-#      o _____                __  __ _          
@@ -74,6 +74,7 @@ my %state = (
    overlap         => 3,                        # keep X lines from previous
                                                      # output when scrolling
    world           => "muddler",    # starting "world" to make coding easier
+   activity        => {},                       # store worlds with activity
 );
 
 #
@@ -126,8 +127,8 @@ sub command_init
    @command{key_tab}       = sub { return key_tab(@_);                     };
    @command{key_esc_w}     = sub { return key_esc_w(@_);                   };
    @command{key_ctl_l}     = sub { return key_ctl_l(@_);                   };
-   @command{key_up}        = sub { return key_up("A",@_);                  };
-   @command{key_down}      = sub { return key_down("B",@_);                };
+   @command{key_up}        = sub { return key_up(@_);                      };
+   @command{key_down}      = sub { return key_down(@_);                    };
    @command{key_pgdn}      = sub { return key_pgdn(@_);                    };
    @command{key_pgup}      = sub { return key_pgup(@_);                    };
    @command{web_size}      = sub { return cmd_web_size(@_);                };
@@ -145,15 +146,19 @@ sub command_init
    @command{color}         = sub { return cmd_color(@_);                   };
    @command{password}      = sub { return cmd_password(@_);                };
    @command{update}        = sub { return cmd_update(@_);                  };
+   @command{sync}          = sub { return cmd_sync(@_);                    };
+   @command{mobile}        = sub { return cmd_mobile(@_);                  };
+   @command{allow}         = sub { return cmd_allow(@_);                   };
+   @command{set}           = sub { return cmd_set(@_);                     };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
    @command{hilite_page}   = sub { return cmd_null(@_);                    };
    @command{hilite_whisper}= sub { return cmd_null(@_);                    };
-   @command{status_rm}     = sub { return cmd_null(@_);                    };
-   @command{set}           = sub { return cmd_null(@_);                    };
+   @command{status_rm}     = sub { return cmd_null(@_);                    },
+   # @command{set}           = sub { return cmd_null(@_);                    };
    @command{load}          = sub { return cmd_null(@_);                    };
-   @command{loadworld}     = sub { return cmd_null(@_);                    };
+   @command{loadworld}     = sub { return load(@_);                        };
    @command{visual}        = sub { return cmd_null(@_);                    };
    @command{isize}         = sub { return cmd_null(@_);                    };
    @command{idleit}        = sub { return cmd_null(@_);                    };
@@ -171,7 +176,6 @@ sub module_enabled
    my $txt = shift;
 
    if(!defined @state{"mod_$txt"} || @state{"mod_$txt"} == -1) {
-      key_log("Mod: '%s' -> '%s'\n",$txt,@state{"mod_$txt"});
       return 0;
    } else {
       return 1;
@@ -203,17 +207,17 @@ sub load_modules
             if(@mod{$key}->{fatal}) {
                @state{modules} = [] if(!defined @state{modules});
                @state{fatal} = 1;
-               push(@{@state{modules}},sprintf("FATAL: perl $key module is required for muddler.\n   " . 
-                       "Fix?   @mod{$key}->{fix}\n"));
+               push(@{@state{modules}},sprintf("FATAL: perl $key module is " .
+                  "required for muddler.\n   Fix?   @mod{$key}->{fix}\n"));
             } else {
                @state{modules} = [] if(!defined @state{modules});
-               push(@{@state{modules}},sprintf("WARNING: perl %s module is required for muddler.\n" .
-                      "         %s will be disabled.\n" .
-                      "         Fix?   %s\n",
-                      $key,
-                      @mod{$key}->{disable},
-                      @mod{$key}->{fix}
-                     ));
+               push(@{@state{modules}},sprintf("WARNING: perl %s module is " .
+                  "required for muddler.\n         %s will be disabled.\n" .
+                  "         Fix?   %s\n",
+                  $key,
+                  @mod{$key}->{disable},
+                  @mod{$key}->{fix}
+                 ));
             }
          }
       }
@@ -644,7 +648,8 @@ sub ansi_remove
 
 sub socket_connect
 {
-   my ($world,$host,$port,$ssl) = ( lc(shift), @_ );
+   my ($conn,$world,$host,$port,$ssl) = (shift,lc(shift), shift,shift,shift);
+
 
    if(defined @socket{$world} && @socket{$world}->{sock}) {
       return echo("%% Already connected to %s",$world);
@@ -660,7 +665,7 @@ sub socket_connect
                        history_pos => -1,
                        history_pos_partial => -1,
                      };
-   @state{world} = $world;
+
    @socket{$world}->{pos} = ++@state{pos_sequence};
 #   Monitor::monitor(@socket{$world}, "hash");
 
@@ -677,6 +682,8 @@ sub socket_connect
 
 
    @socket{$world}->{sock} = $s;
+   switch_world($conn,$world);
+
    echo("%% Connection to %s succeeded.",$world);
    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
       out($world,
@@ -687,7 +694,6 @@ sub socket_connect
    }
    delete @socket{muddler};
    draw_bar();
- 
 }
 
 sub socket_handle_input
@@ -749,13 +755,13 @@ sub ws_init
       printf("%%    Password: @state{p_password}\n");
    }
    @state{web} = 1;
-   $http_listen = IO::Socket::INET->new( LocalPort => @state{port},
+   $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
                                          Listen    => 1,
                                          Reuse     => 1,
                                        )
    or die "failed to set up httpd listener: $!";
 
-   $ws_listen = IO::Socket::INET->new( LocalPort => @state{port} + 1,
+   $ws_listen = IO::Socket::INET->new( LocalPort => @state{p_port} + 1,
                                        Listen    => 1,
                                        Reuse     => 1,
                                        )
@@ -787,14 +793,39 @@ sub ws_disconnect
    # $sock->close;
 }
 
+sub allowed
+{
+   my $ws = shift;
+
+   if(defined @state{p_allow}) {
+      for my $host (split(/,/,@state{p_allow})) {
+         my $pat = glob2re($host);
+         return 1 if(@ws{$ws}->{ip} =~ /$pat/i);
+      }
+   }
+   return 0;
+}
+
 sub ws_login_screen
 {
    my $ws = shift;
-   ws_echo($ws,"t",@state{version},1);
+#   ws_echo($ws,"t",@state{version},1);
 
    if(defined @state{p_color}) {
-      ws_echo($ws,"c",@state{p_color},1);
+      ws_echo($ws,"d","theme @state{p_color}",1);
    }
+
+#   if(@state{p_mobile} == 1) {
+#      ws_echo($ws,"d","mobile on",1);
+#   }
+
+   if(allowed($ws)) {
+      @ws{$ws}->{auth} = 1;
+      echo("%% Allowed web connection from: %s",@ws{$ws}->{ip});
+   } else {
+      ws_echo($ws,"d","password",1);
+   }
+   
 #   redraw_screen();
 }
 
@@ -867,6 +898,9 @@ sub ws_io
          @ws{$conn}->{conn} = $conn;
          @ws{$conn}->{start} = time();
          @ws{$conn}->{auth} = 0;
+         @ws{$conn}->{ip} = server_hostname($s);
+         @ws{$conn}->{port} = @state{p_port} + 1;
+         @ws{$conn}->{world} = @state{world};
       } elsif($sock == $http_listen) {
          my $s = $sock->accept;
          $ws_server->{select_readable}->add($s);
@@ -2080,12 +2114,13 @@ __ANSI__
      padding: 0;
      border: none;
      background: white;
-     left: 3px;
-     right: 3px;
-     top: 3px;
-     bottom: 3px;
+     left: 0px;
+     right: 0px;
+     top: 0px;
+     bottom: 0px;
      box-shadow: 0 0 0.2em 0.1em gray;
      overflow: hidden;
+     /* display: none; */
    }
    
    #output {
@@ -2099,7 +2134,7 @@ __ANSI__
      left: 0;
      width: 99%;
      top: 0;
-     bottom: 7em;
+     bottom: 6em;
      background: white; 
    }
    
@@ -2112,7 +2147,7 @@ __ANSI__
      position: absolute;
      left: 0;
      width: 100%;
-     bottom: 5em;
+     bottom: 4em;
      height: 1.4em;
      vertical-align: middle;
      text-align: left;
@@ -2145,6 +2180,53 @@ __ANSI__
      width: 99%;
      bottom: 0;
      height: 3em;
+   }
+   #buttonbar {
+     position: absolute;
+     margin: 0;
+     background: white;
+     color: black;
+     border: none;
+     outline: none;
+     vertical-align: middle;
+     padding: 0px 0px 0px 0px;
+     resize: none;
+     left: 0;
+     width: 100%;
+     bottom: 0;
+     height: 30px;
+     float: left;
+     display: none;
+   }
+
+   .triangle {
+       border: 2px solid gray;
+       position: absolute;
+       height: 100px;
+       width: 100px;
+       z-index: 2; 
+   }
+   
+   .inner-triangle {
+      width: 0;
+      height: 0;
+      border-top: 70px solid #ffcc00;
+      border-bottom: 70px solid transparent;
+      border-left: 70px solid transparent;
+      position:absolute;
+      right:0;
+      z-index: 2; 
+   }
+
+   .inner-triangle span {
+      position:absolute;
+      top: -50px;
+      width: 70px;
+      left: -60px;
+      text-align: center;
+      transform: rotate(45deg);
+      display: block;
+      z-index: 10;
    }
 __STYLE__
 
@@ -2222,13 +2304,13 @@ __STYLE__
        Connection.reconnect(that);
      }
      
-     Connection.CHANNEL_TEXT = 't';
-     Connection.CHANNEL_BAR  = 'b';
-     Connection.CHANNEL_JSON = 'j';
-     Connection.CHANNEL_HTML = 'h';
+     Connection.CHANNEL_TEXT   = 't';
+     Connection.CHANNEL_BAR    = 'b';
+     Connection.CHANNEL_JSON   = 'j';
+     Connection.CHANNEL_HTML   = 'h';
      Connection.CHANNEL_PUEBLO = 'p';
      Connection.CHANNEL_PROMPT = '>';
-     Connection.CHANNEL_CLEAR = 'c';
+     Connection.CHANNEL_DO     = 'd';
    
      Connection.reconnect = function (that) {
        that.reconnect();
@@ -2331,33 +2413,53 @@ __STYLE__
        case Connection.CHANNEL_PROMPT:
          this.onPrompt && this.onPrompt(data);
          break;
-   
-       case Connection.CHANNEL_CLEAR:
-           // Clear the screen or change the color scheme
+  
+       case Connection.CHANNEL_DO:
            data = data.replace(/[\r\n]+/g, '').trim();
-           if(!data || 0 === data.length) {
+
+           // console.log("request: " + data);
+
+           if(data === "mobile on") {
+              var obj = document.getElementById("output");
+              document.querySelector('#terminal').style.bottom = "30px";
+              document.querySelector('#buttonbar').style.display = 
+                  "inline-block";
+              obj.style.fontSize = "9pt";
+              obj.scrollTop = obj.scrollHeight;
+           } else if(data === "mobile off") {
+              var obj = document.getElementById("output");
+              document.querySelector('#terminal').style.bottom = 0;
+              document.querySelector('#buttonbar').style.display = "none";
+              obj.style.fontSize = "10pt";
+              obj.scrollTop = obj.scrollHeight;
+           } else if(data === "theme light") {
+              document.querySelector('.ansi-37').style.color='black';
+              document.getElementById('output').style.backgroundColor='white';
+              document.getElementById('bar').style.backgroundColor='white';
+              document.getElementById('input').style.backgroundColor = 'white';
+              document.querySelector('#bar').style.borderBottom =
+                  '1px solid black';
+              document.querySelector('#terminal').style.background = 'white';
+              document.querySelector('#input').style.color= 'black';
+           } else if(data === "theme dark") {
+              document.getElementById('output').style.backgroundColor=
+                 '#131712';
+              document.getElementById('bar').style.backgroundColor = '#131712';
+              document.getElementById('input').style.backgroundColor='#131712';
+              document.querySelector('#terminal').style.background = '#131712';
+              document.querySelector('#bar').style.borderBottom=
+                 '1px solid white';
+              document.querySelector('.ansi-37').style.color  = 'white';
+              document.querySelector('#input').style.color= 'white';
+           } else if(data === "clear") {
               document.getElementById('output').innerHTML = ""
-           } else if(data === 'light') {
-            window.console.log('data: light');
-            document.querySelector('.ansi-37').style.color  = 'black';
-            document.getElementById('output').style.backgroundColor = 'white';
-            document.getElementById('bar').style.backgroundColor = 'white';
-            document.getElementById('input').style.backgroundColor = 'white';
-            document.querySelector('#bar').style.borderBottom='1px solid black';
-            document.querySelector('#terminal').style.background = 'white';
-            document.querySelector('#input').style.color= 'black';
-           } else if(data === 'dark') {
-            window.console.log('data: dark');
-          //  document.getElementById('output').style.backgroundColor = 'black';
-            document.getElementById('output').style.backgroundColor = '#131712';
-            document.getElementById('bar').style.backgroundColor = '#131712';
-            document.getElementById('input').style.backgroundColor = '#131712';
-            document.querySelector('#terminal').style.background = '#131712';
-            document.querySelector('#bar').style.borderBottom='1px solid white';
-            document.querySelector('.ansi-37').style.color  = 'white';
-            document.querySelector('#input').style.color= 'white';
+           } else if(data === "password") {
+              console.log("Got password request");
+              sendCommand(window.prompt("Enter password","xyzzy"));
+           } else {
+              console.log("unknown do request: " + data);
            }
-         break;
+           break;
    
        default:
          window.console && window.console.log('unhandled message', data);
@@ -3318,7 +3420,9 @@ __JS__
    
    @http_data{"orig_muddler_client.html"}=<<__HTML__;
    <!DOCTYPE html>
-   <html><head><meta charset="UTF-8">
+   <html><head><meta name="viewport" content="width=device-width, maximum-scale=1" charset="UTF-8">
+
+
    
    <link rel="stylesheet" href="muddler_ansi.css">
    <link rel="stylesheet" href="muddler_style.css">
@@ -3335,6 +3439,16 @@ __JS__
      <div id="prompt" class="ansi-37 ansi-1-37"></div>
      <textarea id="input" autocomplete="off" autofocus></textarea>
    </div>
+     <div id="buttonbar" "class=buttonbar" style=width:100%>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgup 5')">PgUP</button>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgdn 5')">PgDN</button>
+         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_up')">NextWld</button>
+         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 1px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_down')">PrevWld</button>
+     </div>
+     </div class=triangle>
+        <div class="inner-triangle" onclick="input.onEnter('/mobile')"><span>muddler</span></div>
+        <div class="outer-triangle"></div>
+     </div>
    
    <script type="text/javascript" src="muddler_client.js"></script>
    <script type="text/javascript">
@@ -3387,7 +3501,11 @@ __JS__
    
      
      // just log a standard message on these socket status events
-     conn.onOpen = function (evt) { output.appendMessage('logMessage', '%% Connected.'); sendCommand('/web_size ' + get_xy_size() + '\r\n') ; sendCommand(window.prompt("Enter password","password"));};
+     conn.onOpen = function (evt) { 
+         output.appendMessage('logMessage', '%% Connected.');
+         sendCommand('/web_size ' + get_xy_size() + '\r\n');
+         // sendCommand(window.prompt("Enter password","xyzzy"));
+     };
      conn.onError = function (evt) { output.appendMessage('logMessage', '%% Connection error!'); console.log(evt); };
      conn.onClose = function (evt) { output.appendMessage('logMessage', '%% Connection closed.'); };
      // handle incoming text, html, pueblo, or command prompts
@@ -3531,7 +3649,7 @@ sub http_process_line
       if($$data{get} eq undef) {
          $$data{get} = "muddler_client.html";
          my $tmp = @http_data{$$data{get}};
-         my $port = @state{port} + 1;
+         my $port = @state{p_port} + 1;
          $tmp =~ s/9001/$port/;
          http_reply($sock,$data,"%s",$tmp);
       } elsif(!defined @http_data{$$data{get}}) {
@@ -3690,10 +3808,10 @@ sub ws_process
    } elsif(@ws{$conn}->{auth} eq 0 && $input !~ /^\/(version|web_size)/) {
       if($input eq @state{p_password}) {
          @ws{$conn}->{auth} = 1;
-         redraw_screen();
+         redraw_screen($conn);
          ws_echo($conn,"t","%% Password validated.") if (no_world());
+         echo("%% Authenticated web connection from: %s",@ws{$conn}->{ip});
       } else {
-         key_log("Disconnecting");
          ws_echo($conn,"t","%% Invalid Password.",1);
          ws_disconnect($conn);
       }
@@ -3702,7 +3820,7 @@ sub ws_process
    } elsif(no_world()) {
      # do nothing
    } elsif(defined @socket{@state{world}}->{sock}) {
-      out(@state{world},"%s\n",$input);
+      out(@ws{$conn}->{world},"%s\n",$input);
    }
    unshift(@input,@state{line});                        # store keyboard history
 }
@@ -3818,9 +3936,11 @@ sub console
 #
 sub in_hist
 {
-   if(no_world() || !defined @socket{@state{world}}) {
+   my $w = shift;
+
+   if(no_world() || !defined @socket{$w}) {
       return 0;
-   } elsif(defined @socket{@state{world}}->{hist_pos}) {
+   } elsif(defined @socket{$w}->{hist_pos}) {
       return 1;
    } else {
       return 0;
@@ -3842,7 +3962,7 @@ sub hist_pos
       delete @socket{$w}->{hist_pos};
    } elsif($action ne undef) {
       @socket{$w}->{hist_pos} = $action;
-   } else {
+   } elsif(defined @socket{$w}) {
       return @socket{$w}->{hist_pos};
    }
 }
@@ -3860,7 +3980,6 @@ sub pending
       @socket{$w}->{pending} = 0;
       return 0;
    } else {
-#      key_log("Returning: '%s'",@socket{$w}->{pending});
       return @socket{$w}->{pending};
    }
 }
@@ -3895,6 +4014,7 @@ sub pending_fix
                                           $txt_start));
       }
    }
+   
    @socket{$w}->{pending} = $count;
 }
 
@@ -3982,7 +4102,6 @@ sub echo
  
    ws_all("t",$msg);
    echo_console("%s",$msg);
-#   key_log("%s",$msg);
 }
 
 #
@@ -4090,7 +4209,7 @@ sub paused
 
    my $max = output_end() - overlap();
 
-   if(in_hist()) {
+   if(in_hist($w)) {
       return 1;
    } elsif(more($w) && @socket{$w}->{more_count} > $max) {
       return 1;
@@ -4099,14 +4218,6 @@ sub paused
    }
 }
 
-#
-# on_world
-#   Determine if the current world is the one specified.
-#
-sub on_world
-{
-   return (@state{world} eq @_[0]) ? 1 : 0;
-}
 
 #
 # more
@@ -4117,9 +4228,12 @@ sub more
   my $world = shift;
   $world = @state{world} if($world eq undef);
 
-  if(in_hist()) {             # in history buffer is just a version of more
+  if(in_hist($world)) {         # in history buffer is just a version of more
      return 1;
   } elsif(!@state{p_more}) {
+     return 0;
+  } elsif(!defined @socket{$world}) {
+     key_log("more: %s'\n",code());
      return 0;
   } elsif(@socket{$world}->{more} >= 0) {
      if(pending($world) == 0) {
@@ -4235,7 +4349,6 @@ sub history
    my ($world,$txt,$gagged) = @_;
    $txt =~ s/\r|\n//g;
 
-#   key_log("hist: $txt");
    @history{$world} = [] if !defined @history{$world};
 
    if($txt eq undef) {
@@ -4247,14 +4360,64 @@ sub history
          my $modified=replace($world,$txt);
          history_add($world,$modified,0,0) if($modified ne undef);
          history_add($world,$txt,($modified eq undef) ? 0 : 1,1);
-
-         @state{activity}->{$world} = 1 if(!on_world($world));
+         @state{activity}->{$world} = 1 if(!world_visible($world));
       }
    }
 
-   if(on_world($world) && !paused($world)) {
-      release_pending_pagefull();
+   release_pending_pagefull("n/a",$world);
+}
+
+#
+# echo_world
+#    send the output to any console/websocket connection that is currently
+#    on the world in question.
+#
+sub echo_world
+{
+   my ($world,$console,$web) = @_;
+
+   if(@state{world} eq $world) {
+      echo_console("%s",$console);
+   } 
+
+   my $hash = $ws_server->{conns};
+
+   for my $key (keys %$hash) {
+      my $c = $$hash{$key}->{conn};
+
+      next if(@ws{$c}->{auth} eq 0);
+ 
+      if(@ws{$c}->{world} eq $world) {
+         my $y=(defined @ws{$c}->{size_y}) ? @ws{$c}->{size_y}:@state{size_y}; 
+
+         if($web eq undef) {
+            ws_echo($c,"t");
+         } else {
+            for my $line (ansi_wrap($web,$y)) {
+               ws_echo($c,"t",$line);
+            }
+         }
+      }
    }
+}
+
+#
+# world_visible
+#   Determine if the world is currently being viewed by the console or
+#   any websocket connection.
+#
+sub world_visible
+{
+   my $world = shift;
+
+   if($world eq @state{world}) {
+      return 1;
+   } else {
+      for my $key (keys %ws) {
+         return 1 if(@ws{$key}->{world} eq $world);
+      }
+   }
+   return 0;
 }
 
 
@@ -4265,13 +4428,14 @@ sub history
 #
 sub release_pending_pagefull
 {
-   my $force = shift;
-   my $w = @state{world};
+   my ($conn,$w,$force) = @_;
    my $count = 0;
    my ($max,$end,$start,$txt_start);
 
+   return if(!world_visible($w));
+
    more_check();
-   return if(in_hist() && paused($w));
+   return if(in_hist($w) && paused($w));
 
    if(!@state{p_more}) {
       $max = history_max($w);
@@ -4281,7 +4445,6 @@ sub release_pending_pagefull
       $max = @state{size_x} - overlap() - @socket{$w}->{more_count}; 
    }
 
-   my $w = @state{world};
    # determine max ending point, end of buffer or X lines after more enabled
    if(more($w) && @socket{$w}->{more} + $max - 1< history_max($w)){
       $end = @socket{$w}->{more} + $max - 1;
@@ -4316,18 +4479,25 @@ sub release_pending_pagefull
          # find how many lines can be shown.
          my $end = $max - $count - 1;
          @socket{$w}->{more} = history_pos($w);        
-         echo_console("%s",join("\n",@list[0 .. $end]));
+
          # since line size could vary, record how many characters were shown
          history_pos_partial($w,$txt_start + 
                                 ansi_length(join("",@list[0 .. $end])));
-         ws_all_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start,
-            history_pos_partial()));
+         echo_world($w,
+                    join("\n",@list[0 .. $end]),
+                    ansi_substr(@history{$w}->[$i]->{txt},
+                                $txt_start,
+                                history_pos_partial()
+                               )
+                   );
          @socket{$w}->{pending} -= $end + 1;
          @socket{$w}->{more_count} += $end if(more($w));
       } else {                                    # mark whole entry as read
          @socket{$w}->{pending} -= $#list + 1;
-         ws_all_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
-         echo_console("%s",join("\n",@list));
+         echo_world($w,
+                    join("\n",@list),
+                    ansi_substr(@history{$w}->[$i]->{txt},$txt_start)
+                   );
          history_pos_partial($w,-1);
          $count++;
          @socket{$w}->{more_count} += $#list + 1 if(more($w));
@@ -4336,6 +4506,7 @@ sub release_pending_pagefull
    }
    more_update();
    optimize_end();
+
    draw_bar(1);
 }
 
@@ -4428,14 +4599,15 @@ sub get_output
    my $conn = shift;
    my ($start_pos,$partial,@out,@line,$x,$y);
 
-   if($conn eq undef) {                             # determine screen size
+   if(is_console($conn)) {
       ($x,$y) = (@state{size_x},@state{size_y});
-   } else {
+   } elsif(is_web($conn)) {
       ($x,$y) = (@ws{$conn}->{size_x},@ws{$conn}->{size_y});
    }
-   my $w = @state{world};                                 # save some typing
 
-   if(in_hist()) {                                # determine starting point
+   my $w = world($conn);                                  # save some typing
+
+   if(in_hist($w)) {                              # determine starting point
       $start_pos = hist_pos($w);
       $partial = hist_pos_partial($w);                    # start in history
    } else {
@@ -4446,7 +4618,7 @@ sub get_output
    my $hist = @history{$w};
 
    for(my $i=$start_pos;
-       $i >= 0 && $#out <= $x - 2 && $i <= $#$hist;
+       $i >= 0 && $#out <= $x - 3 && $i <= $#$hist;
        $i--) {
       next if $$hist[$i]->{gagged};
 
@@ -4457,16 +4629,16 @@ sub get_output
       }
 
       if($#line == -1 && $#out +1 < $x) {    # blank line, fix in ansi_wrap?
-         unshift(@out,"");
+         unshift(@out,{ pos => $i, txt => ""});
       } else {                                   # add each line if possible
          for my $y (reverse 0 .. $#line) {
-            unshift(@out,@line[$y]) if($#out + 1 < $x);
+            unshift(@out,{ pos => $i, txt => @line[$y]}) if($#out + 1 < $x);
          }
       }
    }
 
    for my $i (1 .. ($x - $#out + 1)) {             # fill in any blank lines
-      unshift(@out,"\033[K");
+      unshift(@out,{ pos => -2, txt => "\033[K"});
    }
 
    return @out;
@@ -4478,71 +4650,65 @@ sub get_output
 #
 sub redraw_output
 {
-   my ($flag,$web_only) = @_;                  # don't show internal messages?
-   my ($y,@out,$paused);
+   my ($conn,$flag) = @_;                    # don't show internal messages?
    my (@line,$size,$count,$start_pos,$partial,$start,$end);
+   my ($w, $y,@out,$paused,$first);
 
-   return if @state{world} eq undef;
-   my $w = @state{world};
+   $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+   my $last = history_pos($w) + 1;
+   release_pending_pagefull($conn,$w);                       # show new lines?
 
-   ws_all("c","");                                    # clear output window
-
-   my $w = @state{world};
-
-   echo("=====");
-   release_pending_pagefull($w);                           # show new lines?
-
-   if(!$web_only) {                                         # console output
+   if(is_console($conn)) {
       optimize_start();
-      for my $line (get_output()) {
-         echo_console("%s",$line);
+      for my $hash (get_output($conn)) {
+         # show dashes before new output when switching to world
+         if($$hash{pos} == $last && $first eq undef) {
+            echo_console("%s","=====");
+            $first++;
+         }
+         echo_console("%s",$$hash{txt});
       }
       optimize_end();
-   }
-
-   if(web()) {                             # handle websocket connections
-      my $hash = $ws_server->{conns};
-
-      for my $key ( keys %$hash) {
-         my $client = $$hash{$key}->{conn};
-         next if(@ws{$client}->{auth} eq 0);
-
-         eval {
-            for my $line (get_output($client)) {
-               ws_echo($client,"t",$line);
-            }
-         };
-         if($@) {
-           ws_disconnect($client);
-         }
+   } elsif(is_web($conn)) {
+      for my $hash (get_output($conn)) {
+         if($$hash{pos} == $last && $first eq undef) {
+            # show dashes before new output when switching to world
+            ws_echo($conn,"t","=====");
+            $first++;
+          }
+          ws_echo($conn,"t",$$hash{txt});
       }
    }
 }
 
 sub redraw_input
 {
-   return if !console();
+   my $conn = shift;
 
-   update_scroll_region("input",1);
-   xy(input_start(),1,1);
-   my $start = @state{input_offset}+1;
-   my $end = $start + @state{input_size} - 1;
-   for my $i ($start .. $end) {
-      printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
+   if(is_console($conn)) {
+      update_scroll_region("input",1);
+      xy(input_start(),1,1);
+      my $start = @state{input_offset}+1;
+      my $end = $start + @state{input_size} - 1;
+      for my $i ($start .. $end) {
+         printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
+      }
+      xy(input_x(),input_y(),1);
    }
-   xy(input_x(),input_y(),1);
 }
 
 sub redraw_screen
 {
-   my $flag = shift;
+   my ($conn,$flag) = @_;
 
    my $clear = shift;
-   printf("\033[r\033[2J") if $clear && console();
-   clear_screen();
-   redraw_output($flag);
+
+   printf("\033[r\033[2J") if(is_console($conn) && $clear);
+   clear_screen($conn);
+   redraw_output($conn,$flag);
    draw_bar(1);
-   redraw_input();
+   redraw_input($conn);
 }
 
 #
@@ -4553,18 +4719,19 @@ sub redraw_screen
 #
 sub scan_history
 {
-   my ($inc,$max) = @_;
+   my ($conn,$inc,$max) = @_;
    my $count = 0;
    my ($pos, $size);
    
-   return if @state{world} eq undef;
-   my $w = @state{world};
-   if($inc > 0 && (!in_hist() || hist_pos($w) == $#{@history{$w}})) {
+   my $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+
+   if($inc > 0 && (!in_hist($w) || hist_pos($w) == $#{@history{$w}})) {
       hist_pos($w,"delete");
       return 0;
    } elsif(abs($inc) != 1) {
       die("scan_history incrament must be -1 or +1");
-   } elsif($inc < 0 && !in_hist()) {
+   } elsif($inc < 0 && !in_hist($w)) {
       $pos = $#{@history{@state{world}}};
    } else {
       $pos = hist_pos($w);
@@ -4611,12 +4778,12 @@ sub scan_history
 #
 sub key_pgup
 {
-   my ($w,$size) = @_;
+   my ($w,$size,$conn) = @_;
    my $count = -1;
 
-   if(scan_history(-1,$size)) {
+   if(scan_history($conn,-1,$size)) {
       draw_bar();
-      redraw_output();
+      redraw_output($conn);
    }
 }
 
@@ -4626,11 +4793,13 @@ sub key_pgup
 #
 sub key_pgdn
 {
-   my ($w,$size) = @_;
+   my ($w,$size,$conn) = @_;
 
-   if(scan_history(1,$size)) {
-      redraw_output();
+   if(scan_history($conn,1,$size)) {
+      redraw_output($conn);
       draw_bar();
+   } else {
+      key_tab(@_);
    }
 }
 
@@ -4657,6 +4826,8 @@ sub key_dump
 #
 sub key_ctl_p
 {
+   my ($world,$txt,$conn) = @_;
+
    # current input has data, lets store it
    if($#{@state{line}} >= 0 && @state{input_pos} == -1) { # store current input
       unshift(@input,@state{line});
@@ -4665,7 +4836,7 @@ sub key_ctl_p
    if(@state{input_pos} < $#input) {           # move down in keyboard history
       @state{line} = @input[++@state{input_pos}];
       @state{line_pos} = $#{@input[@state{input_pos}]} + 1;
-      redraw_input();
+      redraw_input($conn);
    }
 }
 
@@ -4675,15 +4846,17 @@ sub key_ctl_p
 #
 sub key_ctl_n
 {
+   my ($world,$txt,$conn) = @_;
+
    if(@state{input_pos} == 0) {            # input empty, start with new line
       @state{line} = [];
       @state{line_pos} = 0;
       @state{input_pos} = -1;
-      redraw_input();
+      redraw_input($conn);
    } elsif(@state{input_pos} > 0) {         # input availible, move up in hist
       @state{line} = @input[--@state{input_pos}];
       @state{line_pos} = $#{@input[@state{input_pos}]} + 1;
-      redraw_input();
+      redraw_input($conn);
    }
 }
 
@@ -4702,7 +4875,14 @@ sub key_ctl_r
 #
 sub key_ctl_l
 {
-   redraw_screen(@state{world},1);
+   my ($w,$txt,$conn) = @_;
+   # screen seems to have some sort of bug where it stop sending winch
+   # signals after a month of use but yet GetTerminalSize is still returning
+   # the correct size. So update the screen size when a control-l is done as
+   # a "work around". This shouldn't cause an impact on cpu usage.
+   (@state{size_y},@state{size_x}) = GetTerminalSize();
+   pending_fix(world($conn));
+   redraw_screen($conn,1);
 }
 
 #
@@ -4711,22 +4891,24 @@ sub key_ctl_l
 #
 sub key_tab
 {
-   return if @state{world} eq undef;
+   my ($world,$txt,$conn) = @_;
 
-   if(in_hist()) {                        # same as key_pgdn, just call it
-      key_pgdn();
-   } elsif(more(@state{world})) {
+   my $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+   if(in_hist($w)) {                      # same as key_pgdn, just call it
+      key_pgdn(@_);
+   } elsif(more($w)) {
       # move the starting point down to the last line shown
       my $max = output_end() - overlap();
-      @socket{@state{world}}->{more} = history_pos();
-      @socket{@state{world}}->{more_count} = 0;
+      @socket{$w}->{more} = history_pos();
+      @socket{$w}->{more_count} = 0;
 
-      release_pending_pagefull(1);
-      if(pending(@state{world}) <= 0) {
-         @socket{@state{world}}->{more} = -1;
-         @socket{@state{world}}->{more_count} = 0;
+      release_pending_pagefull($conn,$w,1);
+      if(pending($w) <= 0) {
+         @socket{$w}->{more} = -1;
+         @socket{$w}->{more_count} = 0;
       }
-      pending_fix(@state{world});
+      pending_fix($w);
    }
 }
 
@@ -4791,12 +4973,11 @@ sub out
 
    $world = @state{world} if($world eq undef);
    if(defined @socket{$world} && defined @socket{$world}->{sock}) {
-#      key_log("$world> $fmt",@args);
-
       my $msg = sprintf("$fmt",@args);
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
       my $sock = @socket{$world}->{sock};
+#      key_log("$world> $fmt",@args);
       printf($sock "%s",$msg);
 
       # keep track of last send time for sending keepalives
@@ -4810,10 +4991,11 @@ sub out
 #
 sub key_return
 {
+   my ($w,$txt,$conn) = @_;
    my $array = @state{line};
    my $input = join('',@$array);
 
-   if(do_cmd(@state{world},$input)) {
+   if(do_cmd(@state{world},$input,$conn)) {
       # do_cmd runs the command
    } elsif(no_world()) {
      # do nothing
@@ -4968,9 +5150,9 @@ sub name
    my $name = lc(shift);
 
    return undef if($name eq undef && @state{world} eq undef);
-   $name = @state{world} if $name eq undef;
+   $name = lc(@state{world}) if $name eq undef;
 
-   if(defined @address{$name}) {
+   if(defined @address{$name} && defined @socket{$name}) {
       return ((defined @socket{$name}->{sock}) ? "" : "!") .
              @address{$name}->{name};                      # correct case?
    } elsif($name eq "muddler") {
@@ -4989,19 +5171,25 @@ sub name
 #   
 sub key_up
 {
+   my ($w,$txt,$conn) = @_;
+   my $w = world($conn);
    my $first;
 
-   return if not defined @state{world};
-   my $pos = @socket{@state{world}}->{pos};
+   return if($w eq undef || !defined @socket{$w});
+   my $pos = @socket{$w}->{pos};
+
+   if(scalar keys %{@state{activity}} > 0) {
+      return key_esc_w(@_);
+   }
 
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} > $pos &&
          (defined @socket{$key}->{sock} || pending($key) > 0)) {
-         return switch_world($key);
+         return switch_world($conn,$key);
       }
       $first = $key if($first eq undef);
    }
-   switch_world($first) if($first ne undef);
+   switch_world($conn,$first) if($first ne undef);
 }
 
 #
@@ -5014,10 +5202,16 @@ sub key_up
 #   
 sub key_down
 {
+   my ($world,$txt,$conn) = @_;
    my ($prev,$last);
 
-   return if not defined @state{world};
-   my $pos = @socket{@state{world}}->{pos};
+   my $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+   my $pos = @socket{$w}->{pos};
+
+   if(scalar keys %{@state{activity}} > 0) {
+      return key_esc_w(@_);
+   }
 
    for my $key (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} < $pos &&
@@ -5030,9 +5224,9 @@ sub key_down
       }
    }
    if($prev ne undef) {
-      switch_world($prev);
+      switch_world($conn,$prev);
    } elsif($last ne undef) {
-      switch_world($last);
+      switch_world($conn,$last);
    }
 }
 
@@ -5051,15 +5245,41 @@ sub key_right
    }
 }
 
+#
+# switch_world
+#    Switch the current world or all of them.
+#
 sub switch_world
 {
-   my $world = shift;
+   my ($conn,$world) = @_;
 
    return if $world eq undef;
-   @state{world_last} = @state{world};
-   @state{world} = $world;
+
+   if(@state{p_sync} == 1) {                       # switch all interfaces
+      @state{world_last} = @state{world};
+      @state{world} = $world;
+      for my $key (keys %ws) {
+         @ws{$conn}->{world_last} = @state{world};
+         @ws{$conn}->{world} = $world;
+      }
+   } elsif(is_console($conn)) {                          # switch console
+      @state{world_last} = @state{world};
+      @state{world} = $world;
+   } elsif(is_web($conn)) { # switch websocket
+      @ws{$conn}->{world_last} = @ws{$conn}->{world};
+      @ws{$conn}->{world} = $world;
+   }
+
    delete @state{activity}->{$world};
-   redraw_output(0);
+
+   if(@state{p_sync} == 1) {
+      redraw_output(@state{world},0);
+      for my $key (keys %ws) {
+         redraw_output($key,0);
+      }
+   } else {
+      redraw_output($conn,0);
+   }
    draw_bar();
 }
 
@@ -5069,18 +5289,25 @@ sub switch_world
 #
 sub key_esc_w
 {
-   return if not defined @state{world};
+   my ($world,$txt,$conn) = @_;
 
    # try next active world
    my $new = (keys %{@state{activity}})[0];
 
    # fall back to previous world the client was showing.
-   $new = @state{world_last} if($new eq undef && defined @state{world_last});
+
+   if($new eq undef) {                    # use last world if no activity
+      if(is_console($conn)) {
+         $new = @state{world_last};
+      } elsif(is_web($conn)) {
+         $new = @ws{$conn}->{world_last};
+      }
+   }
 
    # nothing found, do nothing.
    return if $new eq undef;
 
-   switch_world($new);
+   switch_world($conn,$new);
 }
 
 #
@@ -5136,7 +5363,7 @@ sub key_multi
    my $array = @state{multikey};
    push(@$array,ord($ch));
    if(defined @key{"multi_" . join('_',@$array)}) {
-       return &{@key{"multi_" . join('_',@$array)}}($ch);
+       return &{@key{"multi_" . join('_',@$array)}}($ch,undef,@state{world});
    }
 
    if($#$array == 0) {                         # second character recieved
@@ -5163,26 +5390,45 @@ sub key_process
    for my $ch (split(//,$input)) {
 #      key_log("ch: '%s' -> '%s'",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
-         &{@key{ord($ch)}}($ch);
+         &{@key{ord($ch)}}($ch,undef,@state{world});
       } elsif(defined @state{multikey} && $#{@state{multikey}} <= 2) {
-         &{@key{multi}}($ch);
+         &{@key{multi}}($ch,undef,@state{world});
       } else {
-         &{@key{def}}($ch);
+         &{@key{def}}($ch,undef,@state{world});
       }
    }
 }
 
+sub is_console
+{
+   my $conn = shift;
+
+   return ($conn eq "muddler" || defined @socket{$conn}) ? 1 : 0;
+}
+
+sub is_web
+{
+   my $conn = shift;
+
+   return (defined @ws{$conn}) ? 1 : 0;
+}
+
 sub clear_screen
 {
-#    xy(1,1);
-    return if !console();
-    for my $line (1 .. @state{size_x}) {
-       if($line == @state{size_x}) {
-          printf("\033[K");
-       } else {
-          printf("\033[K\n");
-       }
-    }
+   my $conn = shift;
+
+   if(is_console($conn)) {
+      for my $line (1 .. @state{size_x}) {
+         if($line == @state{size_x}) {
+            printf("\033[K");
+         } else {
+            printf("\033[K\n");
+         }
+      }
+   } elsif(is_web($conn)) {
+      key_log("clear screen: called");
+      ws_echo($conn,"d","clear");          # clear output websocket window
+   }
 }
 
 #
@@ -5208,15 +5454,31 @@ sub xy
 #
 sub more_bar
 {
-   if(!defined @state{world} || @state{world} eq undef) {
-      return;
-   } elsif(in_hist()) {
+   my $conn = shift;
+
+   my $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+
+   if(in_hist($w)) {
       return sprintf("\033[7mHist %4s\033[0m",
-         $#{@history{@state{world}}} - hist_pos(@state{world}));
-   } elsif(more(@state{world})) {
-      return sprintf("\033[7mMore %4s\033[0m",pending(@state{world})+1);
+         $#{@history{world($conn)}} - hist_pos(@state{world}));
+   } elsif(more(world($conn))) {
+      return sprintf("\033[7mMore %4s\033[0m",pending(world($conn)));
    }
    return undef;
+}
+
+sub world
+{
+   my $conn = shift;
+
+   if(is_console($conn)) {
+      return @state{world};
+   } elsif(is_web($conn)) {
+      return @ws{$conn}->{world};
+   } else {
+      return "muddler";
+   }
 }
 
 
@@ -5237,61 +5499,86 @@ sub draw_bar
       @state{bar_name} ne name(@state{world}) ||
       @state{bar_more} ne pending(@state{world}) ||
       @state{bar_pos} ne hist_pos(@state{world})) {
+      #---
       @state{bar_time} = "$hr$min";
       @state{bar_name} = name(@state{world});
       @state{bar_more} = pending(@state{world});
       @state{bar_pos} = hist_pos(@state{world});
-      my $more = more_bar();
-
       @state{bar_activity} = scalar keys %{@state{activity}};
-
-      xy(@state{size_x} - @state{input_size},0);
-
-      if(defined @state{activity}->{@state{world}}) {
-         delete @state{activity}->{@state{world}};
-      }
       if(scalar keys %{@state{activity}} > 0) {
          $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
       }
 
-      if(web()) {                             # handle websocket connectsion
-         my $hash = $ws_server->{conns};
-
-         for my $key ( keys %$hash) {
-            my $client = $$hash{$key}->{conn};
-            next if(@ws{$client}->{auth} eq 0);
-
-            eval {
-               ws_echo($client,"b",sprintf("%s  %s    %s        %s%s%s:%02d",
-                     " " x (9 - ansi_length($more)),
-                     $more,
-                     name(),
-                     $active,
-                     " " x (@ws{$client}->{size_y} - length(name()) -
-                            length($active) - 26),
-                     $hr,
-                     $min
-                    )
-                );
-            };
-            if($@) {
-              ws_disconnect($client);
-            }
-         }
-      }
-
-      return if !console();
-      printf("%s%s_%s%s_%s______%s:%02d",
+      my $more = more_bar(@state{world});
+      #---
+      xy(@state{size_x} - @state{input_size},0);
+      printf("%s%s_%s____%s_%s______%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
              name(),
-             "_" x (@state{size_y} - length(name()."$active$hr")-20),
              $active,
+             "_" x (@state{size_y} - length(name()."$active$hr")-24),
              $hr,
              $min
             );
       update_scroll_region("input");
       xy(input_x(),input_y());
+   }
+
+   my $hash = $ws_server->{conns};
+   for my $key ( keys %$hash) {
+      my $conn = $$hash{$key}->{conn};
+      if($force || "$hr$min" ne @ws{$conn}->{bar_time} ||
+         @ws{$conn}->{bar_activity} ne scalar keys %{@state{activity}} ||
+         @ws{$conn}->{bar_name} ne name(world($conn)) ||
+         @ws{$conn}->{bar_more} ne pending(world($conn)) ||
+         @ws{$conn}->{bar_pos} ne hist_pos(world($conn))) {
+         #---
+         @ws{$conn}->{bar_time} = "$hr$min";
+         @ws{$conn}->{bar_name} = name(world($conn));
+         @ws{$conn}->{bar_more} = pending(world($conn));
+         @ws{$conn}->{bar_pos} = hist_pos(world($conn));
+         @ws{$conn}->{bar_activity} = scalar keys %{@state{activity}};
+         if(scalar keys %{@state{activity}} > 0) {
+            $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
+         }
+         my $more = more_bar($conn);
+         #---
+         ws_echo($conn,
+                 "b",
+                 sprintf("%s  %s    %s        %s%s%s:%02d",
+                         " " x (9 - ansi_length($more)),
+                         $more,
+                         name(@ws{$conn}->{world}),
+                         $active,
+                         " " x (@ws{$conn}->{size_y} - 
+                                length(name(@ws{$conn}->{world})) -
+                                length($active) - 26),
+                         $hr,
+                         $min
+                        )
+               );
+      }
+   }
+}
+
+sub ws_all
+{
+   my ($type,$txt) = @_;
+
+   return if !web();
+   my $hash = $ws_server->{conns};
+
+   for my $key ( keys %$hash) {
+      my $client = $$hash{$key}->{conn};
+      next if(@ws{$client}->{auth} eq 0);
+
+      eval {
+          ws_echo($client,$type,$txt);
+      };
+      if($@) {
+         ws_disconnect($client);
+      }
    }
 }
 
@@ -5343,7 +5630,7 @@ sub key_log
    my ($fmt,@args) = @_;
    my $file;
 
-   return if !@state{p_debug};
+   # return if !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
    $msg .= "\n" if($msg !~ /\n/);
@@ -5446,6 +5733,64 @@ sub single
     return $txt;
 }
 
+sub cmd_set
+{
+   my ($w,$txt,$conn) = @_;
+
+   key_log("set: called");
+   for my $key (keys %state) {
+      key_log("set: $key");
+      if($key =~ /^p_/) {
+         echo("# %-15s %s",$',@state{$key});
+      }
+   }
+}
+
+sub cmd_mobile
+{
+   my ($w,$txt,$conn) = @_;
+
+   if($txt =~ /^\s*(on|1|enable)\s*$/) {
+      save("p_mobile",1);
+      ws_echo($conn,"d","mobile on");
+   } elsif($txt =~ /^\s*(off|1|disable)\s*$/) {
+      save("p_mobile",0);
+      ws_echo($conn,"d","mobile off");
+   } elsif($txt =~ /^\s*$/) {
+      if(@state{p_mobile} == 1) {
+         save("p_mobile",0);
+         ws_echo($conn,"d","mobile off");
+      } else {
+         save("p_mobile",1);
+         ws_echo($conn,"d","mobile on");
+      }
+   }
+}
+
+sub cmd_sync
+{
+#-# ------------------------------------------------------------------------
+#-# /sync [on|off]
+#-#
+#-#      When connected via the web, each window can view a different
+#-#      world. /sync can make it so that all windows show the same
+#-#      world even as they are switched.
+#-#
+#-# ------------------------------------------------------------------------
+   my ($w,$txt,$conn) = @_;
+
+   if($txt =~ /^\s*(on|1|enable)\s*$/) {
+      save("p_sync",1);
+      echo("% Synchronization of the viewable world is enabled.");
+      switch_world($conn,@state{world});
+   } elsif($txt =~ /^\s*(off|0|disable)\s*$/) {
+      save("p_sync",0);
+      echo("% Synchronization of the viewable world is disabled.");
+   }
+}
+   
+
+
 sub cmd_update
 {
 #-# ------------------------------------------------------------------------
@@ -5520,9 +5865,8 @@ sub cmd_color
    my ($w,$txt) = @_;
 
    if($txt =~ /^\s*(dark|light)\s*$/) {
-      ws_all("c",$txt);
-      @state{p_color} = $txt;
-      save("p_color");
+      ws_all("d","theme $txt");
+      save("p_color",$txt);
    } else {
       echo("% color expects either dark or light.");
    }
@@ -5606,7 +5950,7 @@ sub save
 
 
    # redefining a world will cause a full dump of the file
-   $append = 1 if(defined @address{$item});
+   $append = 1 if(!defined @address{$item});
 
    open($file,($append ? ">>" : ">") . " .muddler") ||
       return echo("%% Unable to open .muddler for writing.");
@@ -5622,8 +5966,13 @@ sub save
       }
    }
 
+   @state{$item} = $value if($value ne undef);
+
    for my $key (keys %state) {
-      if(!$append || ($append && $key eq $item)) {
+      if(!$append && $key =~ /^p_/) {
+         key_log("writing: $key");
+         printf($file "state:%s:%s\n",$key,@state{$key});
+      } elsif($append && $key eq $item) {
          printf($file "state:%s:%s\n",$key,trim($value));
       }
    }
@@ -5672,6 +6021,22 @@ sub cmd_null
 #-#      Do nothing
 #-# ------------------------------------------------------------------------
    # do nothing for now
+}
+
+sub cmd_allow
+{
+#-# ------------------------------------------------------------------------
+#-# /allow <hosts>
+#-#
+#-#      Define a list of host that do not need to provide a password to
+#-#      login to the web interface. The multiple hosts may be supplied
+#-#      but need to be seperated by commas. Wild cards may be provided
+#-#      as well.
+#-# ------------------------------------------------------------------------
+    my ($w,$txt,$conn) = @_;
+
+    save("p_allow",trim($txt));
+    echo("%% Allow list has been set to: %s",trim($txt));
 }
 
 sub cmd_listdef
@@ -5926,7 +6291,11 @@ sub run_pid
       }
    }
 }
-      
+     
+#
+# do_cmd
+#   Run an internal command.
+# 
 sub do_cmd
 {
    my ($world,$input,$conn) = @_;
@@ -5937,7 +6306,7 @@ sub do_cmd
          return 1;
       } else {
          echo("%% %s: no such command or macro",lc($1));
-         return 0;
+         return 1;
       }
   }
   return 0;
@@ -5969,7 +6338,7 @@ sub cmd_web_size
          @ws{$conn}->{size_y} = $1 - 3;
       }
    }
-   redraw_output(0,1);
+   redraw_output($conn,1);
 }
 
 sub cmd_port
@@ -6004,7 +6373,7 @@ sub cmd_web
    if(!module_enabled("Net::WebSocket::Server")) {
       return echo("%% Web/Websocket disabled due to missing module");
    } elsif($status =~ /^\s*on\s*$/i) {
-      echo("%% Web enabled, connect via: http://localhost:@state{port}");
+      echo("%% Web enabled, connect via: http://localhost:@state{p_port}");
       echo("%%    Password: @state{p_password}");
       if(@state{p_web} == 0) {
          ws_init();
@@ -6212,10 +6581,18 @@ sub cmd_listsockets
 #-#      Shows all open connections and some minimal data about them.
 #-# ------------------------------------------------------------------------
    echo("%-16s %-26s %-5s","NAME","HOST","PORT");
+   for my $key (keys %ws) {
+       echo("%-16s %-26s %-5s",
+            @ws{$key}->{auth} ? "Web [auth]" : "Web",
+            @ws{$key}->{ip},
+            @ws{$key}->{port});
+   }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
-         echo("%-16s %-26s %-5s", @address{$w}->{name}, @address{$w}->{host},
-             @address{$w}->{port});
+         echo("%-16s %-26s %-5s", 
+              @address{$w}->{name},
+              @address{$w}->{host},
+              @address{$w}->{port});
       }
    }
 }
@@ -6249,14 +6626,15 @@ sub cmd_world
 #-#
 #-# Ex: /world puggy
 #-# ------------------------------------------------------------------------
-   my ($w,$txt) = (shift,lc(trim(shift)));
+   my ($w,$txt,$conn) = (shift,lc(trim(shift)),shift);
 
    if(!defined @address{$txt}) {
       return echo("% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{$txt} && defined @socket{$txt}->{sock}) {
-      switch_world($txt);
+      switch_world($conn,$txt);
    } else {
-      socket_connect(@address{$txt}->{name},
+      socket_connect($conn,
+                     @address{$txt}->{name},
                      @address{$txt}->{host},
                      @address{$txt}->{port},
                     );
@@ -6435,6 +6813,7 @@ sub reload_code
    my $new = get_checksums();
    my $old = @state{chksum};
    $old = {} if $old eq undef;
+$SIG{'WINCH'} = sub { sig_winch(); };
 
    if(!module_enabled("Digest::MD5")) {
       return echo("%% Missing Digest::MD5 module, reloading code disabled");
@@ -6559,13 +6938,6 @@ sub tick
          run_pid($id);
       }
    }
-
-   my $prev = "@state{size_y},@state{size_x}";
-   (@state{size_y},@state{size_x}) = GetTerminalSize();
-   if($prev ne "@state{size_y},@state{size_x}") {
-      pending_fix();
-      redraw_screen();
-   }
 }
 
 sub read_file
@@ -6599,7 +6971,6 @@ sub muddler_init
    (@state{size_y},@state{size_x}) = GetTerminalSize();
 
    `del key.log`;
-   @state{activity} = {};
    @state{chksum} = get_checksums();
    key_log("### START ###");
 
@@ -6609,7 +6980,7 @@ sub muddler_init
    }
    key_init();
    command_init();
-   redraw_screen();
+   redraw_screen(@state{world},1);
    show_banner();
    load(1);
 
@@ -6650,14 +7021,34 @@ sub muddler
    alarm(0);
 }
 
+#
+# sig_hup
+#    Handle the HUP signal and reload the perl code in case the code can
+#    not be reloaded any other way.
+#
+$SIG{HUP} = sub { sig_hup(); };
 sub sig_hup
 {
    delete @pid{keys %pid};
    reload_code();
 }
 
-# allow for reloading of the code via a signal.
-$SIG{HUP} = sub { sig_hup(); };
+#
+# sig_winch
+#    Handle the WINCH signal and get the new size of the window and
+#    adjust accordingly.
+#
+$SIG{'WINCH'} = sub { sig_winch(); };
+
+sub sig_winch
+{
+   (@state{size_y},@state{size_x}) = GetTerminalSize();
+   for my $key (keys %socket) {
+      pending_fix($key);
+   }
+   redraw_screen(@state{world},1);
+}
+
 
 for my $i (0 .. $#ARGV) {
    if(@ARGV[$i] eq "--noconsole") {

@@ -8,11 +8,14 @@ This screenshot is showing the two interfaces to muddler. In the background is m
 
 # Features
 ```
-   o console support - Mudding via your favorite terminal
-   o http/websocket support - Think mudding via your browser
-   o utf8 support
-   o connect to multiple worlds at the same time
-   o more / pausing output as needed
+   o Console support - Mudding via your favorite terminal
+   o Http/websocket support - Think mudding via your browser
+   o UTF8 support
+   o Connect to multiple worlds at the same time in a single window
+   o More / pausing output as needed
+   o Multiple Window Support(?) - The console interface does not support
+       multiple windows but multiple browser "windows" can be opened and
+       can view different worlds.
 ```
 # muddler goals
 ```
