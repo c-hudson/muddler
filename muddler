@@ -150,6 +150,7 @@ sub command_init
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
    @command{allow}         = sub { return cmd_allow(@_);                   };
    @command{set}           = sub { return cmd_set(@_);                     };
+   @command{log}           = sub { return cmd_log(@_);                     };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -2421,17 +2422,19 @@ __STYLE__
 
            if(data === "mobile on") {
               var obj = document.getElementById("output");
-              document.querySelector('#terminal').style.bottom = "30px";
+              document.querySelector('#terminal').style.bottom = "37px";
               document.querySelector('#buttonbar').style.display = 
                   "inline-block";
               obj.style.fontSize = "9pt";
               obj.scrollTop = obj.scrollHeight;
+              get_xy_size();
            } else if(data === "mobile off") {
               var obj = document.getElementById("output");
               document.querySelector('#terminal').style.bottom = 0;
               document.querySelector('#buttonbar').style.display = "none";
               obj.style.fontSize = "10pt";
               obj.scrollTop = obj.scrollHeight;
+              get_xy_size();
            } else if(data === "theme light") {
               document.querySelector('.ansi-37').style.color='black';
               document.getElementById('output').style.backgroundColor='white';
@@ -2454,8 +2457,7 @@ __STYLE__
            } else if(data === "clear") {
               document.getElementById('output').innerHTML = ""
            } else if(data === "password") {
-              console.log("Got password request");
-              sendCommand(window.prompt("Enter password","xyzzy"));
+              sendCommand(window.prompt("Enter password","password"));
            } else {
               console.log("unknown do request: " + data);
            }
@@ -3815,12 +3817,12 @@ sub ws_process
          ws_echo($conn,"t","%% Invalid Password.",1);
          ws_disconnect($conn);
       }
-   } elsif(do_cmd(@state{world},$input,$conn)) {
+   } elsif(do_cmd(world($conn),$input,$conn)) {
       # do_cmd runs the command.
    } elsif(no_world()) {
      # do nothing
-   } elsif(defined @socket{@state{world}}->{sock}) {
-      out(@ws{$conn}->{world},"%s\n",$input);
+   } elsif(defined @socket{world($conn)}->{sock}) {
+      out(world($conn),"%s\n",$input);
    }
    unshift(@input,@state{line});                        # store keyboard history
 }
@@ -4686,6 +4688,8 @@ sub redraw_input
 {
    my $conn = shift;
 
+   return if(!console());
+
    if(is_console($conn)) {
       update_scroll_region("input",1);
       xy(input_start(),1,1);
@@ -4704,6 +4708,7 @@ sub redraw_screen
 
    my $clear = shift;
 
+   return if(!console());
    printf("\033[r\033[2J") if(is_console($conn) && $clear);
    clear_screen($conn);
    redraw_output($conn,$flag);
@@ -4732,20 +4737,20 @@ sub scan_history
    } elsif(abs($inc) != 1) {
       die("scan_history incrament must be -1 or +1");
    } elsif($inc < 0 && !in_hist($w)) {
-      $pos = $#{@history{@state{world}}};
+      $pos = $#{@history{$w}};
    } else {
       $pos = hist_pos($w);
    }
 
    if(!console()) {
-      $size = @socket{$w}->{size_x} - overlap();
+      $size = @ws{$w}->{size_x} - overlap();
    } else {
       $size = @state{size_x} - overlap();
    }
 
    $size = $max if($max ne undef);
       
-   my $hist = @history{@state{world}};
+   my $hist = @history{$w};
    while($pos > 0 && $pos <= $#$hist && $count <= $size) {
       if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
          @state{hist_start} += $inc;
@@ -4917,11 +4922,15 @@ sub key_tab
 #
 sub key_ctl_u
 {
-   @state{line} = [];
-   @state{line_pos} = 0;
-   delete @state{input_offset};
-   xy(input_start(),1);
-   printf("\033[J") if console();
+   my ($w,$txt,$conn) = @_;
+
+   if(is_console($conn)) {
+      @state{line} = [];
+      @state{line_pos} = 0;
+      delete @state{input_offset};
+      xy(input_start(),1);
+      printf("\033[J") if console();
+   }
 }
 
 #
@@ -5417,7 +5426,7 @@ sub clear_screen
 {
    my $conn = shift;
 
-   if(is_console($conn)) {
+   if(is_console($conn) && console()) {
       for my $line (1 .. @state{size_x}) {
          if($line == @state{size_x}) {
             printf("\033[K");
@@ -5461,9 +5470,9 @@ sub more_bar
 
    if(in_hist($w)) {
       return sprintf("\033[7mHist %4s\033[0m",
-         $#{@history{world($conn)}} - hist_pos(@state{world}));
+         $#{@history{$w}} - hist_pos($w));
    } elsif(more(world($conn))) {
-      return sprintf("\033[7mMore %4s\033[0m",pending(world($conn)));
+      return sprintf("\033[7mMore %4s\033[0m",pending($w));
    }
    return undef;
 }
@@ -5494,11 +5503,11 @@ sub draw_bar
    $hr -= 12 if($hr > 12);
    $hr = 12 if $hr == 0;
 
-   if($force || "$hr$min" ne @state{bar_time} ||
+   if(console() && ($force || "$hr$min" ne @state{bar_time} ||
       @state{bar_activity} ne scalar keys %{@state{activity}} ||
       @state{bar_name} ne name(@state{world}) ||
       @state{bar_more} ne pending(@state{world}) ||
-      @state{bar_pos} ne hist_pos(@state{world})) {
+      @state{bar_pos} ne hist_pos(@state{world}))) {
       #---
       @state{bar_time} = "$hr$min";
       @state{bar_name} = name(@state{world});
@@ -5506,18 +5515,23 @@ sub draw_bar
       @state{bar_pos} = hist_pos(@state{world});
       @state{bar_activity} = scalar keys %{@state{activity}};
       if(scalar keys %{@state{activity}} > 0) {
-         $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
+         if(@state{size_y} < 50) {
+            $active = sprintf("(Act: %d)",scalar keys %{@state{activity}});
+         } else {
+            $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
+         }
       }
 
       my $more = more_bar(@state{world});
       #---
       xy(@state{size_x} - @state{input_size},0);
-      printf("%s%s_%s____%s_%s______%s:%02d",
+      printf("%s%s_%s%s_%s_%s_%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
              name(),
+             "_" x (10 - length(name())),
              $active,
-             "_" x (@state{size_y} - length(name()."$active$hr")-24),
+             "_" x (@state{size_y} - length("$active$hr")-26),
              $hr,
              $min
             );
@@ -5539,21 +5553,25 @@ sub draw_bar
          @ws{$conn}->{bar_more} = pending(world($conn));
          @ws{$conn}->{bar_pos} = hist_pos(world($conn));
          @ws{$conn}->{bar_activity} = scalar keys %{@state{activity}};
+
          if(scalar keys %{@state{activity}} > 0) {
-            $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
+            if(@ws{$conn}->{size_y} < 50) {
+               $active=sprintf("(Act: %d)",scalar keys %{@state{activity}});
+            } else {
+               $active=sprintf("(Active: %d)",scalar keys %{@state{activity}});
+            }
          }
          my $more = more_bar($conn);
-         #---
          ws_echo($conn,
                  "b",
-                 sprintf("%s  %s    %s        %s%s%s:%02d",
-                         " " x (9 - ansi_length($more)),
+                 sprintf("%-*s %-10s %s%s%s:%02d",
+                         9 - ansi_length($more),
                          $more,
                          name(@ws{$conn}->{world}),
                          $active,
                          " " x (@ws{$conn}->{size_y} - 
                                 length(name(@ws{$conn}->{world})) -
-                                length($active) - 26),
+                                length($active) - length($hr) - 20),
                          $hr,
                          $min
                         )
@@ -5693,16 +5711,21 @@ sub input_clear
 
 sub key_esc_q
 {
-   my $spell;
+   my ($spell, $found);
    my $input = join('',@{@state{line}});
+
    $input =~ s/[^a-zA-Z0-9 ]+//g;
-   open($spell,"echo $input | /home/adrick/mush/tfspell |") ||
+   open($spell,"echo $input | aspell -a -S |") ||
       return echo("%% Unable to run tfspell");
    while(<$spell>) {
-      $_ =~ s/\r|\n//g;
-      echo("%% $_") if($_ !~ /^\s*$/);
+      if(/^& ([^ ]+) [^:]+: /) {
+         my @data = split(/,/,$');
+         echo("%% %-15s  =>  %s",$1,join(', ',(split(/,/,$'))[0..4]));
+         $found++;
+      }
    }
    close($spell);
+   echo("%% No misspelled words found.") if (!$found);
 }
 
 #
@@ -5733,13 +5756,18 @@ sub single
     return $txt;
 }
 
+sub cmd_log
+{
+   my ($w,$txt,$conn) = @_;
+
+   key_log("log: $txt");
+}
+
 sub cmd_set
 {
    my ($w,$txt,$conn) = @_;
 
-   key_log("set: called");
    for my $key (keys %state) {
-      key_log("set: $key");
       if($key =~ /^p_/) {
          echo("# %-15s %s",$',@state{$key});
       }
