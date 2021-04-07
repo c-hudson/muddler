@@ -108,10 +108,10 @@ These are things things i plan to add in the future. Most of them will be done a
       Control-w          : Both      : Delete previous word [console only]
       Control-p          : Both      : Move down in the keyboard history
       Control-n          : Both      : Move up in the keyboard history
+      Control-u          : Both      : Erase the current input line
       Tab                : Both      : Move forward one screen full of text
                                        if the world is paused by "more".
-      Control-l          : Console   : Redraw the screen 
-      Escape-L           : Web       : Redraw the screen
+      Control-l          : Both      : Redraw the screen 
       PgUp               : Both      : Scroll up one page in history buffer
       PgDown             : Both      : Scroll down one page in history buffer
       Scroll Wheel       : Web       : Scroll up / Down in history buffer
