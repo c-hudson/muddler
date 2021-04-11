@@ -1,17 +1,18 @@
 ![Screenshot](screenshot.jpg)
-This screenshot is showing the two interfaces to muddler. In the background is muddler running in a terminal window. The foreground window is firefox connected to the same muddler session via websockets. Both are interactive and show the same data at the same time.
+This screenshot is showing the two interfaces to muddler. In the background is muddler running in a terminal window. The foreground window is firefox connected to the same muddler session via websockets. Both are interactive and can show the same or different worlds.
 
 # muddler
 
-   A simple perl based mudding client which hopes to be a drop in replacement for TinyFugue at some point. muddler can be run from your terminal and/or host sessions for your browser via websockets.
-   The key 
+   A perl based mudding reminiscent of TinyFugue with a few twists. 
 
 # Features
 ```
    o Console support - Mudding via your favorite terminal
    o Http/websocket support - Think mudding via your browser
-   o UTF8 support
-   o Connect to multiple worlds at the same time in a single window
+   o UTF8 support 
+   o 256 color support
+   o Inital fansi support
+   o Multiple worlds at the same time
    o More / pausing output as needed
    o Multiple Window Support(?) - The console interface does not support
        multiple windows but multiple browser "windows" can be opened and
@@ -19,27 +20,13 @@ This screenshot is showing the two interfaces to muddler. In the background is m
 ```
 # muddler goals
 ```
-   o drop in replacement for TinyFugue. Not everything will be supported but
-     maybe enough.
-   o Simplified setup. TinyFugue is great but theres a little bit of a
-     learning curve.
-   o Allow users to switch between machines. All interfaces should be able
-     to be started/stopped/resumed as the user switches between machines. 
-     This assumes one can use screen/tmux for the terminal session.
-   o The websocket and eventual native GUI should be better then just another
-     way to see a terminal. Things will start off this way but hopefully
-     will stay that way for long.
-```
-# Ideas to Impliment:
-These are things things i plan to add in the future. Most of them will be done after the text based interface is extremely stable and usable.
-```
-   o Native GUI          Axmud has a perl based Gtk3 gui. The idea will be
-                         that the gui can be turned on/off as needed. The
-                         terminal interface will be the only always running
-                         interface (or maybe not?)
-   o Scripting Language  Either impliment something tinyfugueish in nature,
-                         something new, or maybe include code from teeny-
-                         mush for a mush like language?
+   o Go for Simplicity.
+   o Allow users to switch between computers with ease. The main muddler
+     process still needs to run a particular server but viewing can be
+     switched from computer to computer.
+   o Make a rich and full featured web interface
+   o Support a "language" either tinyfugue like or maybe mush?
+     (mush is just an easy answer since i've already written a mush in perl)
 ```
 # Installation
 ```
@@ -72,6 +59,10 @@ These are things things i plan to add in the future. Most of them will be done a
          Lists all commands or provides help on an individual command.
       /quit
          Had enough, quit muddler.
+      /utf8
+         Enable utf8 encoding for the current world. [default]
+      /fansi
+         Enable fansi encoding for the current world.
 
    Web Commands:
       /web <status>

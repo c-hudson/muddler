@@ -14,6 +14,9 @@
 #       Project's location: https://github.com/grapenut/websockclient
 
 use strict;
+use IO::Socket::SSL;
+use IO::Select;
+use IO::Socket;
 
 use 5.014;                                                   # enable utf8
 use utf8;
@@ -28,7 +31,7 @@ use Unicode::Normalize  qw< NFD NFC >;
 
 use Term::ReadKey;
 use Net::WebSocket::Server;
-use Net::Telnet;
+# use Net::Telnet;
 use Encode;
 use Digest::MD5;
 
@@ -47,6 +50,7 @@ use Carp;
 my %key;                            # key presses hash table for fast lookups
 my %history;                                                  # world history
 my %socket;                                              # socket information
+my %socket_lookup;
 my %command;                            # command hash table for fast lookups
 my %address;                                                # world addresses 
 my %help;                                                         # help data
@@ -59,6 +63,14 @@ my %http;                               # data structure for http connections
 my %http_data;                                 # store websocket client pages
 my %def;                                        # tf style define information
 my %pid;                                              # internal process list
+my $readable;
+my %telnet_ch;
+my @options = qw(
+    BINARY ECHO RCP SGA NAMS STATUS TM RCTE NAOL NAOP NAOCRD NAOHTS NAOHTD
+    NAOFFD NAOVTS NAOVTD NAOLFD XASCII LOGOUT BM DET SUPDUP SUPDUPOUTPUT SNDLOC
+    TTYPE EOR TUID OUTMRK TTYLOC VT3270REGIME X3PAD NAWS TSPEED LFLOW LINEMODE
+    XDISPLOC OLD_ENVIRON AUTHENTICATION ENCRYPT NEW_ENVIRON
+);
 
 my %state = (
    line_pos        => 0,           # character position on the current line
@@ -158,6 +170,9 @@ sub command_init
    @command{log}           = sub { return cmd_log(@_);                     };
    @command{more}          = sub { return cmd_more(@_);                    };
    @command{common}        = sub { return cmd_common(@_);                  };
+   @command{console}       = sub { return cmd_console(@_);                 };
+   @command{utf8}          = sub { return cmd_utf8(@_);                    };
+   @command{fansi}         = sub { return cmd_fansi(@_);                   };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -200,8 +215,8 @@ sub load_modules
                                      "\"install Net::WebSocket::Server\"",
                                      disable => 'web/websocket server'
                                   },
-      'Net::Telnet'            => { fatal => 1, fix => "apt install " .
-                                    "libnet-telnet-perl" },
+#      'Net::Telnet'            => { fatal => 1, fix => "apt install " .
+#                                    "libnet-telnet-perl" },
       'Encode'                 => { fatal => 1, fix => "install Encode module"},
       'Digest::MD5'            => { fatal => 0, fix => "install Digest::MD5"},
    );
@@ -657,6 +672,7 @@ sub ansi_remove
 sub socket_connect
 {
    my ($conn,$world,$host,$port,$ssl) = (shift,lc(shift), shift,shift,shift);
+   my $s;
 
 
    if(defined @socket{$world} && @socket{$world}->{sock}) {
@@ -677,11 +693,30 @@ sub socket_connect
    @socket{$world}->{pos} = ++@state{pos_sequence};
 #   Monitor::monitor(@socket{$world}, "hash");
 
-   my $s = Net::Telnet->new(host => $host,
-                            port => $port,
-                            binmode => 1,
-                            Timeout => 10,
-                            Errmode => "return");
+   
+   if($ssl) {
+      $s = IO::Socket::SSL->new( PeerAddr => $host,
+                                 PeerPort => $port,
+                                 Proto => 'tcp',
+                                 SSL_use_cert => 0,
+                                 SSL_verify_mode => 0,
+                                );
+   } else {
+      $s = IO::Socket::INET->new(Proto => 'tcp',
+                                 Blocking => 0) ||
+         return echo("%% Connect %s : Socket error : %s",$world,$!);
+
+      my $iaddr = inet_aton(trim($host)) ||
+         return echo("%% Connect %s : Unknown host '%s'",$world,$host);
+
+      my $paddr = sockaddr_in($port,$iaddr);
+
+      my $ret = connect($s,$paddr);
+
+      if(!$ret && ! $!{EINPROGRESS}) {
+         return echo("%% Connect %s : Unable to connect",$world);
+      }
+   }
 
    if(!$s) {
       draw_bar();
@@ -691,6 +726,12 @@ sub socket_connect
 
    @socket{$world}->{sock} = $s;
    switch_world($conn,$world);
+   $readable->add($s);
+   @socket_lookup{$s} = $world;
+   delete @socket{muddler};
+
+   () = IO::Select->new($s)->can_write(.2)    # see if socket is pending
+      or @socket{$world}->{pending} = 1;
 
    echo("%% Connection to %s succeeded.",$world);
    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
@@ -700,11 +741,204 @@ sub socket_connect
            @address{$world}->{pass}
           );
    }
-   delete @socket{muddler};
    draw_bar();
 }
 
+sub is_enabled
+{
+    my $opt = shift;
+ 
+    if(is_in($opt,"DO_SGA","DO_TTYPE","DO_NAWS","DO_ECHO","DONT_MXP",
+             "DONT_MSP","WONT_MXP","WONT_MSP","WILL_SGA","WILL_TTYPE",
+             "WILL_NAWS","WILL_ECHO")) {
+       return 0;
+    } else {
+       return 0;
+    }
+}
+
+sub telnet_ch_init
+{
+   delete @telnet_ch{keys %telnet_ch};
+
+   @telnet_ch{normal} = 
+      sub {
+         my ($world,$ch) = @_;
+        
+         if($ch eq @state{IAC}) {
+            return (undef, @state{IAC});
+         } else {
+            return $ch;
+         }
+      };
+
+   @telnet_ch{@state{IAC}} =
+      sub {
+         my ($world,$ch) = @_;
+
+         if($ch eq @state{IAC}) {
+            return (@state{IAC}, 'normal');
+         } elsif(is_in($ch,@state{DO},@state{DONT},@state{WILL},@state{WONT},
+                 @state{SB})) {
+            return (undef,$ch);
+         } elsif($ch eq @state{NOP}) {                       # keep-a-live?
+            return (undef, 'normal');
+         } else {
+            return (undef, 'normal');
+         }
+      };
+
+   @telnet_ch{@state{DO}} =
+      sub {
+         my ($world,$opt, $mode) = @_;
+ 
+         loggit("telnet[$world]: %s %s",(@state{ord($mode)} || ord($mode)),
+             ($options[ord($opt)] || ord($opt)));
+         my $wopt = $options[ord($opt)] || ord($opt);
+         if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
+             ($options[ord($opt)] || ord($opt)))) {
+            if ($mode eq @state{DO})   { 
+                loggit("telnet_send: IAC WILL $wopt");
+                out_noret($world,@state{IAC}.@state{WILL}.$opt);
+            } elsif ($mode eq @state{DONT}) {
+                loggit("telnet_send: IAC WONT $wopt");
+                out_noret($world,@state{IAC}.@state{WONT}.$opt);
+            } elsif ($mode eq @state{WONT}) {
+                loggit("telnet_send: IAC DONT $wopt");
+                out_noret($world,@state{IAC}.@state{DONT}.$opt);
+            } elsif ($mode eq @state{WILL}) {
+                loggit("telnet_send: IAC DO $wopt");
+                out_noret($world,@state{IAC}.@state{DO}  .$opt);
+            }
+         } else {
+            if ($mode eq @state{DONT}) {
+                loggit("telnet_send: IAC WILL $wopt");
+               out_noret($world,@state{IAC}.@state{WILL}.$opt);
+            } elsif ($mode eq @state{DO}) {
+                loggit("telnet_send: IAC WONT $wopt");
+               out_noret($world,@state{IAC}.@state{WONT}.$opt);
+            } elsif ($mode eq @state{WILL}) {
+                loggit("telnet_send: IAC WILL $wopt");
+               out_noret($world,@state{IAC}.@state{DONT}.$opt);
+            } elsif ($mode eq @state{WONT}) {
+                loggit("telnet_send: IAC WONT $wopt");
+               out_noret($world,@state{IAC}.@state{DO}  .$opt);
+            }
+         }
+         return (undef, 'normal');
+      };
+
+   @telnet_ch{@state{SB}} =
+      sub {
+         my ($world,$c) = @_;
+         return (undef, 'sbiac') if $c eq @state{IAC};
+         @state{telnet_sb_buffer} .= $c;
+         return;
+       };
+
+   @telnet_ch{sbiac} =
+       sub {
+          my ($world,$c) = @_;
+
+          if ($c eq @state{IAC}) {
+              @state{telnet_sb_buffer} .= @state{IAC};
+              return (undef, @state{SB});
+          }
+
+          if ($c eq @state{SE}) {
+              _telnet_complex_callback(@state{telnet_sb_buffer});
+              @state{telnet_sb_buffer} = '';
+              return (undef, 'normal');
+          }
+
+          # IAC followed by something other than IAC and SE.. what??
+          require Carp;
+          Carp::croak "Invalid telnet stream: IAC SE ... IAC $c (chr ".chr($c).") ...";
+      };
+   $telnet_ch{@state{DONT}} = 
+       $telnet_ch{@state{WILL}} = 
+       $telnet_ch{@state{WONT}} =
+       $telnet_ch{@state{DO}};
+}
+
+sub _parse
+{
+    my ($world,$in) = @_;
+    my $out = '';
+
+    # optimization: if we're in normal mode then we can quickly move all the
+    # input up to the first IAC into the output buffer.
+    if (@state{telnet_mode} eq 'normal') {
+        # if there is no IAC then we can skip telnet entirely
+        $in =~ s/^([^@state{IAC}]*)//o;
+        return $1 if length $in == 0;
+        $out = $1;
+    }
+
+    
+    for my $c (split '', $in) {
+        my ($o, $m) = $telnet_ch{@state{telnet_mode}}->
+            ($world,$c, @state{telnet_mode});
+
+        $out .= $o;
+#        defined $o and $out .= $o;
+        defined $m and @state{telnet_mode} = $m;
+    }
+
+    return $out;
+}
+
+sub socket_disconnect
+{
+   my $world = shift;
+
+   if(defined @socket{$world} && defined @socket{$world}->{sock}) {
+      @socket{$world}->{sock}->close();
+      $readable->remove(@socket{$world}->{sock});
+      delete @socket{$world}->{sock};
+      delete @socket_lookup{@socket{$world}->{sock}};
+   }
+}
+
 sub socket_handle_input
+{
+   my $buf;
+
+   my ($sockets) = IO::Select->select($readable,undef,undef,0);
+
+#   loggit("shi: called");
+   for my $s (@$sockets) {
+      my $world = @socket_lookup{$s};
+      if(sysread($s,$buf,1024) <= 0) {
+          socket_disconnect($world);
+          history($world,"% Connection closed to ". name($world));
+      } else {
+          @socket{$world}->{last_recv} = time();
+#         _parse($world,$buf);
+
+         if(@state{p_encode} eq "fansi") {
+            @socket{$world}->{buf} .= decode("cp437",_parse($world,$buf));
+         } elsif(@state{p_encode} eq "utf8") {
+            # this could just be in the "else" but i'm assuming there will be
+            # other encodings later on.
+            @socket{$world}->{buf} .= decode("UTF-8",_parse($world,$buf));
+         } else {                                          # default to utf8
+            @socket{$world}->{buf} .= decode("UTF-8",_parse($world,$buf));
+         }
+            
+#         @socket{$world}->{buf} .= decode("UTF-8",$buf);
+#         loggit("$world> %s",lord($buf));
+         while(defined @socket{$world}->{sock} &&
+               @socket{$world}->{buf} =~ /\n/) {
+#             loggit("$world in> %s'\n",$`);
+             history($world,$`);
+             @socket{$world}->{buf} = $';
+         }
+      }
+   }
+}
+             
+sub socket_handle_input_old
 {
    for my $world (keys %socket) {
       if(@socket{$world}->{sock}) {
@@ -753,6 +987,11 @@ sub server_hostname
    } else {
       return $name;                                         # return hostname
    }
+}
+
+sub listener_init
+{
+   $readable = IO::Select->new();
 }
 
 sub ws_init
@@ -1353,14 +1592,11 @@ sub pending
    return undef if $w eq undef || !defined @socket{$w};
 
    if(!defined @socket{$w}->{pending}) {
-#      loggit("pending: 1");
       return 0;
    } elsif(@socket{$w}->{pending} < 0) {
-#      loggit("pending: 2");
       @socket{$w}->{pending} = 0;
       return 0;
    } else {
-#      loggit("pending: 3 - %s",@socket{$w}->{pending});
       return @socket{$w}->{pending};
    }
 }
@@ -1792,7 +2028,7 @@ sub world_visible
 {
    my $world = shift;
 
-   if($world eq @state{world}) {
+   if(console() && $world eq @state{world}) {
       return 1;
    } else {
       for my $key (keys %ws) {
@@ -1810,15 +2046,17 @@ sub world_visible
 sub min_visible
 {
    my $world = shift;
+   my $min;
 
-   my $min = @state{size_x};
+   $min = @state{size_x} if(console());
 
    for my $key (keys %ws) {
       if(@ws{$key}->{world} eq $world && @ws{$key}->{size_y} < $min) {
          $min = @ws{$key}->{size_x};
       }
    }
-   return $min;
+
+   return $min || @state{size_x};
 }
 
 
@@ -2146,7 +2384,7 @@ sub scan_history
    if(@state{world} eq $w) {
       $size = output_end() - overlap();
    } elsif(is_web($conn)) {
-      $size = @ws{$w}->{size_x} - overlap();
+      $size = @ws{$conn}->{size_x} - overlap();
    } else {
       $size = output_end() - overlap();
    }
@@ -2163,7 +2401,6 @@ sub scan_history
       }
       $pos += $inc;
    }
-   loggit("COUNT: $count  size=$size, max=$max, %s",code());
 
    $pos++ if($pos == 0);
    $pos = $#$hist if ($pos > $#$hist);
@@ -2390,14 +2627,27 @@ sub out
       my $msg = sprintf("$fmt",@args);
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
+#      loggit("$world> %s",$msg);
       my $sock = @socket{$world}->{sock};
-#      loggit("$world> $fmt",@args);
-      printf($sock "%s",$msg);
+      printf($sock "%s\n",$msg);
 
       # keep track of last send time for sending keepalives
       @socket{$world}->{last_send} = time();
    }
 }
+
+sub out_noret
+{
+   my ($world,$fmt,@args) = @_;
+
+   return;
+   if(defined @socket{$world} && defined @socket{$world}->{sock}) {
+      my $sock = @socket{$world}->{sock};
+      printf($sock $fmt, @args);
+      @socket{$world}->{last_send} = time();
+   }
+}
+
 
 #
 # key_return
@@ -2657,7 +2907,7 @@ sub key_down
       return key_esc_w(@_);
    }
 
-   for my $key (sort {@socket{$a}->{pos} cmp @socket{$b}->{pos}} keys %socket){
+   for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} < $pos &&
          (defined @socket{$key}->{sock} || 
          pending($key) > 0)) {
@@ -2903,7 +3153,6 @@ sub more_bar
    return if $w eq undef || !defined @socket{$w};
 
    if(in_hist($w)) {
-      loggit("hist_pos: '%s' - '%s'\n",$#{@history{$w}},hist_pos($w));
       return sprintf("\033[7mHist %4s\033[0m",
          $#{@history{$w}} - hist_pos($w));
    } elsif(more(world($conn))) {
@@ -3188,6 +3437,18 @@ sub single
     return $txt;
 }
 
+sub cmd_fansi
+{
+   save("p_encode","fansi");
+   echo("%% Enabling fansi encoding.");
+}
+
+sub cmd_utf8
+{
+   save("p_encode","utf8");
+   echo("%% Enabling utf8 encoding.");
+}
+
 sub cmd_common
 {
    cmd_world(@state{world},"global");
@@ -3356,6 +3617,33 @@ sub cmd_password
    save("p_password");
 }
 
+sub cmd_console
+{
+#-# ------------------------------------------------------------------------
+#-# /console <on|off>
+#-#
+#-#      Turn the console on or off.
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+
+   if($txt =~ /^\s*(on|1|enable)\s*$/) {
+      @state{console} = 1;
+      eval ("ReadMode 'cbreak';");
+      redraw_screen(@state{world},1);
+   } elsif($txt =~ /^\s*(off|0|disable)\s*$/) {
+      revert_console();
+      clear_screen($conn);
+      @state{console} = 0;
+      if(@state{web} == 0) {
+         cmd_web($conn,"on");
+         printf("%% Web enabled due to disabling console. Connect via:\n");
+         printf("%%   http://localhost:@state{p_port}, Password: @state{p_password}");
+      }
+   } else {
+      echo("%% usage: /console <on|off>");
+   }
+}
 sub cmd_color
 {
 #-# ------------------------------------------------------------------------
@@ -4153,6 +4441,8 @@ sub cmd_world
                      @address{$txt}->{name},
                      @address{$txt}->{host},
                      @address{$txt}->{port},
+                     (!defined @address{$txt}->{ssl} ||
+                      !@address{$txt}->{ssl}) ? 0 : 1,
                     );
    }
 }
@@ -4268,6 +4558,7 @@ sub get_checksums
 {
    my ($file,$pos,%data);
    my $ln = 1;
+#
 
    return if(!module_enabled("Digest::MD5"));
       
@@ -4357,6 +4648,7 @@ sub reload_code
    command_init();
    key_init();
    http_data_init();
+   telnet_ch_init();
 
    if($count == 0) {
       echo("%% No changes found to reload.");
@@ -4432,8 +4724,12 @@ sub trim
 
 sub tick
 {
+   # keep alive. Send something to a world to keep it alive if nothing has
+   # been sent / recieved.
    for my $w (keys %socket) {
-      if(defined @socket{$w}->{sock} && time()-@socket{$w}->{last_send} > 300){
+      if(defined @socket{$w}->{sock} && 
+         time()-@socket{$w}->{last_send} > 300 &&
+         time()-@socket{$w}->{last_recv} > 300) {
          if(defined @address{$w}->{keepalive}) {
             out($w,@address{$w}->{keepalive} . "\n");
          } else {
@@ -4476,6 +4772,7 @@ sub read_file
 sub muddler_init
 {
    # for temporay viewport for output before a connected world
+   @state{telnet_mode} = "normal";
    @history{muddler} = [];
    @socket{muddler} = { name        => "muddler",
                         more        => -1,
@@ -4507,6 +4804,25 @@ sub muddler_init
    reload_code();
 #   Monitor::monitor(@pending{alpha}, "array");
    @state{state} = "post-init";
+
+   # these should go into another variable, but this allows reloading
+   @state{IAC} = chr(255);
+   @state{SB} = chr(250);
+   @state{SE} = chr(240);
+   @state{255} = 'IAC';
+   @state{250} = 'SB';
+   @state{240} = 'SE';
+   @state{241} = 'NOP';
+
+   @state{WILL} = chr(251);
+   @state{WONT} = chr(252);
+   @state{DO}   = chr(253);
+   @state{DONT} = chr(254);
+   @state{251} = 'WILL';
+   @state{252} = 'WONT';
+   @state{253} = 'DO';
+   @state{254} = 'DONT';
+   telnet_ch_init();
 }
 
 #
@@ -4526,7 +4842,7 @@ sub muddler
 
    socket_handle_input();
    ws_io();
-   key_process(ReadKey(0.25));
+   key_process(ReadKey(0.04));
    if($@) {
       loggit("Crash? $@");
    }
@@ -4583,6 +4899,7 @@ for my $i (0 .. $#ARGV) {
 
 load_modules();
 ws_init() if !console();
+listener_init();
 
 muddler_init();
 
@@ -5740,7 +6057,9 @@ START: muddler_style.css
      margin: 0;
      overflow: hidden;
      background: #2667bd;
-     font-family: 'Courier New', monospace;
+   /*     font-family: 'Courier New', monospace; */
+   /*     font-family: 'termnine',Monospace; */
+     font-family: Monospace;
      font-size: 10pt;
      font-weight: normal;
    }
