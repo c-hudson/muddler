@@ -3439,13 +3439,19 @@ sub single
 
 sub cmd_fansi
 {
-   save("p_encode","fansi");
+   my ($conn,$txt) = @_;
+
+   @address{world($conn)}->{encode} = "fansi";
+   save(world($conn),1);
    echo("%% Enabling fansi encoding.");
 }
 
 sub cmd_utf8
 {
-   save("p_encode","utf8");
+   my ($conn,$txt) = @_;
+
+   @address{world($conn)}->{encode} = "utf8";
+   save(world($conn),1);
    echo("%% Enabling utf8 encoding.");
 }
 
@@ -3858,7 +3864,6 @@ sub cmd_listdef
 
    $pat = glob2re(trim($str)) if($str !~ /^\s*$/);
    
-   loggit("opt: $$opt{w} -> '%s'",$str);
    for my $key (keys %def) {
       next if @def{$key}->{atr} !~ /g/;
       my $count = 0;
