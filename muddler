@@ -29,18 +29,9 @@ use Carp                qw< carp croak confess cluck >;
 use Encode              qw< encode decode >;
 use Unicode::Normalize  qw< NFD NFC >;
 
-use Term::ReadKey;
-use Net::WebSocket::Server;
-# use Net::Telnet;
-use Encode;
-use Digest::MD5;
-
-
 use strict;
 # use Monitor qw(monitor);
 use POSIX;
-use IO::Select;
-use IO::Socket;
 use Text::ParseWords;
 use URI::Escape;
 #use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
@@ -102,6 +93,7 @@ sub key_init
 {
    delete @key{keys %key};
    @key{def}             = sub { return key_default(@_);             };
+#   @key{32}              = sub { return key_space(@_);               };
    @key{2}               = sub { return key_left(@_);                };
    @key{4}               = sub { return key_dump(@_);                };
    @key{6}               = sub { return key_right(@_);               };
@@ -219,6 +211,8 @@ sub load_modules
 #                                    "libnet-telnet-perl" },
       'Encode'                 => { fatal => 1, fix => "install Encode module"},
       'Digest::MD5'            => { fatal => 0, fix => "install Digest::MD5"},
+      'Text::Aspell'           => { fatal => 0, fix => "apt install " .
+                                     "libtext-aspell-perl"},
    );
 
    for my $key (keys %mod) {
@@ -690,6 +684,10 @@ sub socket_connect
                        history_pos_partial => -1,
                      };
 
+   if(!defined @address{$world}->{decode}) {      # default to utf8 decoding.
+       @address{$world}->{decode} = "utf8";
+   }
+
    @socket{$world}->{pos} = ++@state{pos_sequence};
 #   Monitor::monitor(@socket{$world}, "hash");
 
@@ -890,49 +888,38 @@ sub _parse
 
 sub socket_disconnect
 {
-   my $world = shift;
+   my $s = shift;
 
-   if(defined @socket{$world} && defined @socket{$world}->{sock}) {
-      @socket{$world}->{sock}->close();
-      $readable->remove(@socket{$world}->{sock});
-      delete @socket{$world}->{sock};
-      delete @socket_lookup{@socket{$world}->{sock}};
-   }
+   $readable->remove($s);
+   delete @socket_lookup{@socket{$s}->{name}};
+   delete @socket_lookup{$s};
 }
 
+#
+# socket_handle_input
+#    Look for new input and hand it off to be processed by history()
+#    function. Decoding of utf/fansi is handled here.
+#
 sub socket_handle_input
 {
    my $buf;
 
    my ($sockets) = IO::Select->select($readable,undef,undef,0);
 
-#   loggit("shi: called");
    for my $s (@$sockets) {
-      my $world = @socket_lookup{$s};
+      my $w = @socket_lookup{$s};
       if(sysread($s,$buf,1024) <= 0) {
-          socket_disconnect($world);
-          history($world,"% Connection closed to ". name($world));
+          socket_disconnect($s);
+          history($w,"% Connection closed to ". name($w) . "-$s");
       } else {
-          @socket{$world}->{last_recv} = time();
-#         _parse($world,$buf);
+         @socket{$w}->{last_recv} = time();
 
-         if(@state{p_encode} eq "fansi") {
-            @socket{$world}->{buf} .= decode("cp437",_parse($world,$buf));
-         } elsif(@state{p_encode} eq "utf8") {
-            # this could just be in the "else" but i'm assuming there will be
-            # other encodings later on.
-            @socket{$world}->{buf} .= decode("UTF-8",_parse($world,$buf));
-         } else {                                          # default to utf8
-            @socket{$world}->{buf} .= decode("UTF-8",_parse($world,$buf));
-         }
+         @socket{$w}->{buf}.= decode(@address{$w}->{decode}, _parse($w,$buf));
             
-#         @socket{$world}->{buf} .= decode("UTF-8",$buf);
-#         loggit("$world> %s",lord($buf));
-         while(defined @socket{$world}->{sock} &&
-               @socket{$world}->{buf} =~ /\n/) {
-#             loggit("$world in> %s'\n",$`);
-             history($world,$`);
-             @socket{$world}->{buf} = $';
+         while(defined @socket{$w}->{sock} &&
+               @socket{$w}->{buf} =~ /\n/) {
+             history($w,$`);
+             @socket{$w}->{buf} = $';
          }
       }
    }
@@ -2304,7 +2291,7 @@ sub redraw_output
       optimize_start();
       for my $hash (get_output($conn)) {
          # show dashes before new output when switching to world
-         if($$hash{pos} == $last && $first eq undef) {
+         if($$hash{pos} >= $last && $first eq undef) {
             echo_console("%s","=====");
             $first++;
          }
@@ -2313,7 +2300,7 @@ sub redraw_output
       optimize_end();
    } elsif(is_web($conn)) {
       for my $hash (get_output($conn)) {
-         if($$hash{pos} == $last && $first eq undef) {
+         if($$hash{pos} >= $last && $first eq undef) {
             # show dashes before new output when switching to world
             ws_echo($conn,"t","=====");
             $first++;
@@ -2688,7 +2675,7 @@ sub input_lines
     return $result;
 }
 
-sub input_online
+sub input_on_line
 {
     my $result = sprintf("%d",@state{line_pos} / (@state{size_y} - 1));
     return $result + 1 if(@state{line_pos} % (@state{size_y} - 1) >= 1);
@@ -2712,7 +2699,7 @@ sub key_delete
       @state{line_pos}--;
       xy(input_x(),input_y());
      
-      for my $i ((input_online()+1) .. input_lines()) {
+      for my $i ((input_on_line()+1) .. input_lines()) {
          xy(input_start() + $i - 2,79);
          printf("%s",@state{line}->[(@state{size_y}-1) * ($i-1) - 1]);
          xy(input_x() + $i - 1,0);
@@ -2740,6 +2727,26 @@ sub key_default
    return if !console();
    update_scroll_region("input");
 
+   if($ch eq " " && !module_enabled("Text::Aspell")) {
+      if(join('',@{@state{line}}) =~ /(^| )([a-zA-Z]+)(\s*)$/) {
+         @state{speller} = Text::Aspell->new if(!defined @state{speller});
+         if(!@state{speller}->check($2)) {
+            my $spaces = $3;
+            for my $i (1 .. length("$2$3")) {
+               key_delete($conn);
+            }
+            printf("\033[1m");
+            for my $ch (split('',$2)) {
+               key_default($conn,$ch);
+            }
+            printf("\033[0m");
+            for my $ch (split('',$spaces)) {
+               key_default($conn,$ch);
+            }
+         }
+      }
+   }
+
    splice(@{@state{line}},@state{line_pos},0,$ch);         # add ch to buffer
    @state{line_pos}++;                          # move cursor position over 1
    printf("%s",$ch);                                     # print out new char
@@ -2766,7 +2773,7 @@ sub key_default
    # plus the next line.
    if(($#{@state{line}} + 1 >= @state{input_size} * (@state{size_y}-1)) &&
       @state{line_pos} % (@state{size_y} - 1) == 0) {
-      printf("\n%s",input_line(input_online()+1));
+      printf("\n%s",input_line(input_on_line()+1));
       @state{input_offset}++;
    }
    xy(input_x(),input_y());
@@ -2780,7 +2787,7 @@ sub key_left
    if(@state{input_offset} > 0 && @state{line_pos} % (@state{size_y}-1)==0 &&
       input_x() == input_start()) {
       @state{input_offset}--;
-      for my $i (input_online() .. input_lines()) {
+      for my $i (input_on_line() .. input_lines()) {
          last if(@state{input_size} < $i - @state{input_offset});
          my $start = ($i-1) * (@state{size_y} -1);
          my $stop = $start + @state{size_y}-2;
@@ -2932,7 +2939,7 @@ sub key_right
       if(@state{line_pos} % (@state{size_y}-1)==78 &&
          input_x() == @state{size_x}) {
          @state{input_offset}++;
-         printf("\n%s",input_line(input_online()+1));
+         printf("\n%s",input_line(input_on_line()+1));
       }
       @state{line_pos}++;
       xy(input_x(),input_y());
@@ -3441,7 +3448,7 @@ sub cmd_fansi
 {
    my ($conn,$txt) = @_;
 
-   @address{world($conn)}->{encode} = "fansi";
+   @address{world($conn)}->{decode} = "cp437";
    save(world($conn),1);
    echo("%% Enabling fansi encoding.");
 }
@@ -3450,7 +3457,7 @@ sub cmd_utf8
 {
    my ($conn,$txt) = @_;
 
-   @address{world($conn)}->{encode} = "utf8";
+   @address{world($conn)}->{decode} = "utf8";
    save(world($conn),1);
    echo("%% Enabling utf8 encoding.");
 }
@@ -4137,6 +4144,7 @@ sub cmd_web_size
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
+   loggit("SIZE: $txt");
    if($conn ne undef) {
       my (@size) = split(',',$txt);
 
@@ -4325,6 +4333,19 @@ sub getopt
    }
 }
 
+
+sub ts
+{
+   my $time = shift;
+
+   $time = time() if $time eq undef;
+   my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                localtime($time);
+   $mon++;
+
+   return sprintf("%02d:%02d@%02d/%02d",$hour,$min,$mon,$mday);
+}
+
 sub cmd_recall
 {
 #-# ------------------------------------------------------------------------
@@ -4345,7 +4366,8 @@ sub cmd_recall
    my $opt = {};
 
    return echo("%% Not connected to a world.") if(no_world());
-   $txt = getopt("a:",$txt,$opt);
+   $txt = getopt("a:t",$txt,$opt);
+   my $w = world($conn);
 
    if($txt =~ /^\s*(\d+)\s*/) {
       $count = $1;
@@ -4356,6 +4378,8 @@ sub cmd_recall
    } else {
       $pat = $txt;
    }
+
+   $pat = "*" if $pat eq undef;
 
    # include gagged content?
    if($$opt{a} =~ /g/) {
@@ -4372,7 +4396,12 @@ sub cmd_recall
             ansi_remove(@history{@state{world}}->[$i]->{txt}) =~ /$pat/) {
 
             # order will be backwards, so store.
-            unshift(@out,@history{@state{world}}->[$i]->{txt});
+            if($$opt{t}) {
+               unshift(@out,"[" . ts(@history{$w}->[$i]->{ts}) . "] " . 
+                       @history{$w}->[$i]->{txt});
+            } else {
+               unshift(@out,@history{$w}->[$i]->{txt});
+            }
 
             $count--;
          }
@@ -4486,26 +4515,16 @@ sub optimize_end
 
 sub show_banner
 {
-   open(PROG,$0) || return;
-
    optimize_start();
-   while(<PROG>) {
-      s/\n|\r//g;
-      if($. > 24) {                                  # read only 24 lines
-         last;
-      } elsif(/^#-#   /) {
-         @state{version} .= "$'\n";
-         echo("%s",center($'));
-      } elsif($. > 100) {                              # read only 50 lines
-         last;
-      }
-   }
-
-   @state{version} =~ s/\n$//g;
-   close(PROG);
-   for my $i (0 .. 2) {
-      echo("%s","");
-   }
+   echo("%s",center('     ( A 90dies mud client written today ) '));
+   echo("%s",center('    o               v1.0a                   '));
+   echo("%s",center('   o _____                __  __ _          '));
+   echo("%s",center(' _||_| u |    _ _  _ _ __| /_| /| |  __ ____'));
+   echo("%s",center('(        |== / v \| | |  _ | _ || |/ -_) __/'));
+   echo("%s",center('/-()---()   |_|_|_|___/\___\___/|_|\__/_/   '));
+   echo("%s","");
+   echo("%s","");
+   echo("%s","");
    optimize_end();
 }
 
@@ -4622,6 +4641,7 @@ sub get_checksums
 sub reload_code
 {
    my $count = 0;
+   return;
 
    return http_data_init() if(@ENV{PAR_0});
 
@@ -4654,6 +4674,7 @@ sub reload_code
    key_init();
    http_data_init();
    telnet_ch_init();
+   load_modules();
 
    if($count == 0) {
       echo("%% No changes found to reload.");
@@ -4798,8 +4819,10 @@ sub muddler_init
       $| = 1;                                                  # unbuffer stdout
       eval ("ReadMode 'cbreak';");
    }
+
    key_init();
    command_init();
+
    redraw_screen(@state{world},1);
    show_banner();
    load(1);

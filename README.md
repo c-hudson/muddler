@@ -14,6 +14,7 @@ This screenshot is showing the two interfaces to muddler. In the background is m
    o Inital fansi support
    o Multiple worlds at the same time
    o More / pausing output as needed
+   o spell checking
    o Multiple Window Support(?) - The console interface does not support
        multiple windows but multiple browser "windows" can be opened and
        can view different worlds.
@@ -30,10 +31,22 @@ This screenshot is showing the two interfaces to muddler. In the background is m
 ```
 # Installation
 ```
-   Download the muddler perl script
-   Install required perl modules
-      muddler will tell you what modules are missing and how to install
-      them if on a linux/deb system.
+   Download muddler:
+      For the easy of installation, the muddler perl script is packaged
+      together as an executable for linux and windows. Using these packages
+      is only ment for ease of installation.
+
+      Download executable
+         download pl_muddler for linux or
+         download pw_muddler for windows
+
+      or
+
+      Download perl script "muddler" perl script and install required perl 
+         a. download muddler script
+         b. Install required perl modules.
+            muddler will tell you what modules are missing
+
    chmod u+x muddler
    ./muddler <options>
 
@@ -100,6 +113,7 @@ This screenshot is showing the two interfaces to muddler. In the background is m
       Control-p          : Both      : Move down in the keyboard history
       Control-n          : Both      : Move up in the keyboard history
       Control-u          : Both      : Erase the current input line
+      Control-q          : Console   : Spell check line and give suggestions
       Tab                : Both      : Move forward one screen full of text
                                        if the world is paused by "more".
       Control-l          : Both      : Redraw the screen 
