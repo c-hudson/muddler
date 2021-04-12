@@ -3404,7 +3404,7 @@ sub key_esc_q
 
    $input =~ s/[^a-zA-Z0-9 ]+//g;
    open($spell,"echo $input | aspell -a -S |") ||
-      return echo("%% Unable to run tfspell");
+      return echo("%% Unable to run aspell");
    while(<$spell>) {
       if(/^& ([^ ]+) [^:]+: /) {
          my @data = split(/,/,$');
@@ -3442,6 +3442,18 @@ sub single
     my $txt = shift;
     $txt =~ s/\r|\n//g;
     return $txt;
+}
+
+sub cmd_debug
+{
+#-# ------------------------------------------------------------------------
+#-# /log <message>
+#-#
+#-#      Logs <message> to muddlers log file if debugging is enabled.
+#-#
+#-# ------------------------------------------------------------------------
+   save("p_sync",1);
+   echo("%% Enabling logging to muddler.log.");
 }
 
 sub cmd_fansi
@@ -3766,8 +3778,8 @@ sub save
    # redefining a world will cause a full dump of the file
    $append = 1 if(!defined @address{$item});
 
-   open($file,($append ? ">>" : ">") . " .muddler") ||
-      return echo("%% Unable to open .muddler for writing.");
+   open($file,($append ? ">>" : ">") . " @ENV{HOME}/.muddler") ||
+      return echo("%% Unable to open @ENV{HOME}/.muddler for writing.");
 
    for my $world (keys %address) {
       if(!$append || ($append && $world eq $item)) {
@@ -3791,7 +3803,7 @@ sub save
    }
    close($file);
 
-   echo("%% %s worlds written to .muddler",scalar keys %address) if(!$append);
+   echo("%% %s worlds written to @ENV{HOME}/.muddler",scalar keys %address) if(!$append);
 }
 
 sub load
@@ -3799,8 +3811,8 @@ sub load
    my $quiet = shift;
    my ($file,$name,$data);
 
-   if(!open($file,".muddler")) {
-      return echo("%% Unable to open .muddler for reading") if(!$quiet);
+   if(!open($file,"@ENV{HOME}/.muddler")) {
+      return echo("%% Unable to open @ENV{HOME}/.muddler for reading") if(!$quiet);
    }
 
    while(<$file>) {
@@ -3812,7 +3824,7 @@ sub load
          delete @$data{keys %$data};
       } elsif(/^\s*([^:]+)\s*:\s*/) {                      # segment value
          if($name eq undef) {
-            return echo("% Corrupted .muddler file found on line $.");
+            return echo("% Corrupted @ENV{HOME}/.muddler file found on line $.");
          }
          $$data{$1} = $';
       } elsif(/^\s*}\s*$/) {                             # end of segment
@@ -3821,7 +3833,7 @@ sub load
          }
          $name = undef;
       } else {
-        return echo("% Corrupted .muddler file found on line $.");
+        return echo("% Corrupted @ENV{HOME}/.muddler file found on line $.");
       }
    }
    close($file);
@@ -4827,7 +4839,7 @@ sub muddler_init
    show_banner();
    load(1);
 
-   read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e ".muddler");
+   read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e "@ENV{HOME}/.muddler");
    read_tfrc("@ENV{HOME}/.tfrc",1);
    reload_code();
 #   Monitor::monitor(@pending{alpha}, "array");
