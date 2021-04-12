@@ -122,6 +122,7 @@ sub key_init
 sub command_init
 {
    delete @command{keys %command};
+   @command{debug}         = sub { return cmd_debug(@_);                   };
    @command{world}         = sub { return cmd_world(@_);                   };
    @command{quit}          = sub { return cmd_quit(@_);                    };
    @command{reload}        = sub { return cmd_reload(@_);                  };
