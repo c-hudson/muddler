@@ -4653,7 +4653,6 @@ sub get_checksums
 sub reload_code
 {
    my $count = 0;
-   return;
 
    return http_data_init() if(@ENV{PAR_0});
 
