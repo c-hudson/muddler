@@ -4157,7 +4157,6 @@ sub cmd_web_size
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
-   loggit("SIZE: $txt");
    if($conn ne undef) {
       my (@size) = split(',',$txt);
 
