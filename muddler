@@ -892,8 +892,10 @@ sub socket_disconnect
    my $s = shift;
 
    $readable->remove($s);
-   delete @socket_lookup{@socket{$s}->{name}};
-   delete @socket_lookup{$s};
+   if(defined @socket_lookup{$s}) {
+       delete @socket{@socket_lookup{$s}};
+       delete @socket_lookup{$s};
+   }
 }
 
 #
@@ -4465,6 +4467,12 @@ sub cmd_reload
 #-#      that the client will continue and not have issues.
 #-# ------------------------------------------------------------------------
    reload_code();
+#   for my $name (keys %socket) {
+#      if(@socket{$name}->{name} eq "8bit") {
+#         delete @socket_lookup{@socket{$name}->{sock}};
+#         delete @socket{$name}->{sock};
+#      }
+#   }
 }
 
 sub cmd_world
