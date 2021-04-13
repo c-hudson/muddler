@@ -114,6 +114,8 @@ This screenshot is showing the two interfaces to muddler. In the background is m
       Control-n          : Both      : Move up in the keyboard history
       Control-u          : Both      : Erase the current input line
       Control-q          : Console   : Spell check line and give suggestions
+      Control-a          : Console   : Move to begining of input
+      Control-e          : Console   : Move to end of input
       Tab                : Both      : Move forward one screen full of text
                                        if the world is paused by "more".
       Control-l          : Both      : Redraw the screen 

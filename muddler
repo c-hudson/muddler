@@ -93,9 +93,10 @@ sub key_init
 {
    delete @key{keys %key};
    @key{def}             = sub { return key_default(@_);             };
-#   @key{32}              = sub { return key_space(@_);               };
+   @key{1}               = sub { return key_ctl_a(@_);               };
    @key{2}               = sub { return key_left(@_);                };
    @key{4}               = sub { return key_dump(@_);                };
+   @key{5}               = sub { return key_ctl_e(@_);               };
    @key{6}               = sub { return key_right(@_);               };
    @key{8}               = sub { return key_delete(@_);              };
    @key{9}               = sub { return key_tab(@_);                 };
@@ -1560,7 +1561,7 @@ sub in_hist
 #
 sub hist_pos
 {
-   my ($w,$action) = @_;
+   my ($w,$action,$offset) = @_;
 
    $w = @state{world} if $w eq undef;
    if(no_world()) {
@@ -1569,6 +1570,7 @@ sub hist_pos
       delete @socket{$w}->{hist_pos};
    } elsif($action ne undef) {
       @socket{$w}->{hist_pos} = $action;
+      @socket{$w}->{hist_offset} += $offset;
    } elsif(defined @socket{$w}) {
       return @socket{$w}->{hist_pos};
    }
@@ -2146,8 +2148,10 @@ sub release_pending_pagefull
 #
 sub input_x
 {
+   my $offset = shift;
+
    my $x = input_start() + 
-           sprintf("%d",(@state{line_pos} - 
+           sprintf("%d",(@state{line_pos} - $offset -
                         ((@state{size_y} - 1) * @state{input_offset})) /
                         (@state{size_y} - 1));
    
@@ -2164,7 +2168,8 @@ sub input_x
 #
 sub input_y
 {
-   return 1 + (@state{line_pos} % (@state{size_y} - 1));
+   my $offset = shift;
+   return 1 + ((@state{line_pos}  - $offset) % (@state{size_y} - 1));
 }
 
 #
@@ -2402,7 +2407,7 @@ sub scan_history
       # do nothing;
       return 0;
    } else {
-      hist_pos($w,$pos);
+      hist_pos($w,$pos,$count * $inc);
       return 1;
    }
 }
@@ -2719,6 +2724,41 @@ sub key_delete
 }
 
 #
+# make_string_bold
+#    Given a word/string in the input buffer that immediate preceeds where
+#    the cursor is, make it bold.
+#
+sub make_string_bold
+{
+   my $txt = shift;
+
+   return if $txt =~ /^\s*$/;
+
+   my $i = @state{line_pos} - length($txt);
+
+   # move cursor to begingin of word
+   xy(input_x(length($txt)),input_y(length($txt)));
+
+   printf("\033[1m");                                         # start bold
+   for my $ch (split('',$txt)) {
+
+      # determine if character would be off the screen, if so done.
+      if($i >= ((@state{size_y}-1) * @state{input_size}) + 
+               (@state{input_offset} * (@state{size_y}-1))) {
+         last;
+      }
+
+      # determine if we should drop down a line before next character
+      if($i % (@state{size_y}-1) == 0 && $i != @state{line_pos}-length($txt)){
+         printf("\n");
+      }
+      printf("%s",$ch);                                # print out character
+      $i++;
+   }
+   printf("\033[0m");                                        # turn off bold
+}
+
+#
 # key_default
 #    Default key handler for all normal characters.
 #
@@ -2731,21 +2771,11 @@ sub key_default
    update_scroll_region("input");
 
    if($ch eq " " && module_enabled("Text::Aspell")) {
-      if(join('',@{@state{line}}) =~ /(^| )([a-zA-Z]+)(\s*)$/) {
+      if(substr(join('',@{@state{line}}),0,@state{line_pos}) =~ 
+            /(^| )([a-zA-Z]+)(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
-            my $spaces = $3;
-            for my $i (1 .. length("$2$3")) {
-               key_delete($conn);
-            }
-            printf("\033[1m");
-            for my $ch (split('',$2)) {
-               key_default($conn,$ch);
-            }
-            printf("\033[0m");
-            for my $ch (split('',$spaces)) {
-               key_default($conn,$ch);
-            }
+             make_string_bold("$2$3");
          }
       }
    }
@@ -2782,6 +2812,58 @@ sub key_default
    xy(input_x(),input_y());
 }
 
+#
+# key_ctl_a
+#    Move the cursor to the begining of the line
+#
+sub key_ctl_a
+{
+   my ($conn,$key) = @_;
+   my $offset = @state{input_offset};
+
+   @state{input_offset} = 0;                    # reset the cursor location
+   @state{line_pos} = 0;
+
+   if($offset > 0) {     # line is not fully viewable, so a redraw is needed.
+      redraw_input($conn);
+   } else {                                            # just move the cursor
+      xy(input_x(),input_y());
+   }
+}
+
+#
+# key_ctl_e
+#    Move the cursor to the end of the line
+#
+sub key_ctl_e
+{
+   my ($conn,$key) = @_;
+
+   my $original = @state{input_offset};
+
+   # determine the number of lines that aren't being shown for offset
+   if($#{@state{line}} / (@state{size_y} - 1)+1 > @state{input_size}) {
+      @state{input_offset} = sprintf("%d",$#{@state{line}} / (@state{size_y}
+          - 1) + 1 - @state{input_size});
+   } else {
+      @state{input_offset} = 0;
+   }
+   @state{line_pos} = $#{@state{line}} + 1;
+
+   if(@state{input_offset} != $original) {
+      loggit("ctl_e: redraw '@state{input_offset}'");
+      redraw_input($conn);
+   } else {
+      loggit("ctl_e: move '@state{input_offset}'");
+      xy(input_x(),input_y());
+   }
+}
+
+
+#
+# key_left
+#    Move the cursor one character to the left
+#
 sub key_left
 {
    return if !console();
@@ -2878,7 +2960,11 @@ sub key_up
    # if active, switch to it.. but also switch back one last time.
    if(mstate($conn,"last_active") ne undef || 
       scalar keys %{@state{activity}} > 0) {
-      mstate($conn,"last_active","") if(scalar keys %{@state{activity}} > 0);
+      if(scalar keys %{@state{activity}} > 0) {
+         mstate($conn,"last_active","");
+      } else {
+         mstate($conn,"last_active",world($conn));
+      }
       return key_esc_w(@_);
    }
 
@@ -2913,8 +2999,11 @@ sub key_down
    # if active, switch to it.. but also switch back one last time.
    if(mstate($conn,"last_active") ne undef || 
       scalar keys %{@state{activity}} > 0) {
-      mstate($conn,"last_active","") if(scalar keys %{@state{activity}} > 0);
-      return key_esc_w(@_);
+      if(scalar keys %{@state{activity}} > 0) {
+         mstate($conn,"last_active","");
+      } else {
+         mstate($conn,"last_active",world($conn));
+      }
    }
 
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
@@ -2939,7 +3028,7 @@ sub key_right
    return if !console();
 
    if(@state{line_pos} <= $#{@state{line}}) {
-      if(@state{line_pos} % (@state{size_y}-1)==78 &&
+      if(@state{line_pos} % (@state{size_y}-1)==@state{size_y} - 2 &&
          input_x() == @state{size_x}) {
          @state{input_offset}++;
          printf("\n%s",input_line(input_on_line()+1));
@@ -3144,11 +3233,7 @@ sub xy
    my ($x,$y,$use_the_force_luke) = @_;
 
    return if !console();
-#   if(@state{prev_xy} ne "$x,$y" || $use_the_force_luke) {
-      printf("\033[%s;%sH",$x,$y);
-#      loggit("POS: '%s','%s' [%s]",$x,$y,code());
-#      @state{prev_xy} = "$x,$y";
-#   }
+   printf("\033[%s;%sH",$x,$y);
 }
 
 #
@@ -3163,8 +3248,7 @@ sub more_bar
    return if $w eq undef || !defined @socket{$w};
 
    if(in_hist($w)) {
-      return sprintf("\033[7mHist %4s\033[0m",
-         $#{@history{$w}} - hist_pos($w));
+      return sprintf("\033[7mHist %4s\033[0m",abs(@socket{$w}->{hist_offset}));
    } elsif(more(world($conn))) {
       return sprintf("\033[7mMore %4s\033[0m",pending($w));
    }
