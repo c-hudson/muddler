@@ -2977,7 +2977,7 @@ sub switch_world
    if(@state{p_sync} == 1) {
       redraw_output(@state{world},0);
       for my $key (keys %ws) {
-         redraw_output($key,0);
+         redraw_output(@ws{$key}->{conn},0);
       }
    } else {
       redraw_output($conn,0);
