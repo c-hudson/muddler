@@ -2728,7 +2728,7 @@ sub key_default
    return if !console();
    update_scroll_region("input");
 
-   if($ch eq " " && !module_enabled("Text::Aspell")) {
+   if($ch eq " " && module_enabled("Text::Aspell")) {
       if(join('',@{@state{line}}) =~ /(^| )([a-zA-Z]+)(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
@@ -4241,7 +4241,7 @@ sub cmd_help
       echo("% No help loaded.");
    } elsif(trim($cmd) eq undef) {
       echo("\n%s",@state{help}->{cmd_help});
-      for my $line (ansi_wrap(join(", ",grep {!/key_/} keys %command),
+      for my $line (ansi_wrap(join(", ",sort grep {!/key_/} keys %command),
          @state{size_y}-5)) {
          echo("   %s",trim($line));
       }
