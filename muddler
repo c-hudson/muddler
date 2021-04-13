@@ -893,7 +893,7 @@ sub socket_disconnect
 
    $readable->remove($s);
    if(defined @socket_lookup{$s}) {
-       delete @socket{@socket_lookup{$s}};
+       delete @socket{@socket_lookup{$s}}->{sock};
        delete @socket_lookup{$s};
    }
 }
@@ -2966,12 +2966,12 @@ sub switch_world
          @ws{$conn}->{world_last} = @state{world};
          @ws{$conn}->{world} = $world;
       }
-   } elsif(is_console($conn)) {                          # switch console
-      @state{world_last} = @state{world};
-      @state{world} = $world;
    } elsif(is_web($conn)) { # switch websocket
       @ws{$conn}->{world_last} = @ws{$conn}->{world};
       @ws{$conn}->{world} = $world;
+   } else {
+      @state{world_last} = @state{world};
+      @state{world} = $world;
    }
 
    delete @state{activity}->{$world};
