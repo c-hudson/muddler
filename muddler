@@ -13,29 +13,15 @@
 #
 #       Project's location: https://github.com/grapenut/websockclient
 
-use strict;
-use IO::Socket::SSL;
-use IO::Select;
-use IO::Socket;
-
 use 5.014;                                                   # enable utf8
+use IO::Socket;
 use utf8;
-use strict;
-use open        qw< :std  :utf8     >;
-use charnames   qw< :full >;
-use feature     qw< unicode_strings >;
-use File::Basename      qw< basename >;
-use Carp                qw< carp croak confess cluck >;
-use Encode              qw< encode decode >;
-use Unicode::Normalize  qw< NFD NFC >;
-
-use strict;
-# use Monitor qw(monitor);
 use POSIX;
-use Text::ParseWords;
-use URI::Escape;
-#use Pmc::Telnet qw( TELOPT_SGA TELOPT_TTYPE TELOPT_NAWS TELOPT_NEW_ENVIRON
-#                     TELNET_IAC TELNET_SB TELNET_SE TELOPT_ECHO);
+use strict;
+binmode(STDOUT, ":utf8");
+my ($term, $oterm, $echo, $noecho, $fd_stdin);     # required for cbreak/etc
+
+# use Monitor qw(monitor);
 
 use Carp;
 my %key;                            # key presses hash table for fast lookups
@@ -182,6 +168,18 @@ sub command_init
    @command{saveworld}     = sub { return cmd_null(@_);                    };
 }
 
+sub cbreak {
+    $term->setlflag($noecho);
+    $term->setcc(VTIME, 1);
+    $term->setattr($fd_stdin, TCSANOW);
+}
+
+sub normal {
+    $term->setlflag($oterm);
+    $term->setcc(VTIME, 0);
+    $term->setattr($fd_stdin, TCSANOW);
+}
+
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  modules                                                                   #
@@ -202,19 +200,45 @@ sub module_enabled
 
 sub load_modules
 {
+   @state{modules} = [];
+
    my %mod = (
-      'Term::ReadKey'          => { fatal => 1, fix => "apt install " .
-                                     "libterm-readkey-perl" },
-      'Net::WebSocket::Server' => {  fatal => 0, fix => "perl -MCPAN -e " .
-                                     "\"install Net::WebSocket::Server\"",
-                                     disable => 'web/websocket server'
+      'Term::ReadKey'          => { fatal => 0,
+                                    fix => "apt install libterm-readkey-perl",
+                                    for => 'screen size detection'
                                   },
-#      'Net::Telnet'            => { fatal => 1, fix => "apt install " .
-#                                    "libnet-telnet-perl" },
-      'Encode'                 => { fatal => 1, fix => "install Encode module"},
-      'Digest::MD5'            => { fatal => 0, fix => "install Digest::MD5"},
-      'Text::Aspell'           => { fatal => 0, fix => "apt install " .
-                                     "libtext-aspell-perl"},
+      'Net::WebSocket::Server' => { fatal => 0,
+                                    fix => "perl -MCPAN -e \"install " .
+                                           "Net::WebSocket::Server\"",
+                                    for => 'web interface'
+                                  },
+      'Encode'                 => { fatal => 0,
+                                    fix => "install Encode module",
+                                    for => "utf8/fansi"
+                                  },
+      'Digest::MD5'            => { fatal => 0,
+                                    fix => "install Digest::MD5",
+                                    for => "code reloading"
+                                  },
+      'Text::Aspell'           => { fatal => 0,
+                                    fix => "apt install libtext-aspell-perl", 
+                                    for => 'spell check' },
+      'IO::Socket::SSL'        => { fatal => 0,
+                                    fix => "?",
+                                    for => 'ssl connections'
+                                  },
+      'IO::Select'             => { fatal => 1,
+                                    fix => "?",
+                                    for => 'networking'
+                                  },
+      'IO::Socket'             => { fatal => 1,
+                                    fix => "?",
+                                    for => 'networking'
+                                  },
+      'Text::ParseWords'       => { fatal => 0,
+                                    fix => "?",
+                                    for => 'tf compatability'
+                                  },
    );
 
    for my $key (keys %mod) {
@@ -227,14 +251,13 @@ sub load_modules
                @state{modules} = [] if(!defined @state{modules});
                @state{fatal} = 1;
                push(@{@state{modules}},sprintf("FATAL: perl $key module is " .
-                  "required for muddler.\n   Fix?   @mod{$key}->{fix}\n"));
+                  "required for muddler.\n   Fix?   @mod{$key}->{fix}"));
             } else {
-               @state{modules} = [] if(!defined @state{modules});
-               push(@{@state{modules}},sprintf("WARNING: perl %s module is " .
-                  "required for muddler.\n         %s will be disabled.\n" .
-                  "         Fix?   %s\n",
+               push(@{@state{modules}},sprintf("WARNING: %s module is " .
+                  "missing for %s.\n" .
+                  "         Fix?   %s",
                   $key,
-                  @mod{$key}->{disable},
+                  @mod{$key}->{for},
                   @mod{$key}->{fix}
                  ));
             }
@@ -694,7 +717,9 @@ sub socket_connect
 #   Monitor::monitor(@socket{$world}, "hash");
 
    
-   if($ssl) {
+   if($ssl && !module_enabled("IO::Socket::SSL")) {
+      return echo("%% module IO::Socket::SSL is required for SSL connections.");
+   } elsif($ssl) {
       $s = IO::Socket::SSL->new( PeerAddr => $host,
                                  PeerPort => $port,
                                  Proto => 'tcp',
@@ -908,17 +933,25 @@ sub socket_handle_input
 {
    my $buf;
 
-   my ($sockets) = IO::Select->select($readable,undef,undef,0);
+   my ($sockets) = IO::Select->select($readable,undef,undef,0.5);
 
    for my $s (@$sockets) {
       my $w = @socket_lookup{$s};
-      if(sysread($s,$buf,1024) <= 0) {
+
+      if($s eq \*STDIN) {
+         sysread($s,$buf,1);
+         key_process($buf);
+      } elsif(sysread($s,$buf,1024) <= 0) {
           socket_disconnect($s);
           history($w,"% Connection closed to ". name($w) . "-$s");
       } else {
          @socket{$w}->{last_recv} = time();
 
-         @socket{$w}->{buf}.= decode(@address{$w}->{decode}, _parse($w,$buf));
+         if(module_enabled("Encode")) {
+            @socket{$w}->{buf}.=decode(@address{$w}->{decode}, _parse($w,$buf));
+         } else {
+            @socket{$w}->{buf}.= _parse($w,$buf);
+         }
             
          while(defined @socket{$w}->{sock} &&
                @socket{$w}->{buf} =~ /\n/) {
@@ -929,27 +962,6 @@ sub socket_handle_input
    }
 }
              
-sub socket_handle_input_old
-{
-   for my $world (keys %socket) {
-      if(@socket{$world}->{sock}) {
-         if(@socket{$world}->{sock}->eof()) {
-            delete @socket{$world}->{sock};
-            history($world,"% Connection closed to ". name($world));
-            draw_bar();
-         } else {                 # favor keyboard input not socket in timeout
-            # read all input
-            for(my $count=0;$count < 200;$count++) {
-               if(my $input = decode("UTF-8",@socket{$world}->{sock}->getline(Timeout=>0))) {
-                  history($world,$input);
-               } else {
-                  last;
-               }
-            }
-         }
-      }
-   }
-}
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  websocket support                                                         #
@@ -983,6 +995,16 @@ sub server_hostname
 sub listener_init
 {
    $readable = IO::Select->new();
+   $readable->add(\*STDIN);
+
+   $fd_stdin = fileno(STDIN);
+
+   $term     = POSIX::Termios->new();
+   $term->getattr($fd_stdin);
+   $oterm     = $term->getlflag();
+
+   $echo     = ECHO | ECHOK | ICANON;
+   $noecho   = $oterm & ~$echo;
 }
 
 sub ws_init
@@ -1250,7 +1272,6 @@ sub http_process_line
       http_error($sock,"%s","POST REQUEST TO BIG") if($' > 4096);
       $$data{"VAR_" . lc($1)} = $';
    } elsif($txt =~ /^\s*$/ && defined $$data{get}) {         # end of request
-      $$data{get} = uri_unescape($$data{get});
       $$data{get} =~ s/\// /g;
       $$data{get} =~ s/^\s+|\s+$//g;
 
@@ -2522,7 +2543,10 @@ sub key_ctl_l
    # signals after a month of use but yet GetTerminalSize is still returning
    # the correct size. So update the screen size when a control-l is done as
    # a "work around". This shouldn't cause an impact on cpu usage.
-   (@state{size_y},@state{size_x}) = GetTerminalSize();
+
+   if(module_enabled("Term::ReadKey")) {
+      (@state{size_y},@state{size_x}) = GetTerminalSize();
+   }
    pending_fix(world($conn));
    redraw_screen($conn,1);
 }
@@ -2772,7 +2796,7 @@ sub key_default
 
    if($ch eq " " && module_enabled("Text::Aspell")) {
       if(substr(join('',@{@state{line}}),0,@state{line_pos}) =~ 
-            /(^| )([a-zA-Z]+)(\s*)$/) {
+            /(^| |^:|^"|^@)([a-zA-Z]+)(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
              make_string_bold("$2$3");
@@ -3407,7 +3431,7 @@ sub revert_console
    return if !console();
    return if(@state{fatal});       # modules didn't load, no need to reset
 
-   eval("ReadMode 'normal';");
+   normal();
    printf("\033[r");
    xy(24,1);
 }
@@ -3741,7 +3765,7 @@ sub cmd_console
 
    if($txt =~ /^\s*(on|1|enable)\s*$/) {
       @state{console} = 1;
-      eval ("ReadMode 'cbreak';");
+      cbreak();
       redraw_screen(@state{world},1);
    } elsif($txt =~ /^\s*(off|0|disable)\s*$/) {
       revert_console();
@@ -4632,33 +4656,43 @@ sub show_banner
    optimize_end();
 }
 
+#
+# read_tfworlds
+#    Quick and dirty subroutine to read tf's world file if named .tfworlds.
+#
 sub read_tfworlds
 {
    my ($fn,$quiet) = @_;
    my ($file, $bad);
 
-   if(!open($file,$fn)) {
-      echo("%% Unable to open '%s' for reading",$fn) if (!$quiet);
+   if(-e "@ENV{HOME}/.muddler" || !-e "@ENV{HOME}/.tfworlds") {
       return;
-   }
-
-   while(<$file>) {
-      s/\r|\n//g;
-      if(/^\/test addworld\((.*)\)$/) {
-         my @data = quotewords(',',0,$1);
-         @address{lc(trim(@data[0]))} = {};
-         @address{lc(trim(@data[0]))}->{host} = trim(@data[2]);
-         @address{lc(trim(@data[0]))}->{port} = trim(@data[3]);;
-         @address{lc(trim(@data[0]))}->{user} = trim(@data[4]);;
-         @address{lc(trim(@data[0]))}->{pass} = trim(@data[5]);;
-         @address{lc(trim(@data[0]))}->{name} = trim(@data[0]);
-      } else {
-         $bad++;
-         echo("%% Unknown data: '%s'",$_);
+   } elsif(!module_enabled("Text::ParseWords")) {
+      echo("%% .tfworlds may not be read without Text::ParseWords module");
+   } else {
+      if(!open($file,$fn)) {
+         echo("%% Unable to open '%s' for reading",$fn) if (!$quiet);
+         return;
       }
+   
+      while(<$file>) {
+         s/\r|\n//g;
+         if(/^\/test addworld\((.*)\)$/) {
+            my @data = quotewords(',',0,$1);
+            @address{lc(trim(@data[0]))} = {};
+            @address{lc(trim(@data[0]))}->{host} = trim(@data[2]);
+            @address{lc(trim(@data[0]))}->{port} = trim(@data[3]);;
+            @address{lc(trim(@data[0]))}->{user} = trim(@data[4]);;
+            @address{lc(trim(@data[0]))}->{pass} = trim(@data[5]);;
+            @address{lc(trim(@data[0]))}->{name} = trim(@data[0]);
+         } else {
+            $bad++;
+            echo("%% Unknown data: '%s'",$_);
+         }
+      }
+      close($file);
+      echo("%% %d worlds read from tfworlds file.",scalar keys %address);
    }
-   close($file);
-   echo("%% %d worlds read from tfworlds file.",scalar keys %address);
 }
 
 sub read_tfrc
@@ -4744,6 +4778,7 @@ sub get_checksums
 #
 sub reload_code
 {
+   my $nomodules = shift;
    my $count = 0;
 
    return http_data_init() if(@ENV{PAR_0});
@@ -4777,7 +4812,8 @@ sub reload_code
    key_init();
    http_data_init();
    telnet_ch_init();
-   load_modules();
+   load_modules() if(!$nomodules);
+
 
    if($count == 0) {
       echo("%% No changes found to reload.");
@@ -4912,7 +4948,12 @@ sub muddler_init
                       };
 
    @state{state} = "init";
-   (@state{size_y},@state{size_x}) = GetTerminalSize();
+
+   if(module_enabled("Term::ReadKey")) {
+      (@state{size_y},@state{size_x}) = GetTerminalSize();
+   } elsif(!defined @state{size_y} && !defined @state{size_x}) {
+      (@state{size_y},@state{size_x}) = (80,24);
+   }
 
    `del key.log`;
    @state{chksum} = get_checksums();
@@ -4920,7 +4961,7 @@ sub muddler_init
 
    if(console()) {
       $| = 1;                                                  # unbuffer stdout
-      eval ("ReadMode 'cbreak';");
+      cbreak();
    }
 
    key_init();
@@ -4932,7 +4973,7 @@ sub muddler_init
 
    read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e "@ENV{HOME}/.muddler");
    read_tfrc("@ENV{HOME}/.tfrc",1);
-   reload_code();
+   reload_code(1);
 #   Monitor::monitor(@pending{alpha}, "array");
    @state{state} = "post-init";
 
@@ -4973,7 +5014,7 @@ sub muddler
 
    socket_handle_input();
    ws_io();
-   key_process(ReadKey(0.04));
+#   key_process(ReadKey(0.04));
    if($@) {
       loggit("Crash? $@");
    }
@@ -5007,11 +5048,13 @@ $SIG{'WINCH'} = sub { sig_winch(); };
 
 sub sig_winch
 {
-   (@state{size_y},@state{size_x}) = GetTerminalSize();
-   for my $key (keys %socket) {
-      pending_fix($key);
+   if(module_enabled("Term::ReadKey")) {
+      (@state{size_y},@state{size_x}) = GetTerminalSize();
+      for my $key (keys %socket) {
+         pending_fix($key);
+      }
+      redraw_screen(@state{world},1);
    }
-   redraw_screen(@state{world},1);
 }
 
 
@@ -5020,9 +5063,10 @@ for my $i (0 .. $#ARGV) {
       @state{console} = 0;
    } elsif(@ARGV[$i] =~ /^--port=(\d+)$/) {
       @state{port} = $1;
-   } elsif(@ARGV[$i] =~ /^--password=(.*)$/  ||
-           @ARGV[$i] =~ /^--pass=(.*)$/) {
-      save("p_password",$1);
+   } elsif(@ARGV[$i] =~ /^--(pass|password)=(.*)$/) {
+      save("p_password",$2);
+   } elsif(@ARGV[$i] =~ /^--xy=(\d+),(\d+)$/) {
+      (@state{size_x},@state{size_y}) = ($1,$2);
    } else {
      die("Invalid Option: '@ARGV[$i]'");
    }
