@@ -201,6 +201,7 @@ sub module_enabled
 sub load_modules
 {
    @state{modules} = [];
+   my $type;
 
    my %mod = (
       'Term::ReadKey'          => { fatal => 0,
@@ -248,19 +249,19 @@ sub load_modules
 
          if(@state{"mod_$key"} == -1) {
             if(@mod{$key}->{fatal}) {
-               @state{modules} = [] if(!defined @state{modules});
+               $type = "FATAL";
                @state{fatal} = 1;
-               push(@{@state{modules}},sprintf("FATAL: perl $key module is " .
-                  "required for muddler.\n   Fix?   @mod{$key}->{fix}"));
             } else {
-               push(@{@state{modules}},sprintf("WARNING: %s module is " .
-                  "missing for %s.\n" .
-                  "         Fix?   %s",
-                  $key,
-                  @mod{$key}->{for},
-                  @mod{$key}->{fix}
-                 ));
+               $type = "WARNING";
             }
+            push(@{@state{modules}},sprintf("%s: %s module is " .
+               "missing for %s.\n" .
+               "         Fix?   %s",
+               $type,
+               $key,
+               @mod{$key}->{for},
+               @mod{$key}->{fix}
+              ));
          }
       }
    }
@@ -823,30 +824,30 @@ sub telnet_ch_init
          if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
              ($options[ord($opt)] || ord($opt)))) {
             if ($mode eq @state{DO})   { 
-                loggit("telnet_send: IAC WILL $wopt");
+#                loggit("telnet_send: IAC WILL $wopt");
                 out_noret($world,@state{IAC}.@state{WILL}.$opt);
             } elsif ($mode eq @state{DONT}) {
-                loggit("telnet_send: IAC WONT $wopt");
+#                loggit("telnet_send: IAC WONT $wopt");
                 out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
-                loggit("telnet_send: IAC DONT $wopt");
+#                loggit("telnet_send: IAC DONT $wopt");
                 out_noret($world,@state{IAC}.@state{DONT}.$opt);
             } elsif ($mode eq @state{WILL}) {
-                loggit("telnet_send: IAC DO $wopt");
+#                loggit("telnet_send: IAC DO $wopt");
                 out_noret($world,@state{IAC}.@state{DO}  .$opt);
             }
          } else {
             if ($mode eq @state{DONT}) {
-                loggit("telnet_send: IAC WILL $wopt");
+#                loggit("telnet_send: IAC WILL $wopt");
                out_noret($world,@state{IAC}.@state{WILL}.$opt);
             } elsif ($mode eq @state{DO}) {
-                loggit("telnet_send: IAC WONT $wopt");
+#                loggit("telnet_send: IAC WONT $wopt");
                out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WILL}) {
-                loggit("telnet_send: IAC WILL $wopt");
+#                loggit("telnet_send: IAC WILL $wopt");
                out_noret($world,@state{IAC}.@state{DONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
-                loggit("telnet_send: IAC WONT $wopt");
+#                loggit("telnet_send: IAC WONT $wopt");
                out_noret($world,@state{IAC}.@state{DO}  .$opt);
             }
          }

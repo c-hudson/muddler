@@ -31,24 +31,11 @@ This screenshot is showing the two interfaces to muddler. In the background is m
 ```
 # Installation
 ```
-   Download muddler:
-      For the easy of installation, the muddler perl script is packaged
-      together as an executable for linux and windows. Using these packages
-      is only ment for ease of installation.
-
-      Download executable
-         download pl_muddler for linux or
-         download pw_muddler for windows
-
-      or
-
-      Download perl script "muddler" perl script and install required perl 
-         a. download muddler script
-         b. Install required perl modules.
-            muddler will tell you what modules are missing
-
-   chmod u+x muddler
-   ./muddler <options>
+   a. download muddler script
+   b. Install required perl modules.
+      muddler will tell you what modules are missing
+   c. chmod u+x muddler
+   d. ./muddler <options>
 
    Options:
       --noconsole     : disable the text based console and enable the
