@@ -818,8 +818,8 @@ sub telnet_ch_init
       sub {
          my ($world,$opt, $mode) = @_;
  
-         loggit("telnet[$world]: %s %s",(@state{ord($mode)} || ord($mode)),
-             ($options[ord($opt)] || ord($opt)));
+#         loggit("telnet[$world]: %s %s",(@state{ord($mode)} || ord($mode)),
+#             ($options[ord($opt)] || ord($opt)));
          my $wopt = $options[ord($opt)] || ord($opt);
          if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
              ($options[ord($opt)] || ord($opt)))) {
@@ -2876,10 +2876,8 @@ sub key_ctl_e
    @state{line_pos} = $#{@state{line}} + 1;
 
    if(@state{input_offset} != $original) {
-      loggit("ctl_e: redraw '@state{input_offset}'");
       redraw_input($conn);
    } else {
-      loggit("ctl_e: move '@state{input_offset}'");
       xy(input_x(),input_y());
    }
 }
