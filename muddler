@@ -18,6 +18,7 @@ use IO::Socket;
 use utf8;
 use POSIX;
 use strict;
+use IO::Socket::SSL;
 binmode(STDOUT, ":utf8");
 my ($term, $oterm, $echo, $noecho, $fd_stdin);     # required for cbreak/etc
 
@@ -78,32 +79,44 @@ my %state = (
 sub key_init
 {
    delete @key{keys %key};
-   @key{def}             = sub { return key_default(@_);             };
-   @key{1}               = sub { return key_ctl_a(@_);               };
-   @key{2}               = sub { return key_left(@_);                };
-   @key{4}               = sub { return key_dump(@_);                };
-   @key{5}               = sub { return key_ctl_e(@_);               };
-   @key{6}               = sub { return key_right(@_);               };
-   @key{8}               = sub { return key_delete(@_);              };
-   @key{9}               = sub { return key_tab(@_);                 };
-   @key{10}              = sub { return key_return(@_);              };
-   @key{12}              = sub { return key_ctl_l(@_);               };
-   @key{14}              = sub { return key_ctl_n(@_);               };
-   @key{16}              = sub { return key_ctl_p(@_);               };
-   @key{18}              = sub { return key_ctl_r(@_);               };
-   @key{21}              = sub { return key_ctl_u(@_);               };
-   @key{23}              = sub { return key_ctl_w(@_);               };
-   @key{27}              = sub { return key_escape(@_);              };
-   @key{127}             = sub { return key_delete(@_);              };
-   @key{multi}           = sub { return key_multi(@_);               };
-   @key{multi_119}       = sub { return key_esc_w(@_);               };
-   @key{multi_113}       = sub { return key_esc_q(@_);               };
-   @key{multi_91_53_126} = sub { return key_pgup(@_);                };
-   @key{multi_91_54_126} = sub { return key_pgdn(@_);                };
-   @key{multi_91_65}     = sub { return key_up(@_);                  };
-   @key{multi_91_66}     = sub { return key_down(@_);                };
-   @key{multi_91_67}     = sub { return key_right(@_);               };
-   @key{multi_91_68}     = sub { return key_left(@_);                };
+   @key{def}                  = sub { return key_default(@_);          };
+   @key{1}                    = sub { return key_ctl_a(@_);            };
+   @key{2}                    = sub { return key_left(@_);             };
+   @key{4}                    = sub { return key_dump(@_);             };
+   @key{5}                    = sub { return key_ctl_e(@_);            };
+   @key{6}                    = sub { return key_right(@_);            };
+   @key{8}                    = sub { return key_delete(@_);           };
+   @key{9}                    = sub { return key_tab(@_);              };
+   @key{10}                   = sub { return key_return(@_);           };
+   @key{12}                   = sub { return key_ctl_l(@_);            };
+   @key{14}                   = sub { return key_ctl_n(@_);            };
+   @key{16}                   = sub { return key_ctl_p(@_);            };
+   @key{18}                   = sub { return key_ctl_r(@_);            };
+   @key{21}                   = sub { return key_ctl_u(@_);            };
+   @key{23}                   = sub { return key_ctl_w(@_);            };
+   @key{27}                   = sub { return key_escape(@_);           };
+   @key{127}                  = sub { return key_delete(@_);           };
+   @key{multi}                = sub { return key_multi(@_);            };
+   @key{multi_119}            = sub { return key_esc_w(@_);            };
+   @key{multi_113}            = sub { return key_esc_q(@_);            };
+   @key{multi_91_53_126}      = sub { return key_pgup(@_);             };
+   @key{multi_91_54_126}      = sub { return key_pgdn(@_);             };
+   @key{multi_91_65}          = sub { return key_up(@_);               };
+   @key{multi_91_66}          = sub { return key_down(@_);             };
+   @key{multi_91_67}          = sub { return key_right(@_);            };
+   @key{multi_91_68}          = sub { return key_left(@_);             };
+   @key{multi_91_49_59_50_65} = sub { return key_shift_up(@_);         };
+   @key{multi_91_49_59_50_66} = sub { return key_shift_down(@_);       };
+
+   # populate the gaps so the code knows to traverse through all the
+   # characters in the definition instead of just the last one.
+   for my $key (grep {/^multi_/} keys %key) {
+      my @list = split('_',$key);
+      while($#list >= 1) {
+         pop(@list);
+         @key{join('_',@list)} = 1 if(!defined @key{join('_',@list)});
+      }
+   }
 }
 
 sub command_init
@@ -198,6 +211,13 @@ sub module_enabled
  
 }
 
+#
+# load_modules
+#    There are probably a lot of better ways to do this, but the idea
+#    is to provide a minor amount of help on those modules which are
+#    required and allow the code to work around those which are not
+#    required.
+#
 sub load_modules
 {
    @state{modules} = [];
@@ -1016,17 +1036,34 @@ sub ws_init
       printf("%%    Password: @state{p_password}\n");
    }
    @state{web} = 1;
-   $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
-                                         Listen    => 1,
-                                         Reuse     => 1,
-                                       )
-   or die "failed to set up httpd listener: $!";
 
-   $ws_listen = IO::Socket::INET->new( LocalPort => @state{p_port} + 1,
-                                       Listen    => 1,
-                                       Reuse     => 1,
-                                       )
-   or die "failed to set up websocket listener: $!";
+   if(@state{p_secure}) {
+      $http_listen = IO::Socket::SSL->new( LocalPort => @state{p_port},
+                                           Listen    => 1,
+                                           Reuse     => 1,
+                                           SSL_cert_file => 'cert.pem',
+                                           SSL_key_file => 'key.pem',
+                                         )
+         or die "failed to set up httpd listener: $!";
+      $ws_listen = IO::Socket::SSL->new(Listen             => 5,
+                                        LocalPort          => @state{p_port}+1,
+                                        Proto              => 'tcp',
+                                        SSL_startHandshake => 0,
+                                        SSL_cert_file      => 'cert.pem',
+                                        SSL_key_file       => 'key.pem',
+      ) or die "failed to ws_listen: $!";
+   } else {
+      $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
+                                            Listen    => 1,
+                                            Reuse     => 1,
+                                          )
+      or die "failed to set up httpd listener: $!";
+      $ws_listen = IO::Socket::INET->new( LocalPort => @state{p_port} + 1,
+                                          Listen    => 1,
+                                          Reuse     => 1,
+                                        )
+       or die "failed to set up websocket listener: $!";
+   }
 
    $ws_server = Net::WebSocket::Server->new(
       listen => $ws_listen,
@@ -1133,6 +1170,8 @@ sub server_address
 
 sub ws_io
 {
+   my $s;
+
    my ($sockets) = IO::Select->select($ws_server->{select_readable},
                                       $ws_server->{select_writeable},
                                       undef,
@@ -1141,9 +1180,22 @@ sub ws_io
 
    for my $sock (@$sockets) {
       if( $sock == $ws_listen ) {
-         my $s = $ws_listen->accept;
+         my $s = $ws_listen->accept or die("Couldn't accept connection");
+         next unless $s;
+
+         if(@state{p_secure}) {
+             IO::Socket::SSL->start_SSL(
+                 $s,
+                 SSL_server => 1,
+                 SSL_cert_file=>'/etc/letsencrypt/live/teenymush.dynu.net' .
+                                '/cert.pem',
+                 SSL_key_file=>'/etc/letsencrypt/live/teenymush.dynu.net/' .
+                               'privkey.pem',
+             ) or die "failed to ssl handshake: $SSL_ERROR";
+         }
+
          my $conn = new Net::WebSocket::Server::Connection(
-                    socket => $s, server => $ws_server );
+                    socket => $s, server => $ws_server);
    
          $ws_server->{conns}{$s} = { conn     => $conn,
                                      lastrecv => time,
@@ -1159,7 +1211,11 @@ sub ws_io
          @ws{$conn}->{port} = @state{p_port} + 1;
          @ws{$conn}->{world} = @state{world};
       } elsif($sock == $http_listen) {
-         my $s = $sock->accept;
+         eval {
+            $s = $sock->accept;
+         };
+         next unless $s;
+         
          $ws_server->{select_readable}->add($s);
          @http{$s} = { sock    => $s,
                        data    => {},
@@ -1174,8 +1230,10 @@ sub ws_io
          $connmeta->{lastrecv} = time;
          $connmeta->{conn}->recv();
       } else {
+         
          loggit("filehandle $sock became readable, but no handler took " .
               "responsibility for it; removing it");
+         loggit("listener: $ws_listen");
          $ws_server->{select_readable}->remove( $sock );
       }
    }
@@ -2434,6 +2492,15 @@ sub scan_history
    }
 }
 
+sub key_shift_up
+{
+  loggit("Key: shift up");
+}
+
+sub key_shift_down
+{
+  loggit("Key: shift down");
+}
 #
 # key_pgup
 #    Move up a screen full in the history. This will pause all output
@@ -3027,6 +3094,7 @@ sub key_down
       } else {
          mstate($conn,"last_active",world($conn));
       }
+      return key_esc_w(@_);
    }
 
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
@@ -3170,7 +3238,8 @@ sub is_in
 # key_multi
 #   Process multiple character keys. key_escape will start the sequence
 #   off and this will grab characters till it makes a match or no match
-#   can be made.
+#   can be made. This should be more of a decision tree instead of an
+#   emulated tree.
 #
 sub key_multi
 {
@@ -3178,18 +3247,22 @@ sub key_multi
 
    my $array = @state{multikey};
    push(@$array,ord($ch));
-   if(defined @key{"multi_" . join('_',@$array)}) {
-       return &{@key{"multi_" . join('_',@$array)}}(@state{world},$ch);
+
+   if($#$array >= 10) {             # shoudln't happen but protect against it
+      delete @state{multikey};
+      key_process($ch);                       # process character generically
    }
 
-   if($#$array == 0) {                         # second character recieved
-      return if($ch eq "[");
-   } elsif($#$array == 1) {                       # third character recieved
-      return if(is_in(ord($ch),53,54));                    # pgup/pgdn 4 char
-   }
 
-   delete @state{multikey};                              # no match or error, 
-   key_process($ch);                          # process character generically
+   if(defined @key{"multi_" . join("_",@$array)}) {
+      if(ref(@key{"multi_" . join("_",@$array)}) eq "CODE") {
+         delete @state{multikey};
+         return &{@key{"multi_" . join('_',@$array)}}(@state{world},$ch);
+      }
+   } else {                                                        # error?
+      delete @state{multikey};
+      key_process($ch);                       # process character generically
+   }
 }
 
 #
@@ -3207,7 +3280,7 @@ sub key_process
 #      loggit("ch: '%s' -> '%s'",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
          &{@key{ord($ch)}}(@state{world},$ch);
-      } elsif(defined @state{multikey} && $#{@state{multikey}} <= 2) {
+      } elsif(defined @state{multikey}) {
          &{@key{multi}}(@state{world},$ch);
       } else {
          &{@key{def}}(@state{world},$ch);
@@ -4300,18 +4373,58 @@ sub cmd_port
    }
 }
 
+
+sub nvl
+{
+   my ($value,$default) = @_;
+
+   if($value eq undef) {
+      return $default;
+   } else {
+      return $value;
+   }
+}
+
+sub use_secure
+{
+   if(defined @state{p_key} && defined @state{p_cert}) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
 sub cmd_web
 {
 #-# ------------------------------------------------------------------------
-#-# /web [on|off]
-#-#      Turns on or off the web/websocket server for the mud client.
+#-# /web                : Shows the current status of the web interface
+#-# /web [on|off]       : Enables / Disables the web interface
+#-# /web cert = <file>  : Specifies the cert file location
+#-# /web key = <file>   : Specifies the key file location
+#-#
+#-# NOTE: If both the cert & key file are defined, muddler will enable the
+#-#       https protocol.
+#-#
+#-#       A non-self signed cert/key is required for https to work. Without
+#-#       one your browser will fail to connect.
 #-# ------------------------------------------------------------------------
    my ($conn,$status) = @_;
 
    if(!module_enabled("Net::WebSocket::Server")) {
       return echo("%% Web/Websocket disabled due to missing module");
+   } elsif($status =~ /^\s*$/) {
+      echo("Web Interface: %s",@state{web} ? "on" : "off");
+      echo("   Protocol:      %s",use_secure() ? "https [secure]" :
+          "http [non-secure]");
+      echo("   Cert file:     %s",nvl(@state{p_cert},"Not defined"));
+      echo("   Key file:      %s",nvl(@state{p_key},"Not defined"));
+   } elsif($status =~ /^\s*(key|cert)\s*=(.*)$/i) {
+      return echo("%% Could not locate file: %s",trim($2)) if(!-e trim($2));
+      echo("%% %s file is now: %s",lc($1),trim($2));
+      save("p_" . lc($1),trim($2));
    } elsif($status =~ /^\s*on\s*$/i) {
-      echo("%% Web enabled, connect via: http://localhost:@state{p_port}");
+      echo("%% Web enabled, connect via: http%s://localhost:@state{p_port}",
+         @state{p_secure} ? "s" : "");
       echo("%%    Password: @state{p_password}");
       if(@state{web} == 0) {
          ws_init();
@@ -5085,7 +5198,7 @@ if(defined @state{modules}) {
 # keep the main loop small.
 while(1) {
    eval { muddler(); };
-   loggit("Fatal: $@ -> %s",code()) if($@);
+   loggit("Fatal: $@ -> %s\n",code()) if($@);
 }
 
 __DATA__
@@ -6506,6 +6619,7 @@ START: muddler_client.js
          this.isOpen && setTimeout(old.close, 1000);
        }
    
+       console.log('URL: ' + this.url);
        this.socket = new window.WebSocket(this.url);
        this.isOpen = false;
    
@@ -7635,8 +7749,8 @@ START: muddler_client.html
    <script type="text/javascript" src="muddler_client.js"></script>
    <script type="text/javascript">
      var serverAddress = window.location.hostname;
-     var serverSSL = window.location.protocol == "http:";
-     var serverProto = serverSSL ? "ws://" : "ws://";
+     var serverSSL = window.location.protocol == "https:";
+     var serverProto = serverSSL ? "wss://" : "wss://";
      var serverPort = serverSSL ? '9001' : '9001';
      
      var customUrl = window.location.search.substring(1) ? window.location.search.substring(1) : serverAddress + ":" + serverPort;

@@ -65,8 +65,14 @@ This screenshot is showing the two interfaces to muddler. In the background is m
          Enable fansi encoding for the current world.
 
    Web Commands:
-      /web <status>
+      /web
+         Show the status variables for the web server
+      /web [on|off]
          Turn the web interace "on" or "off". Default is off.
+      /web cert = <file>
+         Specify your public certificate file for https.
+      /web key = <file>
+         Specify your private key file for https [non-self signed required]
       /password <password>
          Sets the password that must be entered when connecting vai the web.
       /port <port>
