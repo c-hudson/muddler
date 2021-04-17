@@ -149,6 +149,7 @@ sub command_init
    @command{def}           = sub { return cmd_def(@_);                     };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
    @command{listworlds}    = sub { return cmd_listworlds(@_);              };
+   @command{ssl}           = sub { return cmd_ssl(@_);                     };
    @command{add}           = sub { return cmd_addworld(@_);                };
    @command{addworld}      = sub { return cmd_addworld(@_);                };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
@@ -969,6 +970,7 @@ sub socket_handle_input
          @socket{$w}->{last_recv} = time();
 
          if(module_enabled("Encode")) {
+            @address{$w}->{decode} = "utf8" if !defined @address{$w};
             @socket{$w}->{buf}.=decode(@address{$w}->{decode}, _parse($w,$buf));
          } else {
             @socket{$w}->{buf}.= _parse($w,$buf);
@@ -3895,6 +3897,62 @@ sub cmd_keepalive
    }
 }
 
+sub cmd_ssl
+{
+#-# ------------------------------------------------------------------------
+#-# /ssl <name> [<user> <pass>] <host> <port>
+#-#
+#-#      Adds a world or overwrites an existing world.
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+
+   my @field = split(/ /,$txt);
+
+   # trim all fields and lc the first field
+   for my $i (0 .. $#field) {
+      if($i == 0) {
+         @field[0] = lc(trim(@field[0]));
+      } else {
+         @field[$i] = trim(@field[$i]);
+      }
+   }
+   my $append = 0;
+
+   $append = 1 if(!defined @address{trim(lc(@field[0]))});
+
+   if(trim(@field[0]) =~ /^p_/) {
+      echo("%% World names may not start with 'p_' at this time");
+   } elsif($#field == 1) {
+      @address{@field[0]} = { host => @field[1],
+                              port => @field[2],
+                              name => @field[0],           # preserve case
+                              ssl  => 1
+                            };
+   } elsif($#field == 4) {
+      @address{@field[0]} = { name => @field[0],           # preserve case
+                              user => @field[1],
+                              pass => @field[2],
+                              host => @field[3],
+                              port => @field[4],
+                              ssl  => 1
+                            };
+   } elsif($#field == 5) {                                         # has type
+      @address{@field[0]} = { name => @field[0],              # preserve case
+                              user => @field[2],                  # skip type
+                              pass => @field[3],
+                              host => @field[4],
+                              port => @field[5],
+                              ssl  => 1
+                            };
+   } else {
+      loggit("field: $#field");
+      return cmd_help($conn,"addworld");
+   }
+   save(lc(@field[0]));
+}
+
+}
 sub cmd_addworld
 {
 #-# ------------------------------------------------------------------------
@@ -4652,19 +4710,21 @@ sub cmd_listsockets
 #-# /list_sockets
 #-#      Shows all open connections and some minimal data about them.
 #-# ------------------------------------------------------------------------
-   echo("%-16s %-26s %-5s","NAME","HOST","PORT");
+   echo("%-16s %-26s %-5s %-3s","NAME","HOST","PORT","Secure");
    for my $key (keys %ws) {
-       echo("%-16s %-26s %-5s",
+       echo("%-16s %-26s %-5s %-3s",
             @ws{$key}->{auth} ? "Web [auth]" : "Web",
             @ws{$key}->{ip},
-            @ws{$key}->{port});
+            @ws{$key}->{port},
+            is_secure() ? "Yes" : "");
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
-         echo("%-16s %-26s %-5s", 
+         echo("%-16s %-26s %-5s %-3s", 
               @address{$w}->{name},
               @address{$w}->{host},
-              @address{$w}->{port});
+              @address{$w}->{port},
+              @address{$w}->{ssl} ? "Yes" : "");
       }
    }
 }

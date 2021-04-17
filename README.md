@@ -51,6 +51,8 @@ This screenshot is showing the two interfaces to muddler. In the background is m
       /add <world> [<user> <password] <address> <port>
          Define a world so that muddler can connect with it. If a user and
          password are supplied, the user will be logged into at startup
+      /ssl <world> [<user> <password] <address> <port>
+         Same as /add but will connect via SSL.
       /world <world>
          Connect to an already defined world or switch to that world if
          the world has already ben opened. This can be done with the up/down
