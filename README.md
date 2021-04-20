@@ -14,7 +14,9 @@ This screenshot is showing the two interfaces to muddler. In the background is m
    o Inital fansi support
    o Multiple worlds at the same time
    o More / pausing output as needed
-   o spell checking
+   o Spell checking
+       mispelled words will be bold in console, red squiggly underline in
+       web interface (dependant upon browser).
    o Multiple Window Support(?) - The console interface does not support
        multiple windows but multiple browser "windows" can be opened and
        can view different worlds.

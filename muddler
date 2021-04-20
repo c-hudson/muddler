@@ -1041,19 +1041,19 @@ sub ws_init
 
    
    if(use_secure()) {
-      $http_listen = IO::Socket::SSL->new( LocalPort => @state{p_port},
-                                           Listen    => 1,
-                                           Reuse     => 1,
-                                           SSL_cert_file => 'cert.pem',
-                                           SSL_key_file => 'key.pem',
+      $http_listen = IO::Socket::SSL->new( LocalPort     => @state{p_port},
+                                           Listen        => 1,
+                                           Reuse         => 1,
+                                           SSL_cert_file => @state{p_cert},
+                                           SSL_key_file  => @state{p_key},
                                          )
          or die "failed to set up httpd listener: $!";
       $ws_listen = IO::Socket::SSL->new(Listen             => 5,
                                         LocalPort          => @state{p_port}+1,
                                         Proto              => 'tcp',
                                         SSL_startHandshake => 0,
-                                        SSL_cert_file      => 'cert.pem',
-                                        SSL_key_file       => 'key.pem',
+                                        SSL_cert_file      => @state{p_cert},
+                                        SSL_key_file       => @state{p_key},
       ) or die "failed to ws_listen: $!";
       @state{secure} = 1;
    } else {
@@ -1191,11 +1191,9 @@ sub ws_io
          if(@state{secure}) {
              IO::Socket::SSL->start_SSL(
                  $s,
-                 SSL_server => 1,
-                 SSL_cert_file=>'/etc/letsencrypt/live/teenymush.dynu.net' .
-                                '/cert.pem',
-                 SSL_key_file=>'/etc/letsencrypt/live/teenymush.dynu.net/' .
-                               'privkey.pem',
+                 SSL_server    => 1,
+                 SSL_cert_file => @state{p_cert},
+                 SSL_key_file  =>  @state{p_key},
              ) or die "failed to ssl handshake: $SSL_ERROR";
          }
 
