@@ -970,7 +970,7 @@ sub socket_handle_input
          @socket{$w}->{last_recv} = time();
 
          if(module_enabled("Encode")) {
-            @address{$w}->{decode} = "utf8" if !defined @address{$w};
+            @address{$w}->{decode} = "utf8" if !defined @address{$w}->{decode};
             @socket{$w}->{buf}.=decode(@address{$w}->{decode}, _parse($w,$buf));
          } else {
             @socket{$w}->{buf}.= _parse($w,$buf);
@@ -1039,7 +1039,8 @@ sub ws_init
    }
    @state{web} = 1;
 
-   if(@state{p_secure}) {
+   
+   if(use_secure()) {
       $http_listen = IO::Socket::SSL->new( LocalPort => @state{p_port},
                                            Listen    => 1,
                                            Reuse     => 1,
@@ -1054,6 +1055,7 @@ sub ws_init
                                         SSL_cert_file      => 'cert.pem',
                                         SSL_key_file       => 'key.pem',
       ) or die "failed to ws_listen: $!";
+      @state{secure} = 1;
    } else {
       $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
                                             Listen    => 1,
@@ -1065,6 +1067,7 @@ sub ws_init
                                           Reuse     => 1,
                                         )
        or die "failed to set up websocket listener: $!";
+      @state{secure} = 0;
    }
 
    $ws_server = Net::WebSocket::Server->new(
@@ -1185,7 +1188,7 @@ sub ws_io
          my $s = $ws_listen->accept or die("Couldn't accept connection");
          next unless $s;
 
-         if(@state{p_secure}) {
+         if(@state{secure}) {
              IO::Socket::SSL->start_SSL(
                  $s,
                  SSL_server => 1,
@@ -2547,7 +2550,9 @@ sub key_dump
 
    for my $key (keys %history) {
       open($file,"> history.$key.log") || return;
-      printf($file "%s\n",print_var(@history{$key}));
+      binmode($file, ":utf8");
+      @address{$key}->{decode} = "utf8" if !defined @address{$key}->{decode};
+      printf($file "%s\n",decode(@address{$key}->{decode},print_var(@history{$key})));
       close($file);
    }
 }
@@ -2824,7 +2829,7 @@ sub key_delete
 #
 sub make_string_bold
 {
-   my $txt = shift;
+   my ($txt,$bold) = @_;
 
    return if $txt =~ /^\s*$/;
 
@@ -2833,7 +2838,7 @@ sub make_string_bold
    # move cursor to begingin of word
    xy(input_x(length($txt)),input_y(length($txt)));
 
-   printf("\033[1m");                                         # start bold
+   printf("\033[1m") if($bold);                                  # start bold
    for my $ch (split('',$txt)) {
 
       # determine if character would be off the screen, if so done.
@@ -2849,7 +2854,7 @@ sub make_string_bold
       printf("%s",$ch);                                # print out character
       $i++;
    }
-   printf("\033[0m");                                        # turn off bold
+   printf("\033[0m") if($bold);                               # turn off bold
 }
 
 #
@@ -2866,10 +2871,14 @@ sub key_default
 
    if($ch eq " " && module_enabled("Text::Aspell")) {
       if(substr(join('',@{@state{line}}),0,@state{line_pos}) =~ 
-            /(^| |^:|^"|^@)([a-zA-Z]+)(\s*)$/) {
+            /(^| |^:|^"|^@)([a-zA-Z']+)(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
-             make_string_bold("$2$3");
+             make_string_bold("$2$3",1);
+             @state{spelling_error} = 1;
+         } elsif(@state{spelling_error} == 1) {  # this will not unbold every
+             make_string_bold("$2$3",0);              # thing, improve later?
+             @state{spelling_error} = 0;
          }
       }
    }
@@ -3952,7 +3961,6 @@ sub cmd_ssl
    save(lc(@field[0]));
 }
 
-}
 sub cmd_addworld
 {
 #-# ------------------------------------------------------------------------
@@ -4053,7 +4061,9 @@ sub load
    my ($file,$name,$data);
 
    if(!open($file,"@ENV{HOME}/.muddler")) {
-      return echo("%% Unable to open @ENV{HOME}/.muddler for reading") if(!$quiet);
+      if(!$quiet) {
+         return echo("%% Unable to open @ENV{HOME}/.muddler for reading");
+      }
    }
 
    while(<$file>) {
@@ -4065,7 +4075,7 @@ sub load
          delete @$data{keys %$data};
       } elsif(/^\s*([^:]+)\s*:\s*/) {                      # segment value
          if($name eq undef) {
-            return echo("% Corrupted @ENV{HOME}/.muddler file found on line $.");
+            return echo("% Corrupted .muddler file found on line $.");
          }
          $$data{$1} = $';
       } elsif(/^\s*}\s*$/) {                             # end of segment
@@ -4481,12 +4491,13 @@ sub cmd_web
       echo("%% %s file is now: %s",lc($1),trim($2));
       save("p_" . lc($1),trim($2));
    } elsif($status =~ /^\s*on\s*$/i) {
-      echo("%% Web enabled, connect via: http%s://localhost:@state{p_port}",
-         @state{p_secure} ? "s" : "");
-      echo("%%    Password: @state{p_password}");
-      if(@state{web} == 0) {
-         ws_init();
-     }
+      echo("%% Web %senabled, Connect via: http%s://localhost:%s",
+           @state{secure} ? "already " : "",
+           use_secure() ? "s" : "",
+           @state{p_port}
+          );
+      echo("%%    Password: %s",@state{p_password});
+      ws_init() if @state{web} == 0;
    } elsif($status =~ /^\s*off\s*$/i) {
       if(@state{web} == 0) {
          echo("%% Web/Websocket server is already disabled.");
@@ -4716,7 +4727,7 @@ sub cmd_listsockets
             @ws{$key}->{auth} ? "Web [auth]" : "Web",
             @ws{$key}->{ip},
             @ws{$key}->{port},
-            is_secure() ? "Yes" : "");
+            @state{secure} ? "Yes" : "");
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
