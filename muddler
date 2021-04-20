@@ -1189,6 +1189,7 @@ sub ws_io
          next unless $s;
 
          if(@state{secure}) {
+             loggit("ACCEPT: '%s'\n",server_hostname($s));
              IO::Socket::SSL->start_SSL(
                  $s,
                  SSL_server    => 1,
@@ -1217,7 +1218,7 @@ sub ws_io
          eval {
             $s = $sock->accept;
          };
-         next unless $s;
+         next unless $s;           # wrong type of connection http to https?
          
          $ws_server->{select_readable}->add($s);
          @http{$s} = { sock    => $s,
@@ -1830,7 +1831,7 @@ sub echo_console
 #
 sub more_check
 {
-   my $w = @state{world};
+   my $w = shift;
    my ($last, $count, $start);
 
    return if(!defined @history{$w});                          # no history yet
@@ -1846,6 +1847,8 @@ sub more_check
    # check recent activity
    my $hist = @history{$w};
   
+   return if(more($w));              # no need to enable more, its enabled
+
    # scan forward for hits 
    for(my $i=history_pos($w);$i >= 0 && $$hist[$i]->{ts} > time() - 3;$i--) {
       $count++;
@@ -1859,7 +1862,7 @@ sub more_check
    for(my $i = history_max($w);$i >= 0 && $$hist[$i]->{ts} > time() - 3;$i--) {
       if(++$count > 3) {
          if($start ne undef) {
-            @socket{$w}->{more} = $start;
+            @socket{$w}->{more} = $start - 1;
          } else {
             @socket{$w}->{more} = history_pos();
          }
@@ -2123,7 +2126,7 @@ sub min_visible
    my $world = shift;
    my $min;
 
-   $min = @state{size_x} if(console());
+   $min = output_end() if($world eq @state{world});
 
    for my $key (keys %ws) {
       if(@ws{$key}->{world} eq $world && @ws{$key}->{size_y} < $min) {
@@ -2148,13 +2151,13 @@ sub release_pending_pagefull
 
    return if(!world_visible($w));
 
-   more_check();
+   more_check($w);
    return if(in_hist($w) && paused($w));
 
    if(!@state{p_more}) {
       $max = history_max($w);
    } else {
-      $max = min_visible($w) - overlap() - @socket{$w}->{more_count};
+      $max = min_visible($w) - overlap();
    }
 
    # determine max ending point, end of buffer or X lines after more enabled
@@ -2178,7 +2181,9 @@ sub release_pending_pagefull
    my $hash = $ws_server->{conns};
 
    
-   for(my $i=$start;$i <= $end && $count < $max;$i++) {
+#   for(my $i=$start;$i <= $end && $count < $max;$i++) {
+    for(my $i=$start;@socket{$w}->{more_count} <= $max && 
+                     $i <= history_max($w);$i++) {
       my @list = ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
       history_pos($w,$i);                                # update history_pos
 
@@ -2217,7 +2222,7 @@ sub release_pending_pagefull
                    );
          history_pos_partial($w,-1);
          $count++;
-         @socket{$w}->{more_count} += $#list + 1 if(more($w));
+         @socket{$w}->{more_count} += $#list + 1 if(@socket{$w}->{more} > 0);
       }
       $txt_start = 0;
    }
@@ -3537,6 +3542,7 @@ sub loggit
    # is closed. Can't seem to stop these, so lets ignore them.
 #   return if $msg =~ /syswrite/;
    open($file,">> muddler.log");
+   binmode($file, ":utf8");
    printf($file "%s",$msg);
    close($file);
 }
