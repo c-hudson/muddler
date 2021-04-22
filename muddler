@@ -54,7 +54,7 @@ my %state = (
    line_pos        => 0,           # character position on the current line
    size_x          => 24,                     # size of screen horizontally
    size_y          => 80,                  # size of the screen veritically
-   input_size      => 2,
+   input_size      => 3,
    input_offset    => 0,                   # lines scrolled off input buffer
    input_pos       => -1,                        # location in input history
    line            => [],                                # curent input line
@@ -962,7 +962,7 @@ sub socket_handle_input
 
       if($s eq \*STDIN) {
          sysread($s,$buf,1);
-         key_process($buf);
+         key_process($buf) if(console());
       } elsif(sysread($s,$buf,1024) <= 0) {
           socket_disconnect($s);
           history($w,"% Connection closed to ". name($w) . "-$s");
@@ -1514,7 +1514,7 @@ sub ws_process
    } elsif(defined @socket{world($conn)}->{sock}) {
       out(world($conn),"%s\n",$input);
    }
-   unshift(@input,@state{line});                        # store keyboard history
+#   unshift(@input,@state{line});                        # store keyboard history
 }
 
 sub ws_all
@@ -2239,16 +2239,12 @@ sub input_x
    my $offset = shift;
 
    my $x = input_start() + 
+#           @state{buffer_pos} + 
            sprintf("%d",(@state{line_pos} - $offset -
                         ((@state{size_y} - 1) * @state{input_offset})) /
                         (@state{size_y} - 1));
-   
 
-   if($x > @state{size_x}) {
-      return @state{size_x};
-   } else {
-      return $x;
-   }
+   return ($x > @state{size_x}) ? @state{size_x} : $x;
 }
 
 #
@@ -2406,6 +2402,39 @@ sub redraw_output
    }
 }
 
+sub redraw_input_new
+{
+   my $conn = shift;
+   my $count = 0;
+   my @out;
+
+   return if(!console());
+
+   for my $i (0 .. $#input) {
+      loggit("#-#: '%s'\n",join('',@{@input[$i]}));
+   }
+
+   if(is_console($conn)) {
+      update_scroll_region("input",1);
+      xy(input_start(),1,1);
+      for(my $pos = $#input;$pos >= 0 && $#out < $state{input_size}-1;$pos--) {
+         my $end = input_lines($pos);
+         if($end eq 0) {
+             push(@out,"");
+         } else {
+            for my $i (reverse 1 .. $end) {
+               push(@out,input_line($i,$pos));
+               last if $#out >= @state{input_size}-1;
+            }
+         }
+      }
+      for my $i (reverse 0 .. $#out) {
+         printf("%s\033[K%s",@out[$i],($i != 0) ? "\n" : "");
+      }
+      xy(input_x(),input_y(),1);
+   }
+}
+
 sub redraw_input
 {
    my $conn = shift;
@@ -2417,12 +2446,14 @@ sub redraw_input
       xy(input_start(),1,1);
       my $start = @state{input_offset}+1;
       my $end = $start + @state{input_size} - 1;
+#      loggit("LINES: '%s'\n",input_lines());
       for my $i ($start .. $end) {
          printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
       }
       xy(input_x(),input_y(),1);
    }
 }
+
 
 sub redraw_screen
 {
@@ -2554,11 +2585,17 @@ sub key_dump
    for my $key (keys %history) {
       open($file,"> history.$key.log") || return;
       binmode($file, ":utf8");
+      eval {
       @address{$key}->{decode} = "utf8" if !defined @address{$key}->{decode};
-      printf($file "%s\n",decode(@address{$key}->{decode},print_var(@history{$key})));
+      printf($file "%s\n",
+             decode(@address{$key}->{decode},
+             print_var(@history{$key}))
+            );
+      };
       close($file);
    }
 }
+
 
 #
 # key_ctl_p
@@ -2568,36 +2605,45 @@ sub key_ctl_p
 {
    my ($conn,$txt) = @_;
 
-   # current input has data, lets store it
-   if($#{@state{line}} >= 0 && @state{input_pos} == -1) { # store current input
-      unshift(@input,@state{line});
-      @state{input_pos}++;
-   } 
-   if(@state{input_pos} < $#input) {           # move down in keyboard history
-      @state{line} = @input[++@state{input_pos}];
-      @state{line_pos} = $#{@input[@state{input_pos}]} + 1;
-      redraw_input($conn);
+   if(!defined @state{input_pos} || @state{input_pos} == -1) {  # first time
+      if($#{@input[-1]} >= 0) {              # store initial text if it exists
+         push(@input,[]);
+         @state{input_pos} = $#input - 1;
+      } else {
+         @state{input_pos} = $#input;                 # no text, point to top
+      }
+   } elsif(@state{input_pos} <= 0) {
+      @state{input_pos} = $#input;                              # wrap around
    }
+
+   @{@input[-1]} = @{@input[@state{input_pos} -1]};         # overwrite input
+
+   @state{input_pos}--;
+   @state{line_pos} = $#{@input[-1]} + 1;
+   redraw_input($conn);
 }
 
 #
-# key_ctl_p
-#    Move up in the keyboard input history
+# key_ctl_n
+#    Move down in the keyboard input history
 #
 sub key_ctl_n
 {
    my ($conn,$txt) = @_;
 
-   if(@state{input_pos} == 0) {            # input empty, start with new line
-      @state{line} = [];
-      @state{line_pos} = 0;
-      @state{input_pos} = -1;
-      redraw_input($conn);
-   } elsif(@state{input_pos} > 0) {         # input availible, move up in hist
-      @state{line} = @input[--@state{input_pos}];
-      @state{line_pos} = $#{@input[@state{input_pos}]} + 1;
-      redraw_input($conn);
+   if(!defined @state{input_pos} || @state{input_pos} == -1) {  # first time
+      push(@input,[]) if($#{@input[-1]} >= 0); # store initial text if it exists
+      @state{input_pos} = $#input - 1;
    }
+
+   if(@state{input_pos} == $#input -1) {
+      @state{input_pos} = 0;
+   } else {
+      @state{input_pos}++;
+   }
+   @{@input[-1]} = @{@input[@state{input_pos}]};           # overwrite input
+   @state{line_pos} = $#{@input[-1]} + 1;
+   redraw_input($conn);
 }
 
 #
@@ -2664,10 +2710,10 @@ sub key_ctl_u
    my ($conn,$txt) = @_;
 
    if(is_console($conn)) {
-      @state{line} = [];
+      @input[-1] = [];
       @state{line_pos} = 0;
       delete @state{input_offset};
-      xy(input_start(),1);
+      xy(input_x(),input_y());
       printf("\033[J") if console();
    }
 }
@@ -2683,12 +2729,12 @@ sub key_ctl_w
 
 #   loggit("control_w: pressed: '%s'",@state{line_pos});
    for(my $i = @state{line_pos};$i >= 0;$i--) {
-      if(@state{line}->[$i] ne " ") {
+      if(@input[-1]->[$i] ne " ") {
          $count++;
-         if(@state{line}->[$i] ne undef) {
+         if(@input[-1]->[$i] ne undef) {
             $found = 1;
          }
-      } elsif(@state{line}->[$i] eq " " && !$found) {
+      } elsif(@input[-1]->[$i] eq " " && !$found) {
          $count++;
       } else {
          last;
@@ -2753,7 +2799,7 @@ sub out_noret
 sub key_return
 {
    my ($conn,$txt) = @_;
-   my $array = @state{line};
+   my $array = @input[-1];
    my $input = join('',@$array);
 
    if(do_cmd(@state{world},$input,$conn)) {
@@ -2764,24 +2810,28 @@ sub key_return
 #      loggit("OUT: \"%s\"\n",$input);
       out(@state{world},"%s\n",$input);
    }
-   unshift(@input,@state{line});                        # store keyboard history
    @state{input_pos} = -1;                        # reset keyboard history pos
-   @state{line} = [];
+   push(@input,[]);
    @state{line_pos} = 0;
+   @state{buffer_pos}++ if(@state{buffer_pos} < @state{input_size});
    delete @state{input_offset};
 
    # just entered input, don't be so quick to show the more
-#   if(!no_world()) {
-#      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
-#   }
+   if(!no_world()) {
+      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
+   }
    input_clear();
+#   printf("\n");
    xy(input_x(),input_y());
 }
 
 sub input_lines
 {
-    my $result = sprintf("%d",($#{@state{line}} + 1) / (@state{size_y} - 1));
-    return $result + 1 if(($#{@state{line}} + 1) % (@state{size_y} - 1) >= 1);
+    my $pos = shift;
+    $pos = -1 unless $pos;
+
+    my $result = sprintf("%d",($#{@input[$pos]} + 1) / (@state{size_y} - 1));
+    return $result + 1 if(($#{@input[$pos]} + 1) % (@state{size_y} - 1) >= 1);
     return $result;
 }
 
@@ -2802,8 +2852,8 @@ sub key_delete
    
    if(@state{line_pos} < 1) {                        # nothing left to delete
       return;
-   } elsif(@state{line_pos} < $#{@state{line}}) {          # delete in middle
-      splice(@{@state{line}},@state{line_pos}-1,1);
+   } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
+      splice(@{@input[-1]},@state{line_pos}-1,1);
       xy(input_x(),input_y()-1);
       printf("\033[P");
       @state{line_pos}--;
@@ -2811,14 +2861,14 @@ sub key_delete
      
       for my $i ((input_on_line()+1) .. input_lines()) {
          xy(input_start() + $i - 2,79);
-         printf("%s",@state{line}->[(@state{size_y}-1) * ($i-1) - 1]);
+         printf("%s",@input[-1]->[(@state{size_y}-1) * ($i-1) - 1]);
          xy(input_x() + $i - 1,0);
          printf("\033[P");
       }
       xy(input_x(),input_y());
    } elsif(@state{line_pos} >= 1) {                           # delete at EOL
       @state{line_pos}--;
-      pop(@{@state{line}});
+      pop(@{@input[-1]});
       xy(input_x(),input_y());
       printf("\033[P");
       xy(input_x(),input_y());
@@ -2873,7 +2923,7 @@ sub key_default
    update_scroll_region("input");
 
    if($ch eq " " && module_enabled("Text::Aspell")) {
-      if(substr(join('',@{@state{line}}),0,@state{line_pos}) =~ 
+      if(substr(join('',@{@input[-1]}),0,@state{line_pos}) =~ 
             /(^| |^:|^"|^@)([a-zA-Z']+)(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
@@ -2886,12 +2936,12 @@ sub key_default
       }
    }
 
-   splice(@{@state{line}},@state{line_pos},0,$ch);         # add ch to buffer
+   splice(@{@input[-1]},@state{line_pos},0,$ch);         # add ch to buffer
    @state{line_pos}++;                          # move cursor position over 1
    printf("%s",$ch);                                     # print out new char
 
    # redraw all characters in front of current character as the terminal
-   for my $i (@state{line_pos} .. $#{@state{line}}) {
+   for my $i (@state{line_pos} .. $#{@input[-1]}) {
 
       # determine if character would be off the screen, if so done.
       if($i >= ((@state{size_y}-1) * @state{input_size}) + 
@@ -2903,15 +2953,21 @@ sub key_default
       if($i % (@state{size_y}-1) == 0 && $i != 0) {
          $out .= "\n";
       }
-      $out .= @state{line}->[$i];                   # add next char in buffer
+      $out .= @input[-1]->[$i];                   # add next char in buffer
    }
    printf("%s",$out);                                   # output generated txt
    $out =~ s/\n/<N>/g;
 
+
    # if the input has gotten bigger then the input window, send a return now
    # plus the next line.
-   if(($#{@state{line}} + 1 >= @state{input_size} * (@state{size_y}-1)) &&
+#   if(($#{@input[-1]} + 1) % (@state{size_y}-1) == 0) {
+#      loggit("Doing return");
+#      printf("\n");
+#   }
+   if(($#{@input[-1]} + 1 >= @state{input_size} * (@state{size_y}-1)) &&
       @state{line_pos} % (@state{size_y} - 1) == 0) {
+#      loggit("return - sent");
       printf("\n%s",input_line(input_on_line()+1));
       @state{input_offset}++;
    }
@@ -2948,13 +3004,13 @@ sub key_ctl_e
    my $original = @state{input_offset};
 
    # determine the number of lines that aren't being shown for offset
-   if($#{@state{line}} / (@state{size_y} - 1)+1 > @state{input_size}) {
-      @state{input_offset} = sprintf("%d",$#{@state{line}} / (@state{size_y}
+   if($#{@input[-1]} / (@state{size_y} - 1)+1 > @state{input_size}) {
+      @state{input_offset} = sprintf("%d",$#{@input[-1]} / (@state{size_y}
           - 1) + 1 - @state{input_size});
    } else {
       @state{input_offset} = 0;
    }
-   @state{line_pos} = $#{@state{line}} + 1;
+   @state{line_pos} = $#{@input[-1]} + 1;
 
    if(@state{input_offset} != $original) {
       redraw_input($conn);
@@ -2985,7 +3041,7 @@ sub key_left
          if(@state{input_size} < $i + 1 - @state{input_offset}) {
             $ret = undef;                          # last line? no return
          }
-         printf("\033[J%s$ret",join('',@{@state{line}}[$start .. $stop]));
+         printf("\033[J%s$ret",join('',@{@input[-1]}[$start .. $stop]));
       }
    }
    if(@state{line_pos} >= 1) {
@@ -3000,9 +3056,12 @@ sub key_left
 #
 sub input_line
 {
-   my $start = (@_[0] - 1) * (@state{size_y} -1);
+   my ($line,$pos) = @_;
+   $pos = -1 if $pos eq undef;
+
+   my $start = ($line - 1) * (@state{size_y} -1);
    my $stop = $start + @state{size_y}-2;
-   return join('',@{@state{line}}[$start .. $stop]);
+   return join('',@{@input[$pos]}[$start .. $stop]);
 }
 
 sub name
@@ -3132,7 +3191,7 @@ sub key_right
 {
    return if !console();
 
-   if(@state{line_pos} <= $#{@state{line}}) {
+   if(@state{line_pos} <= $#{@input[-1]}) {
       if(@state{line_pos} % (@state{size_y}-1)==@state{size_y} - 2 &&
          input_x() == @state{size_x}) {
          @state{input_offset}++;
@@ -3598,7 +3657,7 @@ sub input_clear
 sub key_esc_q
 {
    my ($spell, $found);
-   my $input = join('',@{@state{line}});
+   my $input = join('',@{@input[-1]});
 
    $input =~ s/[^a-zA-Z0-9 ]+//g;
    open($spell,"echo $input | aspell -a -S |") ||
@@ -3656,6 +3715,13 @@ sub cmd_debug
 
 sub cmd_fansi
 {
+#-# ------------------------------------------------------------------------
+#-# /fansi
+#-#
+#-#      Enables cp437 encoding on the current world, which gives fansi
+#-#      support. Default is utf8 which can be enabled with /utf8
+#-#
+#-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
    @address{world($conn)}->{decode} = "cp437";
@@ -3665,6 +3731,13 @@ sub cmd_fansi
 
 sub cmd_utf8
 {
+#-# ------------------------------------------------------------------------
+#-# /utf8
+#-#
+#-#      Enables utf8 encoding on the current world [default].
+#-#
+#-# Also see: /fansi
+#-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
    @address{world($conn)}->{decode} = "utf8";
@@ -3674,6 +3747,13 @@ sub cmd_utf8
 
 sub cmd_common
 {
+#-# ------------------------------------------------------------------------
+#-# /common
+#-#
+#-#      Connects to a few places i use. This should be replaced with some-
+#-#      thing less taylored to just me.
+#-#
+#-# ------------------------------------------------------------------------
    cmd_world(@state{world},"global");
    cmd_world(@state{world},"rhost");
    cmd_world(@state{world},"del");
@@ -3710,7 +3790,6 @@ sub cmd_set
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
-   return;
    for my $key (keys %state) {
       if($key =~ /^p_/) {
          echo("# %-15s %s",$',@state{$key});
@@ -5124,6 +5203,7 @@ sub read_file
 sub muddler_init
 {
    # for temporay viewport for output before a connected world
+   push(@input,[]);
    @state{telnet_mode} = "normal";
    @history{muddler} = [];
    @socket{muddler} = { name        => "muddler",
