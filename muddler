@@ -43,6 +43,7 @@ my %def;                                        # tf style define information
 my %pid;                                              # internal process list
 my $readable;
 my %telnet_ch;
+my %cache;
 my @options = qw(
     BINARY ECHO RCP SGA NAMS STATUS TM RCTE NAOL NAOP NAOCRD NAOHTS NAOHTD
     NAOFFD NAOVTS NAOVTD NAOLFD XASCII LOGOUT BM DET SUPDUP SUPDUPOUTPUT SNDLOC
@@ -1189,7 +1190,6 @@ sub ws_io
          next unless $s;
 
          if(@state{secure}) {
-             loggit("ACCEPT: '%s'\n",server_hostname($s));
              IO::Socket::SSL->start_SSL(
                  $s,
                  SSL_server    => 1,
@@ -1551,31 +1551,6 @@ sub lord
 }
 
 
-sub ws_all_wrap
-{
-   my $txt = shift;
-
-   return if !web();
-
-   my $hash = $ws_server->{conns};
-
-   for my $key ( keys %$hash) {            # cycle all websocket connections
-      my $c = $$hash{$key}->{conn};
-      next if(@ws{$c}->{auth} eq 0);
-
-      # get width of the websocket session, or default to console
-      my $y=(defined @ws{$c}->{size_y}) ? @ws{$c}->{size_y} : @state{size_y}; 
-
-      if($txt eq undef) {
-         ws_echo($c,"t");
-      } else {
-         for my $line (ansi_wrap($txt,$y)) {
-            ws_echo($c,"t",$line);
-         }
-      }
-   }
-}
-
 sub echo_wrap
 {
    my $txt = shift;
@@ -1831,7 +1806,7 @@ sub echo_console
 #
 sub more_check
 {
-   my $w = shift;
+   my ($conn,$w) = @_;
    my ($last, $count, $start);
 
    return if(!defined @history{$w});                          # no history yet
@@ -1851,22 +1826,33 @@ sub more_check
 
    # scan forward for hits 
    for(my $i=history_pos($w);$i >= 0 && $$hist[$i]->{ts} > time() - 3;$i--) {
-      $count++;
-      $start = $i;
+      if(!$$hist[$i]->{gagged}) {
+         $count += scalar cache_wrap($conn,$w,$i);
+      }
    }
 
    # found enough, stop
-   return @socket{$w}->{more} = $start if($count > 3);
+   if($count > 3) {
+      @socket{$w}->{more} = $start if($count > 3);
+      @socket{$w}->{more_count} = $count;
+      return;
+   }
 
    # scan backwards for hits
    for(my $i = history_max($w);$i >= 0 && $$hist[$i]->{ts} > time() - 3;$i--) {
-      if(++$count > 3) {
-         if($start ne undef) {
-            @socket{$w}->{more} = $start - 1;
-         } else {
-            @socket{$w}->{more} = history_pos();
+
+      if(!$$hist[$i]->{gagged}) {
+         $count += scalar cache_wrap($conn,$w,$i);
+         if($count > 3) {
+            if($start ne undef) {
+               @socket{$w}->{more} = $start - 1;
+               @socket{$w}->{more_count} = $count;
+            } else {
+               @socket{$w}->{more} = history_pos();
+               @socket{$w}->{more_count} = $count;
+            }
+            return;
          }
-         return;
       }
    }
 }
@@ -2008,10 +1994,10 @@ sub history_add
                            original  => $original
                          };
 
-   return if !$original; # don't count the text twice, so just count the
-                         # original entry.
-
-   @socket{$world}->{pending} += scalar ansi_wrap($line) if(!$gagged);
+   if(!$gagged) {
+      @socket{$world}->{pending} += 
+          scalar cache_wrap(@state{world},$world,$#$array);
+   }
 }
 
 sub gagged
@@ -2045,6 +2031,10 @@ sub history
    $txt =~ s/\r|\n//g;
    my ($gag,$str, $mod);
 
+   # no keypresses in 2 minutes, turn more on before input processed.
+   if(time() - @state{key_last} > 120) {
+      @socket{$world}->{more} = history_max($world);
+   }
    @history{$world} = [] if !defined @history{$world};
 
    my $str = replace($world,$txt);
@@ -2151,7 +2141,7 @@ sub release_pending_pagefull
 
    return if(!world_visible($w));
 
-   more_check($w);
+   more_check($conn,$w);
    return if(in_hist($w) && paused($w));
 
    if(!@state{p_more}) {
@@ -2222,7 +2212,7 @@ sub release_pending_pagefull
                    );
          history_pos_partial($w,-1);
          $count++;
-         @socket{$w}->{more_count} += $#list + 1 if(@socket{$w}->{more} > 0);
+         @socket{$w}->{more_count} += $#list + 1 if(@socket{$w}->{more} >= 0);
       }
       $txt_start = 0;
    }
@@ -2263,6 +2253,55 @@ sub input_y
 sub output_end
 {
    return @state{size_x} - @state{input_size} - 1;
+}
+
+#
+# cache_wrap
+#    Text will get wrapped several times, so cache the results
+#
+sub cache_wrap
+{
+   my ($conn,$world,$id) = @_;
+
+   @state{cache} = {} if !defined @state{cache};
+   my $cache = @state{cache};
+   if(defined @history{$world} && defined @history{$world}->[$id]) {
+      my $y = is_web($conn) ? @ws{size_y} : @state{size_y};
+      if(!defined $$cache{$world} ||
+         !defined $$cache{$world}->{$id} ||
+         !defined $$cache{$world}->{$id}->{$y}) {
+         $$cache{$world}={} if !defined $$cache{$world};
+         $$cache{$world}->{$id}={} if !defined $$cache{$world}->{$id};
+         if(!defined $$cache{$world}->{$id}->{$y}) {
+           $$cache{$world}->{$id}->{$y}={};
+         }
+         $$cache{$world}->{$id}->{$y}->{txt} = 
+            ansi_wrap(@history{$world}->[$id]->{txt},$y);
+         $$cache{$world}->{$id}->{$y}->{ts} = time(); 
+         @state{cached}++;
+      } else {
+         @state{nocache}++;
+      }
+      return $$cache{$world}->{$id}->{$y}->{txt};
+   }
+}
+
+sub wrap_garbage_collect
+{
+   @state{cache} = {} if !defined @state{cache};
+   my $cache = @state{cache};
+   for my $w (keys %$cache) {
+      for my $id (keys @{$$cache{$w}}) {
+         for my $y (keys @{$$cache{$w}->{$id}}) {
+            if(time() - $$cache{$w}->{$id}->{$y}->{ts} > 300) {
+               delete @$cache{$w}->{$id}->{$y};
+            }
+         }
+         if(scalar keys %{$$cache{$w}->{$id}} == 0) {
+            delete $$cache{$w}->{$id};
+         }
+      }
+   }
 }
 
 #
@@ -3349,6 +3388,7 @@ sub key_process
    my $input = shift;
    return unless defined $input;
 
+   @state{key_last} = time();
    for my $ch (split(//,$input)) {
 #      loggit("ch: '%s' -> '%s'",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
@@ -3592,6 +3632,7 @@ sub loggit
    my ($fmt,@args) = @_;
    my $file;
 
+   die("no debug - " . code()) if !@state{p_debug};
    return if !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
@@ -3790,6 +3831,8 @@ sub cmd_set
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
+   echo("cache: %s",@state{cached});
+   echo("nocache: %s",@state{nocache});
    for my $key (keys %state) {
       if($key =~ /^p_/) {
          echo("# %-15s %s",$',@state{$key});
@@ -5169,6 +5212,11 @@ sub tick
       }
    }
 
+   if(time() - @state{wrap_garbage_collect_last} > 300) {
+      @state{wrap_garbage_collect_last}  = time();
+      wrap_garbage_collect();
+   }
+
    if(web()) {
       for my $key (keys %ws) {
          if(@ws{$key}->{auth} eq 0 && time() - @ws{$key}->{start} > 60) {
@@ -5222,8 +5270,8 @@ sub muddler_init
       (@state{size_y},@state{size_x}) = (80,24);
    }
 
-   `del key.log`;
    @state{chksum} = get_checksums();
+   load(1);
    loggit("### START ###");
 
    if(console()) {
@@ -5236,7 +5284,6 @@ sub muddler_init
 
    redraw_screen(@state{world},1);
    show_banner();
-   load(1);
 
    read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e "@ENV{HOME}/.muddler");
    read_tfrc("@ENV{HOME}/.tfrc",1);
