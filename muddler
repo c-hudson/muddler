@@ -55,7 +55,6 @@ my %state = (
    line_pos        => 0,           # character position on the current line
    size_x          => 24,                     # size of screen horizontally
    size_y          => 80,                  # size of the screen veritically
-   input_size      => 3,
    input_offset    => 0,                   # lines scrolled off input buffer
    input_pos       => -1,                        # location in input history
    line            => [],                                # curent input line
@@ -168,6 +167,9 @@ sub command_init
    @command{console}       = sub { return cmd_console(@_);                 };
    @command{utf8}          = sub { return cmd_utf8(@_);                    };
    @command{fansi}         = sub { return cmd_fansi(@_);                   };
+   @command{input_size}    = sub { return cmd_input_size(@_);              };
+   @command{isize}         = sub { return cmd_input_size(@_);              };
+   @command{perl}          = sub { return cmd_perl(@_);                    };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -2252,7 +2254,7 @@ sub input_y
 #
 sub output_end
 {
-   return @state{size_x} - @state{input_size} - 1;
+   return @state{size_x} - input_size() - 1;
 }
 
 #
@@ -2281,19 +2283,25 @@ sub cache_wrap
          @state{cached}++;
       } else {
          @state{nocache}++;
+         $$cache{$world}->{$id}->{$y}->{ts} = time();     # update timestamp
       }
       return $$cache{$world}->{$id}->{$y}->{txt};
    }
 }
 
+#
+# wrap_garbage_collect
+#    Look at the cache for wrapped lines and delete any wrapped text
+#    that haven't been used in over 15 minutes.
+#
 sub wrap_garbage_collect
 {
    @state{cache} = {} if !defined @state{cache};
    my $cache = @state{cache};
    for my $w (keys %$cache) {
-      for my $id (keys @{$$cache{$w}}) {
-         for my $y (keys @{$$cache{$w}->{$id}}) {
-            if(time() - $$cache{$w}->{$id}->{$y}->{ts} > 300) {
+      for my $id (keys %{$$cache{$w}}) {
+         for my $y (keys %{$$cache{$w}->{$id}}) {
+            if(time() - $$cache{$w}->{$id}->{$y}->{ts} > 900) {
                delete @$cache{$w}->{$id}->{$y};
             }
          }
@@ -2456,14 +2464,14 @@ sub redraw_input_new
    if(is_console($conn)) {
       update_scroll_region("input",1);
       xy(input_start(),1,1);
-      for(my $pos = $#input;$pos >= 0 && $#out < $state{input_size}-1;$pos--) {
+      for(my $pos = $#input;$pos >= 0 && $#out < input_size() -1;$pos--){
          my $end = input_lines($pos);
          if($end eq 0) {
              push(@out,"");
          } else {
             for my $i (reverse 1 .. $end) {
                push(@out,input_line($i,$pos));
-               last if $#out >= @state{input_size}-1;
+               last if $#out >= input_size()-1;
             }
          }
       }
@@ -2484,8 +2492,7 @@ sub redraw_input
       update_scroll_region("input",1);
       xy(input_start(),1,1);
       my $start = @state{input_offset}+1;
-      my $end = $start + @state{input_size} - 1;
-#      loggit("LINES: '%s'\n",input_lines());
+      my $end = $start + input_size() - 1;
       for my $i ($start .. $end) {
          printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
       }
@@ -2759,30 +2766,24 @@ sub key_ctl_u
 
 #
 # key_ctl_w
-#    Delete the last word typed.
+#    Delete the last word before the cursor
 #
 sub key_ctl_w
 {
    my $count = 0;
-   my $found = 0;
+   my $i;
 
-#   loggit("control_w: pressed: '%s'",@state{line_pos});
-   for(my $i = @state{line_pos};$i >= 0;$i--) {
-      if(@input[-1]->[$i] ne " ") {
-         $count++;
-         if(@input[-1]->[$i] ne undef) {
-            $found = 1;
-         }
-      } elsif(@input[-1]->[$i] eq " " && !$found) {
-         $count++;
-      } else {
-         last;
-      }
+   # delete any initial spaces
+   for($i = @state{line_pos}-1;$i >= 0 && @input[-1]->[$i] eq " ";$i--) {
+      key_delete();
    }
-   for my $i (2 .. $count) {
+
+   # delete any non-spaces after the spaces
+   for(;$i >= 0 && @input[-1]->[$i] ne " ";$i--) {
       key_delete();
    }
 }
+
 
 #
 # key_escape
@@ -2811,7 +2812,7 @@ sub out
 
 #      loggit("$world> %s",$msg);
       my $sock = @socket{$world}->{sock};
-      printf($sock "%s\n",$msg);
+      printf($sock "%s",$msg);
 
       # keep track of last send time for sending keepalives
       @socket{$world}->{last_send} = time();
@@ -2846,13 +2847,12 @@ sub key_return
    } elsif(no_world()) {
      # do nothing
    } elsif(defined @socket{@state{world}}->{sock}) {
-#      loggit("OUT: \"%s\"\n",$input);
       out(@state{world},"%s\n",$input);
    }
    @state{input_pos} = -1;                        # reset keyboard history pos
    push(@input,[]);
    @state{line_pos} = 0;
-   @state{buffer_pos}++ if(@state{buffer_pos} < @state{input_size});
+   @state{buffer_pos}++ if(@state{buffer_pos} < input_size());
    delete @state{input_offset};
 
    # just entered input, don't be so quick to show the more
@@ -2868,9 +2868,17 @@ sub input_lines
 {
     my $pos = shift;
     $pos = -1 unless $pos;
+    my $chars;
 
-    my $result = sprintf("%d",($#{@input[$pos]} + 1) / (@state{size_y} - 1));
-    return $result + 1 if(($#{@input[$pos]} + 1) % (@state{size_y} - 1) >= 1);
+    # there may only be X characters but the cursor might be one past it.
+    if(@state{line_pos} > $#{@input[$pos]}) {
+       $chars = @state{line_pos};
+    } else {
+       $chars = $#{@input[$pos]};
+    }
+
+    my $result = sprintf("%d",($chars + 1) / (@state{size_y} - 1));
+    return $result + 1 if(($chars + 1) % (@state{size_y} - 1) >= 1);
     return $result;
 }
 
@@ -2881,7 +2889,10 @@ sub input_on_line
     return $result;
 }
 
-
+#
+# key_delete
+#    Handle when the user presses the delete key.
+#
 sub key_delete
 {
    my $ch = shift;
@@ -2892,17 +2903,23 @@ sub key_delete
    if(@state{line_pos} < 1) {                        # nothing left to delete
       return;
    } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
-      splice(@{@input[-1]},@state{line_pos}-1,1);
-      xy(input_x(),input_y()-1);
+      splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
+
+      xy(input_x(),input_y()-1); # move
       printf("\033[P");
       @state{line_pos}--;
-      xy(input_x(),input_y());
      
-      for my $i ((input_on_line()+1) .. input_lines()) {
-         xy(input_start() + $i - 2,79);
-         printf("%s",@input[-1]->[(@state{size_y}-1) * ($i-1) - 1]);
-         xy(input_x() + $i - 1,0);
-         printf("\033[P");
+      # delete character from the begining of each line after the cursor
+      # and print the deleted character at the end of the previous line
+      # to simulate characters scrolling onto the next line.
+      for my $i (input_on_line() .. (input_size() - 1)) {
+         my $pos = (@state{size_y} - 1) * $i - 1;
+         if($i != 0 && $#{@input[-1]} >= $pos) {
+             xy(input_start() + $i - 1,79);
+             printf("%s",@input[-1]->[$pos]);
+             xy(input_start() + $i,0);
+             printf("\033[P");
+         }
       }
       xy(input_x(),input_y());
    } elsif(@state{line_pos} >= 1) {                           # delete at EOL
@@ -2934,7 +2951,7 @@ sub make_string_bold
    for my $ch (split('',$txt)) {
 
       # determine if character would be off the screen, if so done.
-      if($i >= ((@state{size_y}-1) * @state{input_size}) + 
+      if($i >= ((@state{size_y}-1) * input_size()) + 
                (@state{input_offset} * (@state{size_y}-1))) {
          last;
       }
@@ -2961,15 +2978,16 @@ sub key_default
    return if !console();
    update_scroll_region("input");
 
+   # spell checker code
    if($ch eq " " && module_enabled("Text::Aspell")) {
       if(substr(join('',@{@input[-1]}),0,@state{line_pos}) =~ 
-            /(^| |^:|^"|^@)([a-zA-Z']+)(\s*)$/) {
+            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
-             make_string_bold("$2$3",1);
+             make_string_bold("$2$3$4",1);
              @state{spelling_error} = 1;
          } elsif(@state{spelling_error} == 1) {  # this will not unbold every
-             make_string_bold("$2$3",0);              # thing, improve later?
+             make_string_bold("$2$3$4",0);              # thing, improve later?
              @state{spelling_error} = 0;
          }
       }
@@ -2983,7 +3001,7 @@ sub key_default
    for my $i (@state{line_pos} .. $#{@input[-1]}) {
 
       # determine if character would be off the screen, if so done.
-      if($i >= ((@state{size_y}-1) * @state{input_size}) + 
+      if($i >= ((@state{size_y}-1) * input_size()) + 
                (@state{input_offset} * (@state{size_y}-1))) {
          last;
       }
@@ -3000,13 +3018,7 @@ sub key_default
 
    # if the input has gotten bigger then the input window, send a return now
    # plus the next line.
-#   if(($#{@input[-1]} + 1) % (@state{size_y}-1) == 0) {
-#      loggit("Doing return");
-#      printf("\n");
-#   }
-   if(($#{@input[-1]} + 1 >= @state{input_size} * (@state{size_y}-1)) &&
-      @state{line_pos} % (@state{size_y} - 1) == 0) {
-#      loggit("return - sent");
+   if(input_lines() - @state{input_offset} > input_size()) {
       printf("\n%s",input_line(input_on_line()+1));
       @state{input_offset}++;
    }
@@ -3040,12 +3052,14 @@ sub key_ctl_e
 {
    my ($conn,$key) = @_;
 
+   input_lines();
+   return;
    my $original = @state{input_offset};
 
    # determine the number of lines that aren't being shown for offset
-   if($#{@input[-1]} / (@state{size_y} - 1)+1 > @state{input_size}) {
+   if($#{@input[-1]} / (@state{size_y} - 1)+1 > input_size()) {
       @state{input_offset} = sprintf("%d",$#{@input[-1]} / (@state{size_y}
-          - 1) + 1 - @state{input_size});
+          - 1) + 1 - input_size());
    } else {
       @state{input_offset} = 0;
    }
@@ -3057,6 +3071,16 @@ sub key_ctl_e
       xy(input_x(),input_y());
    }
 }
+
+#
+# input_size
+#    Shortcut for stored variable with default to a size of 2.
+#
+sub input_size
+{
+   return nvl(@state{p_input_size},2);
+}
+
 
 
 #
@@ -3072,12 +3096,12 @@ sub key_left
       input_x() == input_start()) {
       @state{input_offset}--;
       for my $i (input_on_line() .. input_lines()) {
-         last if(@state{input_size} < $i - @state{input_offset});
+         last if(input_size() < $i - @state{input_offset});
          my $start = ($i-1) * (@state{size_y} -1);
          my $stop = $start + @state{size_y}-2;
 
          # only draw lines that are currently visible.
-         if(@state{input_size} < $i + 1 - @state{input_offset}) {
+         if(input_size() < $i + 1 - @state{input_offset}) {
             $ret = undef;                          # last line? no return
          }
          printf("\033[J%s$ret",join('',@{@input[-1]}[$start .. $stop]));
@@ -3088,6 +3112,7 @@ sub key_left
       xy(input_x(),input_y());
    }
 }
+
 
 #
 # input_line
@@ -3320,7 +3345,7 @@ sub update_scroll_region
    my ($start,$stop);
 
    if($region eq "input") {                           # supported region input
-      $start = @state{size_x} - @state{input_size} + 1;
+      $start = @state{size_x} - input_size() + 1;
       $stop  = @state{size_x};
    } elsif($region eq "output") {                    # supported region output
       $start = 1;
@@ -3331,7 +3356,6 @@ sub update_scroll_region
 
    if(@state{region} ne "$start,$stop" || $force) {           # do the work
       printf("\033[%s;%sr",$start,$stop);
-#      loggit("USR[$region]: $start,$stop");
       @state{region} = "$start,$stop";
    }
 }
@@ -3511,7 +3535,7 @@ sub draw_bar
 
       my $more = more_bar(@state{world});
       #---
-      xy(@state{size_x} - @state{input_size},0);
+      xy(@state{size_x} - input_size(),0);
       printf("%s%s_%s%s_%s_%s_%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
@@ -3593,7 +3617,7 @@ sub ws_all
 #
 sub input_start
 {
-   return @state{size_x} - @state{input_size} + 1;
+   return @state{size_x} - input_size() + 1;
 }
 
 #
@@ -3682,7 +3706,7 @@ sub input_clear
 {
    return if !console();
    update_scroll_region("input");
-   my $start = @state{size_x} - @state{input_size} + 1;
+   my $start = @state{size_x} - input_size() + 1;
    xy($start,0);
    for my $i ($start .. @state{size_y}) {
       printf("\033[K\n");
@@ -3740,6 +3764,38 @@ sub single
     my $txt = shift;
     $txt =~ s/\r|\n//g;
     return $txt;
+}
+
+sub cmd_perl
+{
+   my ($conn,$txt) = @_;
+#-# ------------------------------------------------------------------------
+#-# /perl <command>
+#-#
+#-#      Runs the specified command directly via eval(); The <command> 
+#-#      needs to be valid perl command(s).    
+#-#
+#-# ------------------------------------------------------------------------
+   eval($txt);
+}
+
+sub cmd_input_size
+{
+#-# ------------------------------------------------------------------------
+#-# /input_size <number>
+#-#
+#-#      Sets the number of lines to use in the input window on the
+#-#      console.
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+
+   if($txt =~ /^\s*(\d+)\s*$/) {
+      save("p_input_size",$1);
+      redraw_screen(@state{world},1);
+   } else {
+      echo("%% usage: /input_size <size>");
+   }
 }
 
 sub cmd_debug
@@ -3830,9 +3886,20 @@ sub cmd_set
 #-#
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
+   my $count = 0;
 
-   echo("cache: %s",@state{cached});
-   echo("nocache: %s",@state{nocache});
+   echo("# cache hits      %s",@state{cached});
+   echo("# cache misses    %s",@state{nocache});
+
+   if(defined @state{cache}) {
+      my $cache = @state{cache};
+      for my $w (keys %$cache) {
+         for my $id (keys %{$$cache{$w}}) {
+            $count += scalar keys %{$$cache{$w}->{$id}}
+         }
+      }
+      echo("# cache_size      %s",$count);
+   }
    for my $key (keys %state) {
       if($key =~ /^p_/) {
          echo("# %-15s %s",$',@state{$key});
@@ -4113,7 +4180,7 @@ sub cmd_addworld
 
    if(trim(@field[0]) =~ /^p_/) {
       echo("%% World names may not start with 'p_' at this time");
-   } elsif($#field == 1) {
+   } elsif($#field == 2) {
       @address{@field[0]} = { host => @field[1],
                               port => @field[2],
                               name => @field[0],           # preserve case
@@ -5204,7 +5271,7 @@ sub tick
       if(defined @socket{$w}->{sock} && 
          time()-@socket{$w}->{last_send} > 300 &&
          time()-@socket{$w}->{last_recv} > 300) {
-         if(defined @address{$w}->{keepalive}) {
+         if(defined @address{$w} && defined @address{$w}->{keepalive}) {
             out($w,@address{$w}->{keepalive} . "\n");
          } else {
             out($w,"@@ idle\n");
@@ -5371,6 +5438,7 @@ sub sig_winch
    }
 }
 
+load_modules();
 
 for my $i (0 .. $#ARGV) {
    if(@ARGV[$i] eq "--noconsole") {
@@ -5386,7 +5454,6 @@ for my $i (0 .. $#ARGV) {
    }
 }
 
-load_modules();
 ws_init() if !console();
 listener_init();
 
