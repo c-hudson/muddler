@@ -41,7 +41,6 @@ my %http;                               # data structure for http connections
 my %http_data;                                 # store websocket client pages
 my %def;                                        # tf style define information
 my %pid;                                              # internal process list
-my $readable;
 my %telnet_ch;
 my %cache;
 my @options = qw(
@@ -186,6 +185,7 @@ sub command_init
 }
 
 sub cbreak {
+    loggit("CODE: '%s'\n",code());
     $term->setlflag($noecho);
     $term->setcc(VTIME, 1);
     $term->setattr($fd_stdin, TCSANOW);
@@ -776,7 +776,9 @@ sub socket_connect
 
    @socket{$world}->{sock} = $s;
    switch_world($conn,$world);
-   $readable->add($s);
+
+   $ws_server->{select_readable}->add( $s );
+
    @socket_lookup{$s} = $world;
    delete @socket{muddler};
 
@@ -942,52 +944,14 @@ sub socket_disconnect
 {
    my $s = shift;
 
-   $readable->remove($s);
+   $ws_server->{select_readable}->remove( $s );
    if(defined @socket_lookup{$s}) {
        delete @socket{@socket_lookup{$s}}->{sock};
        delete @socket_lookup{$s};
    }
 }
 
-#
-# socket_handle_input
-#    Look for new input and hand it off to be processed by history()
-#    function. Decoding of utf/fansi is handled here.
-#
-sub socket_handle_input
-{
-   my $buf;
 
-   my ($sockets) = IO::Select->select($readable,undef,undef,0.5);
-
-   for my $s (@$sockets) {
-      my $w = @socket_lookup{$s};
-
-      if($s eq \*STDIN) {
-         sysread($s,$buf,1);
-         key_process($buf) if(console());
-      } elsif(sysread($s,$buf,1024) <= 0) {
-          socket_disconnect($s);
-          history($w,"% Connection closed to ". name($w) . "-$s");
-      } else {
-         @socket{$w}->{last_recv} = time();
-
-         if(module_enabled("Encode")) {
-            @address{$w}->{decode} = "utf8" if !defined @address{$w}->{decode};
-            @socket{$w}->{buf}.=decode(@address{$w}->{decode}, _parse($w,$buf));
-         } else {
-            @socket{$w}->{buf}.= _parse($w,$buf);
-         }
-            
-         while(defined @socket{$w}->{sock} &&
-               @socket{$w}->{buf} =~ /\n/) {
-             history($w,$`);
-             @socket{$w}->{buf} = $';
-         }
-      }
-   }
-}
-             
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  websocket support                                                         #
@@ -1020,8 +984,7 @@ sub server_hostname
 
 sub listener_init
 {
-   $readable = IO::Select->new();
-   $readable->add(\*STDIN);
+   $ws_server->{select_readable}->add( \*STDIN );
 
    $fd_stdin = fileno(STDIN);
 
@@ -1073,16 +1036,16 @@ sub ws_init
       @state{secure} = 0;
    }
 
-   $ws_server = Net::WebSocket::Server->new(
-      listen => $ws_listen,
-      tick_period => 1,
-      on_connect => sub { my( $serv, $conn ) = @_;
-                          $conn->on( ready =>      sub{ ws_login_screen(@_); },
-                                     utf8  =>      sub{ ws_process( @_, 0 ); },
-                                     disconnect => sub{ ws_disconnect(@_);   },
-                                   );
-                        },
-      );
+#   $ws_server = Net::WebSocket::Server->new(
+#      listen => $ws_listen,
+#      tick_period => 1,
+#      on_connect => sub { my( $serv, $conn ) = @_;
+#                          $conn->on( ready =>      sub{ ws_login_screen(@_); },
+#                                     utf8  =>      sub{ ws_process( @_, 0 ); },
+#                                     disconnect => sub{ ws_disconnect(@_);   },
+#                                   );
+#                        },
+#      );
    $ws_server->{select_readable}->add($ws_listen);
    $ws_server->{select_readable}->add($http_listen);
    $ws_server->{conns} = {};
@@ -1178,7 +1141,8 @@ sub server_address
 
 sub ws_io
 {
-   my $s;
+   my $buf;
+   
 
    my ($sockets) = IO::Select->select($ws_server->{select_readable},
                                       $ws_server->{select_writeable},
@@ -1187,7 +1151,36 @@ sub ws_io
                                      );
 
    for my $sock (@$sockets) {
-      if( $sock == $ws_listen ) {
+      if($sock eq \*STDIN) {
+         sysread($sock,$buf,1);
+         key_process($buf) if(console());
+      } elsif(defined @socket_lookup{$sock}) {
+         my $w = @socket_lookup{$sock};
+
+         if(sysread($sock,$buf,1024) <= 0) {
+            socket_disconnect($sock);
+            history($w,"% Connection closed to ". name($w) . "-$sock");
+         } else {
+            @socket{$w}->{last_recv} = time();
+
+            if(module_enabled("Encode")) {
+               if(!defined @address{$w}->{decode}) {
+                  @address{$w}->{decode} = "utf8";
+               }
+               @socket{$w}->{buf} .= decode(@address{$w}->{decode},
+                                            _parse($w,$buf)
+                                           );
+            } else {
+               @socket{$w}->{buf}.= _parse($w,$buf);
+            }
+   
+            while(defined @socket{$w}->{sock} &&
+                  @socket{$w}->{buf} =~ /\n/) {
+                history($w,$`);
+                @socket{$w}->{buf} = $';
+             }
+         }
+      } elsif( $sock == $ws_listen ) {
          my $s = $ws_listen->accept or die("Couldn't accept connection");
          next unless $s;
 
@@ -1217,6 +1210,7 @@ sub ws_io
          @ws{$conn}->{port} = @state{p_port} + 1;
          @ws{$conn}->{world} = @state{world};
       } elsif($sock == $http_listen) {
+         my $s;
          eval {
             $s = $sock->accept;
          };
@@ -1236,7 +1230,6 @@ sub ws_io
          $connmeta->{lastrecv} = time;
          $connmeta->{conn}->recv();
       } else {
-         
          loggit("filehandle $sock became readable, but no handler took " .
               "responsibility for it; removing it");
          loggit("listener: $ws_listen");
@@ -1876,9 +1869,11 @@ sub more_update
 {
    my $w = shift;
 
-   
    return if(!defined @history{$w} || !more($w));
-   @socket{$w}->{more} = -1 if(pending($w) <= 0);
+   if(pending($w) <= 0) {
+      @socket{$w}->{more} = -1;
+      @socket{$w}->{more_count} = 0;
+   }
    draw_bar();
 }
 
@@ -1890,11 +1885,11 @@ sub paused
 {
    my $w = shift;
 
-   my $max = output_end() - overlap();
-
-   if(in_hist($w)) {
+   if(@state{p_more} == 0) {                       # more disabled by user
+      return 0;
+   } elsif(in_hist($w)) {
       return 1;
-   } elsif(more($w) && @socket{$w}->{more_count} > $max) {
+   } elsif(more($w) && @socket{$w}->{more_count} > output_end() - overlap()) {
       return 1;
    } else {
       return 0;
@@ -1920,6 +1915,7 @@ sub more
   } elsif(@socket{$world}->{more} >= 0) {
      if(pending($world) == 0) {
         @socket{$world}->{more} = -1;
+        @socket{$world}->{more_count} = 0;
         return 0;
      }
      return 1;
@@ -1997,6 +1993,7 @@ sub history_add
                          };
 
    if(!$gagged) {
+#      loggit("#> %s", $line);
       @socket{$world}->{pending} += 
           scalar cache_wrap(@state{world},$world,$#$array);
    }
@@ -2144,49 +2141,36 @@ sub release_pending_pagefull
    return if(!world_visible($w));
 
    more_check($conn,$w);
-   return if(in_hist($w) && paused($w));
+   return if(in_hist($w) || paused($w));
 
-   if(!@state{p_more}) {
-      $max = history_max($w);
-   } else {
-      $max = min_visible($w) - overlap();
-   }
+   # find max number of lines to show
+   $max = @state{p_more} ? (min_visible($w) - overlap()) : history_max($w);
 
-   # determine max ending point, end of buffer or X lines after more enabled
-   if(more($w) && @socket{$w}->{more} + $max - 1< history_max($w)){
-      $end = @socket{$w}->{more} + $max - 1;
-   } else {
-      $end = history_max($w);
-   }
-
-   # partial line detected, start on same lne
-   if(history_pos_partial($w) == -1) {
-   # partial line detected, start on same lne
-      $start = history_pos($w) + 1;   # prev partial line, start on same line
-      $txt_start = 0; # but at character $
-   } else {
-      $start = history_pos($w);       # prev partial line, start on same line
-      $txt_start = history_pos_partial($w);     # but at in the middle of txt
+   # determine starting point to start showing text from
+   if(history_pos_partial($w) == -1) {    # last line shown was fully shown
+      $start = history_pos($w) + 1;                    # start on next line
+      $txt_start = 0;
+   } else {                                # last line only partially shown,
+      $start = history_pos($w);                       # start where left off
+      $txt_start = history_pos_partial($w);
    }
 
    optimize_start();
    my $hash = $ws_server->{conns};
 
-   
-#   for(my $i=$start;$i <= $end && $count < $max;$i++) {
-    for(my $i=$start;@socket{$w}->{more_count} <= $max && 
+#   loggit("start=%s,more=%s,cnt=%s,max=%s,hist=%s",$start,@socket{$w}->{more},@socket{$w}->{more_count},$max,history_max($w));
+   for(my $i=$start;@socket{$w}->{more_count} <= $max && 
                      $i <= history_max($w);$i++) {
       my @list = ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
       history_pos($w,$i);                                # update history_pos
 
-      if(@history{$w}->[$i]->{gagged}) {
+      if(@history{$w}->[$i]->{gagged}) {             # ignore gagged output
          history_pos_partial($w,-1);
          next;
       }
-      # entry is read but how much of it?
-      if($#list > 0 && $count + $#list + 1 >= $max) {
-         # find how many lines can be shown.
-         my $end = $max - $count - 1;
+
+      if($#list > 0 && $count + $#list + 1 >= $max) {       # full entry will
+         my $end = $max - $count - 1;                             # *not* fit
          @socket{$w}->{more} = history_pos($w);        
 
          # since line size could vary, record how many characters were shown
@@ -2202,11 +2186,12 @@ sub release_pending_pagefull
          @socket{$w}->{pending} -= $end + 1;
          @socket{$w}->{more} = history_pos($w);        
          @socket{$w}->{more_count} += $end;
+
          more_update();
-         optimize_end();
+         optimize_end();                                    # done, clean up
          draw_bar(1);
          return;
-      } else {                                    # mark whole entry as read
+      } else {                                       # full entry can be shown
          @socket{$w}->{pending} -= $#list + 1;
          echo_world($w,
                     join("\n",@list),
@@ -2218,6 +2203,7 @@ sub release_pending_pagefull
       }
       $txt_start = 0;
    }
+
    more_update();
    optimize_end();
    draw_bar(1);
@@ -4218,7 +4204,7 @@ sub save
 
 
    # redefining a world will cause a full dump of the file
-   $append = 1 if(!defined @address{$item});
+#   $append = 1 if(!defined @address{$item});
 
    open($file,($append ? ">>" : ">") . " @ENV{HOME}/.muddler") ||
       return echo("%% Unable to open @ENV{HOME}/.muddler for writing.");
@@ -4699,12 +4685,30 @@ sub cmd_web
          for my $key (keys %http) {
             @http{$key}->{sock}->close;
          }
-         eval {
-            $http_listen->close();
-         };
          @state{web} = 0;
-         eval {
-            $ws_server->shutdown();
+         eval { # manually shutdown http/websock. Calling websock's
+                # way will shut everything down. This is good for their
+                # code but not ours.
+            for my $s (keys %ws) { 
+               @ws{$s}->{conn}->disconnect;
+               delete @ws{$s};
+            }
+            for my $s (keys %http) {
+               @http{$s}->{sock}->close();
+               delete @http{$s};
+            }
+
+            if($ws_listen ne undef) {
+               $ws_server->{select_readable}->remove($ws_listen);
+               $ws_listen->shutdown(2);
+               $ws_listen = undef;
+            }
+
+            if($http_listen ne undef) {
+               $ws_server->{select_readable}->remove($http_listen);
+               $http_listen->shutdown(2);
+               $http_listen = undef;
+            }
          };
       }
    }
@@ -5317,6 +5321,17 @@ sub read_file
 #
 sub muddler_init
 {
+   $ws_server = Net::WebSocket::Server->new(
+      tick_period => 1,
+      on_connect => sub { my( $serv, $conn ) = @_;
+                          $conn->on( ready =>      sub{ ws_login_screen(@_); },
+                                     utf8  =>      sub{ ws_process( @_, 0 ); },
+                                     disconnect => sub{ ws_disconnect(@_);   },
+                                   );
+                        },
+      );
+   listener_init();
+
    # for temporay viewport for output before a connected world
    push(@input,[]);
    @state{telnet_mode} = "normal";
@@ -5393,7 +5408,7 @@ sub muddler
    };
    alarm(15);
 
-   socket_handle_input();
+#   socket_handle_input();
    ws_io();
 #   key_process(ReadKey(0.04));
    if($@) {
@@ -5419,6 +5434,23 @@ sub sig_hup
    delete @pid{keys %pid};
    reload_code();
 }
+
+#
+# sig_int
+#   Catch control-c without exiting?
+#
+$SIG{'INT'} = sub { sig_int };
+
+sub sig_int
+{
+    if(defined @state{ctl_c} && time() - @state{ctl_c} < 30) {
+       exit(1);
+    } else {
+       echo("Warning: A Control-C was recieved. Two are needed to exit.");
+       @state{ctl_c} = time();
+    }
+}
+
 
 #
 # sig_winch
@@ -5455,8 +5487,6 @@ for my $i (0 .. $#ARGV) {
 }
 
 ws_init() if !console();
-listener_init();
-
 muddler_init();
 
 if(defined @state{modules}) {
