@@ -18,7 +18,7 @@ use IO::Socket;
 use utf8;
 use POSIX;
 use strict;
-use IO::Socket::SSL;
+# use IO::Socket::SSL;
 binmode(STDOUT, ":utf8");
 my ($term, $oterm, $echo, $noecho, $fd_stdin);     # required for cbreak/etc
 
@@ -185,7 +185,6 @@ sub command_init
 }
 
 sub cbreak {
-    loggit("CODE: '%s'\n",code());
     $term->setlflag($noecho);
     $term->setcc(VTIME, 1);
     $term->setattr($fd_stdin, TCSANOW);
@@ -1139,7 +1138,12 @@ sub server_address
 }
 
 
-sub ws_io
+#
+# io
+#    Handle any input / output such as http, https, websockets, secure
+#    websockets, and keyboard.
+#
+sub io
 {
    my $buf;
    
@@ -1147,7 +1151,7 @@ sub ws_io
    my ($sockets) = IO::Select->select($ws_server->{select_readable},
                                       $ws_server->{select_writeable},
                                       undef,
-                                      0
+                                      1
                                      );
 
    for my $sock (@$sockets) {
@@ -1158,7 +1162,7 @@ sub ws_io
          my $w = @socket_lookup{$sock};
 
          if(sysread($sock,$buf,1024) <= 0) {
-            socket_disconnect($sock);
+            socket_disconnect($sock);                       # socket closed
             history($w,"% Connection closed to ". name($w) . "-$sock");
          } else {
             @socket{$w}->{last_recv} = time();
@@ -1184,14 +1188,14 @@ sub ws_io
          my $s = $ws_listen->accept or die("Couldn't accept connection");
          next unless $s;
 
-         if(@state{secure}) {
-             IO::Socket::SSL->start_SSL(
-                 $s,
-                 SSL_server    => 1,
-                 SSL_cert_file => @state{p_cert},
-                 SSL_key_file  =>  @state{p_key},
-             ) or die "failed to ssl handshake: $SSL_ERROR";
-         }
+#         if(@state{secure} && 1 == 2) {
+#             IO::Socket::SSL->start_SSL(
+#                 $s,
+#                 SSL_server    => 1,
+#                 SSL_cert_file => @state{p_cert},
+#                 SSL_key_file  =>  @state{p_key},
+#             ) or die "failed to ssl handshake";
+#         }
 
          my $conn = new Net::WebSocket::Server::Connection(
                     socket => $s, server => $ws_server);
@@ -1506,7 +1510,8 @@ sub ws_process
       # do_cmd runs the command.
    } elsif(no_world()) {
      # do nothing
-   } elsif(defined @socket{world($conn)}->{sock}) {
+   } elsif(defined @socket{world($conn)} && 
+           defined @socket{world($conn)}->{sock}) {
       out(world($conn),"%s\n",$input);
    }
 #   unshift(@input,@state{line});                        # store keyboard history
@@ -1762,6 +1767,8 @@ sub echo
 {
    my $fmt = shift;
    my $msg = sprintf("$fmt",@_);
+
+   $msg =~ s/([\n\r]+)$//;
  
    ws_all("t",$msg);
    echo_console("%s",$msg);
@@ -2313,7 +2320,7 @@ sub ansi_wrap
    $y = @state{size_y} if($y eq undef);                  # default to console
 
    for my $i (0 .. $#{$$str{ch}}) {
-      if(ansi_char($str,$i) =~ /[ ,\/\\]/ && $i-$start <= $y - 1) {
+      if(ansi_char($str,$i) =~ /[ ,\/\\\-\.]/ && $i-$start <= $y - 1) {
          $len = $i + 1;                           # scan for breaking points
       }
 
@@ -2702,6 +2709,8 @@ sub key_ctl_l
 
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
+   } else {
+      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
    pending_fix(world($conn));
    redraw_screen($conn,1);
@@ -3301,6 +3310,14 @@ sub key_esc_w
    # try next active world
    my $new = (keys %{@state{activity}})[0];
 
+   if($new eq undef) {
+      if(is_web($conn)) {
+         switch_world($conn,@ws{$conn}->{world_last});
+      } else {
+         switch_world($conn,@state{World_last});
+      }
+   }
+
    # fall back to previous world the client was showing.
 
    if($new eq undef) {                    # use last world if no activity
@@ -3406,6 +3423,11 @@ sub key_process
       } elsif(defined @state{multikey}) {
          &{@key{multi}}(@state{world},$ch);
       } else {
+         # clear suggestion list on new character.
+         if(defined @state{suggest}) {
+            delete @state{suggest};
+            delete @state{suggest_pos};
+         }
          &{@key{def}}(@state{world},$ch);
       }
    }
@@ -3642,7 +3664,7 @@ sub loggit
    my ($fmt,@args) = @_;
    my $file;
 
-   die("no debug - " . code()) if !@state{p_debug};
+   #   die("no debug - " . code()) if !@state{p_debug};
    return if !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
@@ -3707,7 +3729,50 @@ sub input_clear
 
 sub key_esc_q
 {
+   my ($conn,$txt) = @_;
    my ($spell, $found);
+
+   if(module_enabled("Text::Aspell")) {
+      if(substr(join('',@{@input[-1]}),0,@state{line_pos}) =~ 
+            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
+
+         if(!defined @state{suggest}) {                   # no saved results
+            @state{speller} = Text::Aspell->new if(!defined @state{speller});
+            if(!@state{speller}->check($2)) {             # not spelled right
+               @state{suggest} = [ (@state{speller}->suggest($2))[0.. 4] ];
+           
+               @state{suggest_pos} = 0;
+               echo("%s : %s",$2,join(", ",@{@state{suggest}})); # show results
+
+               if($#{@state{suggest}} == -1) {               # no suggestions
+                  delete @state{suggest};
+                  return;
+               } else {
+                  push(@{@state{suggest}},$2);    # add original word to list
+               }
+
+               @state{suggest_pos} = $#{@state{suggest}};
+            }
+            return;
+         }
+
+         for my $i (1 .. length($2 . $3)) {
+            key_delete();
+         }
+
+         @state{suggest_pos}++;
+         if(@state{suggest_pos} > $#{@state{suggest}}) {
+            @state{suggest_pos} = 0;
+         }
+
+         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}] . $3)) {
+            key_default($conn,$ch);
+         }
+      }
+   }
+
+   return;
+
    my $input = join('',@{@input[-1]});
 
    $input =~ s/[^a-zA-Z0-9 ]+//g;
@@ -4997,9 +5062,9 @@ sub cmd_world
 #----------------------------------------------------------------------------#
 
 END {
-  if(module_enabled("Term::ReadKey")) {
+	#  if(module_enabled("Term::ReadKey")) {
      revert_console();
-  }
+     #  }
 }
 
 sub center
@@ -5348,8 +5413,8 @@ sub muddler_init
 
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
-   } elsif(!defined @state{size_y} && !defined @state{size_x}) {
-      (@state{size_y},@state{size_x}) = (80,24);
+   } else {
+      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
 
    @state{chksum} = get_checksums();
@@ -5408,12 +5473,8 @@ sub muddler
    };
    alarm(15);
 
-#   socket_handle_input();
-   ws_io();
-#   key_process(ReadKey(0.04));
-   if($@) {
-      loggit("Crash? $@");
-   }
+   io();
+   loggit("Crash? $@") if($@);
    draw_bar();
 
    if(time() - @state{tick_last} >= 1) {
@@ -5439,7 +5500,7 @@ sub sig_hup
 # sig_int
 #   Catch control-c without exiting?
 #
-$SIG{'INT'} = sub { sig_int };
+$SIG{'INT'} = sub { sig_int() };
 
 sub sig_int
 {
@@ -5463,11 +5524,13 @@ sub sig_winch
 {
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
-      for my $key (keys %socket) {
-         pending_fix($key);
-      }
-      redraw_screen(@state{world},1);
+   } else {
+      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
+   for my $key (keys %socket) {
+      pending_fix($key);
+   }
+   redraw_screen(@state{world},1);
 }
 
 load_modules();
@@ -8049,7 +8112,7 @@ START: muddler_client.html
    <script type="text/javascript">
      var serverAddress = window.location.hostname;
      var serverSSL = window.location.protocol == "https:";
-     var serverProto = serverSSL ? "wss://" : "wss://";
+     var serverProto = serverSSL ? "wss://" : "ws://";
      var serverPort = serverSSL ? '9001' : '9001';
      
      var customUrl = window.location.search.substring(1) ? window.location.search.substring(1) : serverAddress + ":" + serverPort;

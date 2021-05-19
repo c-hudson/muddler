@@ -105,6 +105,9 @@ This screenshot is showing the two interfaces to muddler. In the background is m
       Keys                 INTERFACE   DESCRIPTION
       Arrow Right & Left : Both      : Move one character in the buffer
       Arrow Up and Down  : Both      : Cycle to the next connected world.
+      Escape-q           : Console   : list 5 spelling suggestions for 
+                                       word before cursor, then cycle through
+                                       them if Escape-q is pressed again.
       Escape-w           : Both      : Move to next active world
       Control-w          : Both      : Delete previous word [console only]
       Control-p          : Both      : Move down in the keyboard history
