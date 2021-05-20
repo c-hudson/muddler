@@ -2334,7 +2334,7 @@ sub ansi_wrap
    }
 
    # add left overs.
-   push(@out,ansi_substr($str,$start)) if($start < $#{$$str{ch}});
+   push(@out,ansi_substr($str,$start)) if($start <= $#{$$str{ch}});
    return @out;
 }
 
