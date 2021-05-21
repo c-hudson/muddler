@@ -227,7 +227,7 @@ sub load_modules
    my $type;
 
    my %mod = (
-      'Term::ReadKey'          => { fatal => 0,
+      'Term::ReadKey'          => { fatal => -1,
                                     fix => "apt install libterm-readkey-perl",
                                     for => 'screen size detection'
                                   },
@@ -271,20 +271,22 @@ sub load_modules
          eval "use $key; 1;" or @state{"mod_$key"} = -1;
 
          if(@state{"mod_$key"} == -1) {
-            if(@mod{$key}->{fatal}) {
-               $type = "FATAL";
-               @state{fatal} = 1;
-            } else {
-               $type = "WARNING";
+            if(@mod{$key}->{fatal} != -1) {
+               if(@mod{$key}->{fatal}) {
+                  $type = "FATAL";
+                  @state{fatal} = 1;
+               } else {
+                  $type = "WARNING";
+               }
+               push(@{@state{modules}},sprintf("%s: %s module is " .
+                  "missing for %s.\n" .
+                  "         Fix?   %s",
+                  $type,
+                  $key,
+                  @mod{$key}->{for},
+                  @mod{$key}->{fix}
+                 ));
             }
-            push(@{@state{modules}},sprintf("%s: %s module is " .
-               "missing for %s.\n" .
-               "         Fix?   %s",
-               $type,
-               $key,
-               @mod{$key}->{for},
-               @mod{$key}->{fix}
-              ));
          }
       }
    }
@@ -2710,7 +2712,8 @@ sub key_ctl_l
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
    } else {
-      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
+      (@state{size_x},@state{size_y}) = 
+         `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
    pending_fix(world($conn));
    redraw_screen($conn,1);
@@ -5386,15 +5389,18 @@ sub read_file
 #
 sub muddler_init
 {
-   $ws_server = Net::WebSocket::Server->new(
-      tick_period => 1,
-      on_connect => sub { my( $serv, $conn ) = @_;
-                          $conn->on( ready =>      sub{ ws_login_screen(@_); },
-                                     utf8  =>      sub{ ws_process( @_, 0 ); },
-                                     disconnect => sub{ ws_disconnect(@_);   },
-                                   );
-                        },
-      );
+   if(module_enabled("Net::WebSocket::Server")) {
+      $ws_server = Net::WebSocket::Server->new(
+         tick_period => 1,
+         on_connect => 
+            sub { my( $serv, $conn ) = @_;
+                  $conn->on( ready =>      sub{ ws_login_screen(@_); },
+                             utf8  =>      sub{ ws_process( @_, 0 ); },
+                             disconnect => sub{ ws_disconnect(@_);   },
+                           );
+             },
+         );
+   }
    listener_init();
 
    # for temporay viewport for output before a connected world
@@ -5414,7 +5420,8 @@ sub muddler_init
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
    } else {
-      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
+      (@state{size_x},@state{size_y}) = 
+          `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
 
    @state{chksum} = get_checksums();
@@ -5525,7 +5532,8 @@ sub sig_winch
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
    } else {
-      (@state{size_y},@state{size_y}) = `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
+      (@state{size_x},@state{size_y}) =
+          `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
    for my $key (keys %socket) {
       pending_fix($key);
@@ -5550,6 +5558,12 @@ for my $i (0 .. $#ARGV) {
 }
 
 ws_init() if !console();
+
+if(!module_enabled("Net::WebSocket::Server")) {
+   $ws_server = {};
+   $ws_server->{select_readable} = IO::Select->new();
+}
+
 muddler_init();
 
 if(defined @state{modules}) {
