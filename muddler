@@ -18,9 +18,10 @@ use IO::Socket;
 use utf8;
 use POSIX;
 use strict;
-# use IO::Socket::SSL;
+use IO::Socket::SSL;
+use IO::Socket::Timeout;
 binmode(STDOUT, ":utf8");
-my ($term, $oterm, $echo, $noecho, $fd_stdin);     # required for cbreak/etc
+my ($term, $oterm, $echo, $noecho, $fd_stdin, $ctx);     # required for cbreak/etc
 
 # use Monitor qw(monitor);
 
@@ -227,10 +228,10 @@ sub load_modules
    my $type;
 
    my %mod = (
-      'Term::ReadKey'          => { fatal => -1,
-                                    fix => "apt install libterm-readkey-perl",
-                                    for => 'screen size detection'
-                                  },
+#      'Term::ReadKey'          => { fatal => -1,
+#                                    fix => "apt install libterm-readkey-perl",
+#                                    for => 'screen size detection'
+#                                  },
       'Net::WebSocket::Server' => { fatal => 0,
                                     fix => "perl -MCPAN -e \"install " .
                                            "Net::WebSocket::Server\"",
@@ -1008,12 +1009,11 @@ sub ws_init
 
    
    if(use_secure()) {
-      $http_listen = IO::Socket::SSL->new( LocalPort     => @state{p_port},
-                                           Listen        => 1,
-                                           Reuse         => 1,
-                                           SSL_cert_file => @state{p_cert},
-                                           SSL_key_file  => @state{p_key},
-                                         )
+      $http_listen = IO::Socket::SSL->can_ipv6->new( LocalPort =>@state{p_port},
+                                                     Listen    => 5,
+                                                     Reuse     => 1,
+                                                     timeout   => .1,
+                                                   )
          or die "failed to set up httpd listener: $!";
       $ws_listen = IO::Socket::SSL->new(Listen             => 5,
                                         LocalPort          => @state{p_port}+1,
@@ -1022,6 +1022,19 @@ sub ws_init
                                         SSL_cert_file      => @state{p_cert},
                                         SSL_key_file       => @state{p_key},
       ) or die "failed to ws_listen: $!";
+      IO::Socket::Timeout->enable_timeouts_on($ws_listen);
+      IO::Socket::Timeout->enable_timeouts_on($http_listen);
+      $ws_listen->read_timeout(.5);
+      $ws_listen->write_timeout(.5);
+      $http_listen->read_timeout(.5);
+      $http_listen->write_timeout(.5);
+
+      $ctx = IO::Socket::SSL::SSL_Context->new(
+          SSL_server => 1,
+          SSL_cert_file => 'cert.pem',
+          SSL_key_file  => 'key.pem',
+          SSL_verify_mode => 0x00,  #SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
+          ) or die "cannot create context: $SSL_ERROR";
       @state{secure} = 1;
    } else {
       $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
@@ -1190,14 +1203,17 @@ sub io
          my $s = $ws_listen->accept or die("Couldn't accept connection");
          next unless $s;
 
-#         if(@state{secure} && 1 == 2) {
-#             IO::Socket::SSL->start_SSL(
-#                 $s,
-#                 SSL_server    => 1,
-#                 SSL_cert_file => @state{p_cert},
-#                 SSL_key_file  =>  @state{p_key},
-#             ) or die "failed to ssl handshake";
-#         }
+         if(@state{secure}) {
+             IO::Socket::SSL->start_SSL(
+                 $s,
+                 SSL_server    => 1,
+                 SSL_reuse_ctx => $ctx,
+             ) or do {
+                loggit("ssl handshake failed: $SSL_ERROR");
+                $s->close;
+                return;
+             };
+         }
 
          my $conn = new Net::WebSocket::Server::Connection(
                     socket => $s, server => $ws_server);
@@ -1221,7 +1237,20 @@ sub io
             $s = $sock->accept;
          };
          next unless $s;           # wrong type of connection http to https?
-         
+
+         $s->autoflush(1);
+
+         if(@state{secure}) {
+             IO::Socket::SSL->start_SSL(
+                 $s,
+                 SSL_server    => 1,
+                 SSL_reuse_ctx => $ctx,
+             ) or do {
+                loggit("ssl handshake failed: $SSL_ERROR");
+                $s->close;
+                return;
+             };
+         }
          $ws_server->{select_readable}->add($s);
          @http{$s} = { sock    => $s,
                        data    => {},
@@ -1472,7 +1501,6 @@ sub http_reply
    http_out($s,"Content-Length: %s",length($msg));
    http_out($s,"Connection: close");
    http_out($s,"");
-#   http_out($s,"%s",$msg);
    printf({@{@http{$s}}{sock}} "%s",$msg);
    http_disconnect($s);
 }
@@ -5578,7 +5606,8 @@ if(defined @state{modules}) {
 }
 # keep the main loop small.
 while(1) {
-   eval { muddler(); };
+   # eval { muddler(); };
+   muddler();
    loggit("Fatal: $@ -> %s\n",code()) if($@);
 }
 
