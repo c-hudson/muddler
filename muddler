@@ -232,6 +232,10 @@ sub load_modules
 #                                    fix => "apt install libterm-readkey-perl",
 #                                    for => 'screen size detection'
 #                                  },
+      'Digest::MD5'            => { fatal => 0,
+                                    fix => "stand on head",
+                                    for => "caching ansi_init calls",
+                                  },
       'Net::WebSocket::Server' => { fatal => 0,
                                     fix => "perl -MCPAN -e \"install " .
                                            "Net::WebSocket::Server\"",
@@ -423,6 +427,17 @@ sub ansi_add
 sub ansi_init
 {
    my $str = shift;
+   my $digest;
+
+   if(module_enabled("Digest::MD5")) {
+      $digest = Digest::MD5::md5_hex(encode_utf8($str));
+      @state{init_cache} = {} if(!defined @state{init_cache});
+
+      if(defined @state{init_cache}->{$digest}) {
+          @state{init_cache_count}++;
+          return @state{init_cache}->{$digest};
+      }
+   }
 
    my $data = { ch => [], code => [], state  => [], snap   => [] };
 
@@ -432,6 +447,10 @@ sub ansi_init
       ansi_add($data,0,"\e[$1$2");
    }
    ansi_add($data,1,$str) if($str ne undef);
+
+   if(module_enabled("Digest::MD5")) {
+      @state{init_cache}->{$digest} = $data;
+   }
 
    return $data;
 }
@@ -530,6 +549,7 @@ sub ansi_length
    if(ref($txt) eq "HASH") {                           # already inited txt?
       $data = $txt;
    } else {
+      return length(ansi_remove($txt));
       $data = ansi_init($txt);
    }
 
@@ -785,7 +805,7 @@ sub socket_connect
    delete @socket{muddler};
 
    () = IO::Select->new($s)->can_write(.2)    # see if socket is pending
-      or @socket{$world}->{pending} = 1;
+      or @socket{$world}->{socket_pending} = 1;
 
    echo("%% Connection to %s succeeded.",$world);
    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
@@ -1723,6 +1743,7 @@ sub history_pos
    if($value ne undef) {
       @socket{$w} = {} if not defined @socket{$w};
       @socket{$w}->{history_pos} = $value;
+      delete @socket{$w}->{history_pos_partial};
    } else {
       $w = @state{world} if($w eq undef);
 
@@ -1921,12 +1942,14 @@ sub more_update
 sub paused
 {
    my $w = shift;
+   my $debug = shift;
+   $w = @state{world} if($w eq undef);
 
    if(@state{p_more} == 0) {                       # more disabled by user
       return 0;
    } elsif(in_hist($w)) {
       return 1;
-   } elsif(more($w) && @socket{$w}->{more_count} > output_end() - overlap()) {
+   } elsif(more($w) && @socket{$w}->{more_count} >= output_end() - overlap()) {
       return 1;
    } else {
       return 0;
@@ -2101,6 +2124,7 @@ sub echo_world
    if(@state{world} eq $world) {
       echo_console("%s",$console);
    } 
+#   loggit("# %s\n",$console);
 
    my $hash = $ws_server->{conns};
 
@@ -2172,8 +2196,8 @@ sub min_visible
 sub release_pending_pagefull
 {
    my ($conn,$w,$force) = @_;
-   my $count = 0;
    my ($max,$end,$start,$txt_start);
+   my $s = @socket{$w};
 
    return if(!world_visible($w));
 
@@ -2195,7 +2219,6 @@ sub release_pending_pagefull
    optimize_start();
    my $hash = $ws_server->{conns};
 
-#   loggit("start=%s,more=%s,cnt=%s,max=%s,hist=%s",$start,@socket{$w}->{more},@socket{$w}->{more_count},$max,history_max($w));
    for(my $i=$start;@socket{$w}->{more_count} <= $max && 
                      $i <= history_max($w);$i++) {
       my @list = ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},$txt_start));
@@ -2206,21 +2229,21 @@ sub release_pending_pagefull
          next;
       }
 
-      if($#list > 0 && $count + $#list + 1 >= $max) {       # full entry will
-         my $end = $max - $count - 1;                             # *not* fit
+      if($#list > 0 && $s->{more_count} + $#list + 1 >= $max) { # fullentrywill
+         my $end = $max - $s->{more_count};                       # *not* fit
          @socket{$w}->{more} = history_pos($w);        
 
          # since line size could vary, record how many characters were shown
          history_pos_partial($w,$txt_start + 
-                                ansi_length(join("",@list[0 .. $end])));
+                                ansi_length(join("",@list[0 .. ($end-1)])));
          echo_world($w,
-                    join("\n",@list[0 .. $end]),
+                    join("\n",@list[0 .. ($end-1)]),
                     ansi_substr(@history{$w}->[$i]->{txt},
                                 $txt_start,
                                 history_pos_partial()
                                )
                    );
-         @socket{$w}->{pending} -= $end + 1;
+         @socket{$w}->{pending} -= $end;
          @socket{$w}->{more} = history_pos($w);        
          @socket{$w}->{more_count} += $end;
 
@@ -2235,8 +2258,7 @@ sub release_pending_pagefull
                     ansi_substr(@history{$w}->[$i]->{txt},$txt_start)
                    );
          history_pos_partial($w,-1);
-         $count++;
-         @socket{$w}->{more_count} += $#list + 1 if(@socket{$w}->{more} >= 0);
+         @socket{$w}->{more_count} += $#list + 1 if(more($w));
       }
       $txt_start = 0;
    }
@@ -2346,6 +2368,8 @@ sub ansi_wrap
    $txt =~ s/[\n\r]+$//g;
    my $str = ansi_init($txt);
    my ($start,$last,$len,@out) = (0);
+   @state{ansi_wrap}++;
+#   loggit("wrap: '%s'\n",code());
 
    $y = @state{size_y} if($y eq undef);                  # default to console
 
@@ -2726,6 +2750,7 @@ sub key_ctl_n
 #
 sub key_ctl_r
 {
+   @state{ansi_wrap} = 0;
    reload_code();
 }
 
@@ -2775,7 +2800,7 @@ sub key_tab
          @socket{$w}->{more} = -1;
          @socket{$w}->{more_count} = 0;
       }
-      pending_fix($w);
+      #pending_fix($w);
    }
 }
 
@@ -3594,6 +3619,7 @@ sub draw_bar
       xy(input_x(),input_y());
    }
 
+
    my $hash = $ws_server->{conns};
    for my $key ( keys %$hash) {
       my $conn = $$hash{$key}->{conn};
@@ -4235,7 +4261,6 @@ sub cmd_ssl
                               ssl  => 1
                             };
    } else {
-      loggit("field: $#field");
       return cmd_help($conn,"addworld");
    }
    save(lc(@field[0]));
@@ -4287,7 +4312,6 @@ sub cmd_addworld
                               port => @field[5],
                             };
    } else {
-      loggit("field: $#field");
       return cmd_help($conn,"addworld");
    }
    save(lc(@field[0]));
