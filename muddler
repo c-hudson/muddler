@@ -99,6 +99,7 @@ sub key_init
    @key{multi}                = sub { return key_multi(@_);            };
    @key{multi_119}            = sub { return key_esc_w(@_);            };
    @key{multi_113}            = sub { return key_esc_q(@_);            };
+   @key{multi_106}            = sub { return key_esc_j(@_);            };
    @key{multi_91_53_126}      = sub { return key_pgup(@_);             };
    @key{multi_91_54_126}      = sub { return key_pgdn(@_);             };
    @key{multi_91_65}          = sub { return key_up(@_);               };
@@ -126,8 +127,8 @@ sub command_init
    @command{world}         = sub { return cmd_world(@_);                   };
    @command{quit}          = sub { return cmd_quit(@_);                    };
    @command{reload}        = sub { return cmd_reload(@_);                  };
-   @command{dc}            = sub { return cmd_dc(@_);                      };
-   @command{listsockets}   = sub { return cmd_dc(@_);                      };
+   @command{dc}            = sub { return socket_disconnect(@_);           };
+   @command{listsockets}   = sub { return cmd_listsockets(@_);             };
    @command{l}             = sub { return cmd_listsockets(@_);             };
    @command{recall}        = sub { return cmd_recall(@_);                  };
    @command{version}       = sub { return cmd_version(@_);                 };
@@ -1743,7 +1744,7 @@ sub history_pos
    if($value ne undef) {
       @socket{$w} = {} if not defined @socket{$w};
       @socket{$w}->{history_pos} = $value;
-      delete @socket{$w}->{history_pos_partial};
+      @socket{$w}->{history_pos_partial} = -1;
    } else {
       $w = @state{world} if($w eq undef);
 
@@ -2853,6 +2854,22 @@ sub key_escape
 }
 
 #
+# key_esc_j
+#    Jump to the end of the world buffer without displaying all the output
+#    Output can still be done via history or /recall.
+#
+sub key_esc_j
+{
+   my ($conn,$txt) = @_;
+
+   history_pos($conn,$#{@history{$conn}});
+   delete @socket{$conn}->{more};
+   delete @socket{$conn}->{more_count};
+   @socket{$conn}->{pending} = 0;
+   redraw_screen($conn,1);
+}
+
+#
 # out
 #    send a message out to the world with some basic error checking
 #
@@ -2940,6 +2957,7 @@ sub input_lines
 
 sub input_on_line
 {
+    loggit("On: '%s' - '%s'\n",@state{line_pos},@state{line_pos} / (@state{size_y} - 1));
     my $result = sprintf("%d",@state{line_pos} / (@state{size_y} - 1));
     return $result + 1 if(@state{line_pos} % (@state{size_y} - 1) >= 1);
     return $result;
@@ -2968,6 +2986,7 @@ sub key_delete
       # delete character from the begining of each line after the cursor
       # and print the deleted character at the end of the previous line
       # to simulate characters scrolling onto the next line.
+      loggit("START: %s .. %s\n",input_on_line(),input_size());
       for my $i (input_on_line() .. (input_size() - 1)) {
          my $pos = (@state{size_y} - 1) * $i - 1;
          if($i != 0 && $#{@input[-1]} >= $pos) {
@@ -3968,7 +3987,7 @@ sub cmd_common
    cmd_world(@state{world},"rhost");
    cmd_world(@state{world},"del");
    cmd_world(@state{world},"cavemush");
-   cmd_world(@state{world},"puggy");
+##   cmd_world(@state{world},"puggy");
    cmd_world(@state{world},"brazil");
    cmd_world(@state{world},"tz");
    cmd_world(@state{world},"iweb");
@@ -5630,8 +5649,8 @@ if(defined @state{modules}) {
 }
 # keep the main loop small.
 while(1) {
-   # eval { muddler(); };
-   muddler();
+   eval { muddler(); };
+#   muddler();
    loggit("Fatal: $@ -> %s\n",code()) if($@);
 }
 
