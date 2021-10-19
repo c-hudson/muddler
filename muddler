@@ -3870,6 +3870,50 @@ sub key_esc_q
    echo("%% No misspelled words found.") if (!$found);
 }
 
+sub key_esc_q
+{
+   my ($conn,$txt) = @_;
+   my ($spell, $found);
+
+   if(module_enabled("Text::Aspell")) {
+      if(substr(join('',@{@input[-1]}),0,@state{line_pos}) =~ 
+            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
+
+         if(!defined @state{suggest}) {                   # no saved results
+            @state{speller} = Text::Aspell->new if(!defined @state{speller});
+            if(!@state{speller}->check($2)) {             # not spelled right
+               @state{suggest} = [ (@state{speller}->suggest($2))[0.. 4] ];
+           
+               @state{suggest_pos} = 0;
+               echo("%s : %s",$2,join(", ",@{@state{suggest}})); # show results
+
+               if($#{@state{suggest}} == -1) {               # no suggestions
+                  delete @state{suggest};
+                  return;
+               } else {
+                  push(@{@state{suggest}},$2);    # add original word to list
+               }
+
+               @state{suggest_pos} = $#{@state{suggest}};
+            }
+            return;
+         }
+
+         loggit("SPELL: '$2-$3'\n");
+         for my $i (1 .. length($2 . $3)) {
+            key_delete();
+         }
+
+         @state{suggest_pos}++;
+         if(@state{suggest_pos} > $#{@state{suggest}}) {
+            @state{suggest_pos} = 0;
+         }
+
+         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}] . $3)) {
+            key_default($conn,$ch);
+         }
+      }
+   }
 #
 # glob2re
 #    Convert a global pattern into a regular expression
