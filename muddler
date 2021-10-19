@@ -127,7 +127,7 @@ sub command_init
    @command{world}         = sub { return cmd_world(@_);                   };
    @command{quit}          = sub { return cmd_quit(@_);                    };
    @command{reload}        = sub { return cmd_reload(@_);                  };
-   @command{dc}            = sub { return socket_disconnect(@_);           };
+   @command{dc}            = sub { return cmd_dc(@_);                      };
    @command{listsockets}   = sub { return cmd_listsockets(@_);             };
    @command{l}             = sub { return cmd_listsockets(@_);             };
    @command{recall}        = sub { return cmd_recall(@_);                  };
@@ -746,16 +746,24 @@ sub socket_connect
       return echo("%% Already connected to %s",$world);
    }
 
-   @history{$world} = [];
-   @socket{$world} = { name      => $world,
-                       host      => $host,
-                       port      => $port,
-                       more      => -1,
-                       more_count=> 0,
-                       last_read => -1,
-                       history_pos => -1,
-                       history_pos_partial => -1,
-                     };
+   # initialize history buffer
+   @history{$world} = [] if(!defined @history{$world});
+ 
+   if(defined @socket{$world}) { # address may have changed?
+      @socket{$world}->{host} = $host;
+      @socket{$world}->{port} = $port;
+   } else {
+      # define connection with everything that is needed.
+      @socket{$world} = { name      => $world,
+                          host      => $host,
+                          port      => $port,
+                          more      => -1,
+                          more_count=> 0,
+                          last_read => -1,
+                          history_pos => -1,
+                          history_pos_partial => -1,
+                        };
+   }
 
    if(!defined @address{$world}->{decode}) {      # default to utf8 decoding.
        @address{$world}->{decode} = "utf8";
@@ -2957,9 +2965,19 @@ sub input_lines
 
 sub input_on_line
 {
-    loggit("On: '%s' - '%s'\n",@state{line_pos},@state{line_pos} / (@state{size_y} - 1));
     my $result = sprintf("%d",@state{line_pos} / (@state{size_y} - 1));
     return $result + 1 if(@state{line_pos} % (@state{size_y} - 1) >= 1);
+    return $result;
+}
+
+#
+# max_input
+#   Max number of input lines in the keyboard buffer
+#
+sub max_input
+{
+    my $result = sprintf("%d",($#{@input[-1]}+1) / (@state{size_y} - 1));
+    return $result + 1 if(($#{@input[-1]}+1) % (@state{size_y} - 1) >= 1);
     return $result;
 }
 
@@ -2979,21 +2997,32 @@ sub key_delete
    } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
       splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
 
-      xy(input_x(),input_y()-1); # move
-      printf("\033[P");
-      @state{line_pos}--;
+      if((@state{line_pos}-1)-(@state{input_offset}*(@state{size_y} - 1))==-1){
+         key_left($ch);   # at begining of visible buffer, input window
+                          # needs to be erased and redrawn. key_left will
+                          # do this + move cursor one over. Remember splice
+                          # deleted the character as needed first.
+      } else {
+         xy(input_x(),input_y()-1); # move
+         printf("\033[P");
+         @state{line_pos}--;
      
-      # delete character from the begining of each line after the cursor
-      # and print the deleted character at the end of the previous line
-      # to simulate characters scrolling onto the next line.
-      loggit("START: %s .. %s\n",input_on_line(),input_size());
-      for my $i (input_on_line() .. (input_size() - 1)) {
-         my $pos = (@state{size_y} - 1) * $i - 1;
-         if($i != 0 && $#{@input[-1]} >= $pos) {
-             xy(input_start() + $i - 1,79);
-             printf("%s",@input[-1]->[$pos]);
-             xy(input_start() + $i,0);
-             printf("\033[P");
+         # delete character from the begining of each line after the cursor
+         # and print the deleted character at the end of the previous line
+         # to simulate characters scrolling onto the next line.
+         my $max = max_input() - @state{input_offset};
+         $max = input_end()-input_start() if($max > input_end()-input_start());
+
+         my $start = input_x() - input_start() + 1;
+      
+         for my $i ((input_x() - input_start()+1) .. $max) {
+            my $pos = (@state{size_y} - 1) * ($i + @state{input_offset}) - 1;
+            if($i != 0 && $#{@input[-1]} >= $pos) {
+                xy(input_start() + $i - 1,79);
+                printf("%s",@input[-1]->[$pos]);
+                xy(input_start() + $i,0);
+                printf("\033[P");
+            }
          }
       }
       xy(input_x(),input_y());
@@ -3837,7 +3866,7 @@ sub key_esc_q
             return;
          }
 
-         for my $i (1 .. length($2 . $3)) {
+         for my $i (1 .. length($2 . $3 . $4)) {
             key_delete();
          }
 
@@ -3846,7 +3875,7 @@ sub key_esc_q
             @state{suggest_pos} = 0;
          }
 
-         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}] . $3)) {
+         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}]."$3$4")) {
             key_default($conn,$ch);
          }
       }
@@ -3870,50 +3899,6 @@ sub key_esc_q
    echo("%% No misspelled words found.") if (!$found);
 }
 
-sub key_esc_q
-{
-   my ($conn,$txt) = @_;
-   my ($spell, $found);
-
-   if(module_enabled("Text::Aspell")) {
-      if(substr(join('',@{@input[-1]}),0,@state{line_pos}) =~ 
-            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
-
-         if(!defined @state{suggest}) {                   # no saved results
-            @state{speller} = Text::Aspell->new if(!defined @state{speller});
-            if(!@state{speller}->check($2)) {             # not spelled right
-               @state{suggest} = [ (@state{speller}->suggest($2))[0.. 4] ];
-           
-               @state{suggest_pos} = 0;
-               echo("%s : %s",$2,join(", ",@{@state{suggest}})); # show results
-
-               if($#{@state{suggest}} == -1) {               # no suggestions
-                  delete @state{suggest};
-                  return;
-               } else {
-                  push(@{@state{suggest}},$2);    # add original word to list
-               }
-
-               @state{suggest_pos} = $#{@state{suggest}};
-            }
-            return;
-         }
-
-         loggit("SPELL: '$2-$3'\n");
-         for my $i (1 .. length($2 . $3)) {
-            key_delete();
-         }
-
-         @state{suggest_pos}++;
-         if(@state{suggest_pos} > $#{@state{suggest}}) {
-            @state{suggest_pos} = 0;
-         }
-
-         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}] . $3)) {
-            key_default($conn,$ch);
-         }
-      }
-   }
 #
 # glob2re
 #    Convert a global pattern into a regular expression
@@ -3940,6 +3925,14 @@ sub single
     my $txt = shift;
     $txt =~ s/\r|\n//g;
     return $txt;
+}
+
+sub cmd_dc
+{
+   my ($conn,$txt) = @_;
+
+   history(world($conn),"% Connection closed to $conn.");
+   socket_disconnect(@socket{$conn}->{sock});
 }
 
 sub cmd_perl
