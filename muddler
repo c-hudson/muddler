@@ -18,10 +18,8 @@ use IO::Socket;
 use utf8;
 use POSIX;
 use strict;
-use IO::Socket::SSL;
-use IO::Socket::Timeout;
 binmode(STDOUT, ":utf8");
-my ($term, $oterm, $echo, $noecho, $fd_stdin, $ctx);     # required for cbreak/etc
+my ($term, $oterm, $echo, $noecho, $fd_stdin, $ctx,$SSL_ERROR); # required for cbreak/etc
 
 # use Monitor qw(monitor);
 
@@ -268,6 +266,10 @@ sub load_modules
       'Text::ParseWords'       => { fatal => 0,
                                     fix => "?",
                                     for => 'tf compatability'
+                                  },
+      'IO::Socket::Timeout'    => { fatal => 0,
+                                    fix => "?",
+                                    for => 'networking'
                                   },
    );
 
@@ -541,7 +543,7 @@ sub ansi_substr
 # ansi_length
 #    Return the length of a string without counting all those pesky escape
 #    codes.
-#
+
 sub ansi_length
 {
    my $txt = shift;
@@ -818,7 +820,13 @@ sub socket_connect
    () = IO::Select->new($s)->can_write(.2)    # see if socket is pending
       or @socket{$world}->{socket_pending} = 1;
 
-   echo("%% Connection to %s succeeded.",$world);
+   if(defined @socket{$world}->{socket_pending} &&
+      defined @socket{$world}->{socket_pending} == 1) {
+      echo("%% Connection to %s started, connection is pending.",$world);
+   } else {
+      echo("%% Connection to %s succeeded.",$world);
+   }
+
    if(!defined $$opt{l} && 
       @address{$world}->{user} && 
       defined @address{$world}->{pass}) {
@@ -1212,8 +1220,16 @@ sub io
 
          if(sysread($sock,$buf,1024) <= 0) {
             socket_disconnect($sock);                       # socket closed
-            history($w,"% Connection closed to ". name($w) . "-$sock");
+
+            if(defined @socket{$w}->{socket_pending} == 1) {
+               history($w,"% Connection timed out to ". name($w) . "-$sock");
+            } else {
+               history($w,"% Connection closed to ". name($w) . "-$sock");
+            }
          } else {
+            if(defined @socket{$w}->{socket_pending}) {
+               delete @socket{$w}->{socket_pending};
+            }
             @socket{$w}->{last_recv} = time();
 
             if(module_enabled("Encode")) {
@@ -2732,12 +2748,11 @@ sub key_ctl_p
 
    # set offset so just the end of the line is shown if the whole line is
    # not visible.
-   if(max_input() > @state{p_input_size}) {
-      @state{input_offset} = max_input() - @state{p_input_size};
+   if(max_input() > input_size()) {
+      @state{input_offset} = max_input() - input_size();
    } else {
       delete @state{input_offset};
    }
-
    @state{input_pos}--;
    @state{line_pos} = $#{@input[-1]} + 1;
    redraw_input($conn);
@@ -2767,8 +2782,8 @@ sub key_ctl_n
 
    # set offset so just the end of the line is shown if the whole line is
    # not visible.
-   if(max_input() > @state{p_input_size}) {
-      @state{input_offset} = max_input() - @state{p_input_size};
+   if(max_input() > input_size()) {
+      @state{input_offset} = max_input() - input_size();
    } else {
       delete @state{input_offset};
    }
@@ -4837,7 +4852,10 @@ sub nvl
 
 sub use_secure
 {
-   if(defined @state{p_key} && defined @state{p_cert}) {
+   # required for ssl so the socket doesn't hang too long on a non SSL connect
+   if(!module_enabled("IO::Socket::Timeout")) {
+      return 0;
+   } elsif(defined @state{p_key} && defined @state{p_cert}) {
       return 1;
    } else {
       return 0;
@@ -4861,7 +4879,8 @@ sub cmd_web
    my ($conn,$status) = @_;
 
    if(!module_enabled("Net::WebSocket::Server")) {
-      return echo("%% Web/Websocket disabled due to missing module");
+      return echo("%% Web/Websocket disabled due to missing " .
+         "Net::WebSocket::Server module");
    } elsif($status =~ /^\s*$/) {
       echo("Web Interface: %s",@state{web} ? "on" : "off");
       echo("   Protocol:      %s",use_secure() ? "https [secure]" :
@@ -5178,6 +5197,17 @@ sub cmd_world
    my ($conn,$txt) = (shift,lc(trim(shift)));
    my $opt = {};
    $txt = getopt("l",$txt,$opt);
+
+
+   if($txt =~ /^\s*([^ ]+)\s*(\d+)$/) {
+      for my $i (1 .. 100) {
+         if(!defined @address{"(Unnamed_#" . $i . ")"}) {
+            cmd_addworld($conn,"(Unnamed_#" . $i . ") $txt");
+            $txt = "(Unnamed_#" . $i . ")";
+            last;
+         }
+      }
+   }
 
    if(!defined @address{$txt}) {
       return echo("% CONNECT: no such world '%s'",$txt);
