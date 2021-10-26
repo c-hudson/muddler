@@ -3897,7 +3897,11 @@ sub key_esc_q
             @state{suggest_pos} = 0;
          }
 
+<<<<<<< HEAD
          for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}]."$3$4")){
+=======
+         for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}]."$3$4")) {
+>>>>>>> origin
             key_default($conn,$ch);
          }
       }
