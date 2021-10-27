@@ -227,10 +227,10 @@ sub load_modules
    my $type;
 
    my %mod = (
-#      'Term::ReadKey'          => { fatal => -1,
-#                                    fix => "apt install libterm-readkey-perl",
-#                                    for => 'screen size detection'
-#                                  },
+      'Term::ReadKey'          => { fatal => 0,
+                                    fix => "apt install libterm-readkey-perl",
+                                    for => 'screen size detection'
+                                  },
       'Digest::MD5'            => { fatal => 0,
                                     fix => "stand on head",
                                     for => "caching ansi_init calls",
@@ -269,7 +269,7 @@ sub load_modules
                                   },
       'IO::Socket::Timeout'    => { fatal => 0,
                                     fix => "?",
-                                    for => 'networking'
+                                    for => 'ssl websockets'
                                   },
    );
 
@@ -286,14 +286,9 @@ sub load_modules
                } else {
                   $type = "WARNING";
                }
-               push(@{@state{modules}},sprintf("%s: %s module is " .
-                  "missing for %s.\n" .
-                  "         Fix?   %s",
-                  $type,
-                  $key,
-                  @mod{$key}->{for},
-                  @mod{$key}->{fix}
-                 ));
+               
+               push(@{@state{modules}},sprintf("module %s is missing for %s.\n",
+                    $key,@mod{$key}->{for}));
             }
          }
       }
@@ -5736,7 +5731,7 @@ muddler_init();
 
 if(defined @state{modules}) {
    for my $i (0 .. $#{@state{modules}}) {
-      echo("%s",@state{modules}->[$i]);
+      echo("%s %s",(($i == 0) ? "Optional:" : (" " x 9)),@state{modules}->[$i]);
    }
 }
 # keep the main loop small.
