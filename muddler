@@ -1214,7 +1214,9 @@ sub io
          my $w = @socket_lookup{$sock};
 
          if(sysread($sock,$buf,1024) <= 0) {
-            socket_disconnect($sock);                       # socket closed
+#            if(name($w) ne "Mush") {
+               socket_disconnect($sock);                     # socket closed
+#            }
 
             if(defined @socket{$w}->{socket_pending} == 1) {
                history($w,"% Connection timed out to ". name($w) . "-$sock");
@@ -1702,6 +1704,7 @@ sub hist_pos
       return;
    } elsif($action eq "delete") {
       delete @socket{$w}->{hist_pos};
+      delete @socket{$w}->{hist_offset};
    } elsif($action ne undef) {
       @socket{$w}->{hist_pos} = $action;
       @socket{$w}->{hist_offset} += $offset;
@@ -2417,6 +2420,7 @@ sub ansi_wrap
    # fyi - $start should be started at -1 but instead its at zero which means
    # one character could be ignored if the string is one character long.
    if(($start == 0 && $start == $#{$$str{ch}}) || $start < $#{$$str{ch}}) {
+#      loggit("wraP: '%s'[%s]\n",ansi_substr($str,$start),code());
       push(@out,ansi_substr($str,$start));
    }
    return @out;
@@ -2632,8 +2636,9 @@ sub scan_history
    while($pos > 0 && $pos <= $#$hist && $count <= $size) {
       if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
          @state{hist_start} += $inc;
-         for my $line (ansi_wrap($$hist[$pos])) {
+         for my $line (ansi_wrap($$hist[$pos]->{txt})) {
             $count++;
+            next if $count > $size;
          }
       }
       $pos += $inc;
@@ -3952,6 +3957,11 @@ sub glob2re
     return "(?msix:\\A$pat\\z)";
 }
 
+#
+# single
+#    Take the input and smash it together into one line by removing any
+#    returns or linefeeds.
+#
 sub single
 {
     my $txt = shift;
@@ -3959,12 +3969,20 @@ sub single
     return $txt;
 }
 
+#
+# cmd_dc
+#   Disconnect from a the current world.
+#
 sub cmd_dc
 {
    my ($conn,$txt) = @_;
 
-   history(world($conn),"% Connection closed to $conn.");
-   socket_disconnect(@socket{$conn}->{sock});
+   if(defined @socket{$conn} && defined @socket{$conn}->{sock}) {
+      history(world($conn),"% Connection closed to $conn.");
+      socket_disconnect(@socket{$conn}->{sock});
+   } else {
+      history(world($conn),"% Connection already closed.");
+   }
 }
 
 sub cmd_perl
@@ -5063,6 +5081,23 @@ sub ts
    return sprintf("%02d:%02d@%02d/%02d",$hour,$min,$mon,$mday);
 }
 
+sub cmd_quote
+{
+   my ($conn,$txt) = @_;
+   my $w = world($conn);
+   my $fd;
+
+   if($txt =~ /^\s*!/) {
+      # command
+   } else { # file
+      open($fd,"< $txt") ||
+         return echo("%% Unable to open file '$txt' for reading.");
+      while(<$fd>) {
+         out($w,$_);
+      }
+      close($fd);
+   }
+}
 sub cmd_recall
 {
 #-# ------------------------------------------------------------------------
@@ -5504,12 +5539,11 @@ sub tick
    # been sent / recieved.
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && 
-         time()-@socket{$w}->{last_send} > 300 &&
-         time()-@socket{$w}->{last_recv} > 300) {
+         time()-@socket{$w}->{last_send} > 100) {
          if(defined @address{$w} && defined @address{$w}->{keepalive}) {
-            out($w,@address{$w}->{keepalive} . "\n");
+            out($w,@address{$w}->{keepalive} . "\n",ts());
          } else {
-            out($w,"@@ idle\n");
+            out($w,"\@\@ idle\n");
          }
       }
    }
