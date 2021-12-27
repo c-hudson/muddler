@@ -90,6 +90,7 @@ sub key_init
    @key{14}                   = sub { return key_ctl_n(@_);            };
    @key{16}                   = sub { return key_ctl_p(@_);            };
    @key{18}                   = sub { return key_ctl_r(@_);            };
+   @key{6}                    = sub { return key_ctl_f(@_);            };
    @key{21}                   = sub { return key_ctl_u(@_);            };
    @key{23}                   = sub { return key_ctl_w(@_);            };
    @key{27}                   = sub { return key_escape(@_);           };
@@ -1213,10 +1214,8 @@ sub io
       } elsif(defined @socket_lookup{$sock}) {
          my $w = @socket_lookup{$sock};
 
-         if(sysread($sock,$buf,1024) <= 0) {
-#            if(name($w) ne "Mush") {
-               socket_disconnect($sock);                     # socket closed
-#            }
+         if(sysread($sock,$buf,10240) <= 0) {
+            socket_disconnect($sock);                     # socket closed
 
             if(defined @socket{$w}->{socket_pending} == 1) {
                history($w,"% Connection timed out to ". name($w) . "-$sock");
@@ -2635,7 +2634,6 @@ sub scan_history
    my $hist = @history{$w};
    while($pos > 0 && $pos <= $#$hist && $count <= $size) {
       if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
-         @state{hist_start} += $inc;
          for my $line (ansi_wrap($$hist[$pos]->{txt})) {
             $count++;
             next if $count > $size;
@@ -2700,6 +2698,89 @@ sub key_pgdn
    }
 }
 
+sub print_state
+{
+   my $out;
+
+   my %skip = (
+      pos_sequence => 1,
+      240 => 1,
+      241 => 1,
+      250 => 1,
+      251 => 1,
+      252 => 1,
+      253 => 1,
+      254 => 1,
+      255 => 1,
+      DO  => 1,
+      DONT=> 1,
+      IAC => 1,
+      SB  => 1,
+      SE  => 1,
+      WILL=> 1,
+      WONT=> 1,
+      activity=> 1,
+      ansi_wrap=> 1,
+      cache => 1,
+      chksum => 1,
+      console => 1,
+      ctl_c => 1,
+      help => 1,
+      init_cache => 1,
+      init_cache_count => 1,
+      init_cache_count => 1,
+      key_last => 1,
+      last_active => 1,
+      pending =>1,
+      pid =>1,
+      region =>1,
+      secure =>1,
+      size_x =>1,
+      size_y =>1,
+      tick_last => 1,
+      web => 1,
+      world => 1,
+      world_last => 1,
+      wrap_garbage_collect_last => 1,
+      nocache => 1,
+      mush => 1,
+      optimize_output => 1,
+      cached => 1,
+      ta => 1,
+      spelling_error => 1,
+      telnet_mode => 1,
+#      hist_start => 1,
+      state => 1,
+      World_last => 1,
+   );
+
+   $out = sprintf("\@state = {\n");
+   for my $key (sort keys %state) {
+      if(ref(@state{$key}) eq undef && 
+         !defined @skip{$key} &&
+         $key !~ /^(mod|bar|p)_/) {
+         $out .= sprintf("   %s = %s\n",$key,@state{$key});
+      }
+   }
+   $out .= "}\n";
+   for my $i (-1) {
+      $out .= sprintf("%s : %s\n",$i,join('',@{@input[$i]}));
+   }
+   $out .= sprintf("x/y: %s,%s\n",input_x(),input_y());
+   return $out;
+}
+
+sub key_ctl_f
+{
+   @input[-1] = [ split(//,"Many a hand has scaled the grand old face of the plateau Some belong to strangers and some to folks you know Holy ghosts and talk show hosts are planted in the sand To beautify the foothills and shake the many hands Nothing on the top but a bucket and a mop And an illustrated book about birds See a lot up there but don't be scared Who needs action when you got words") ];
+   @state{buffer_pos} = 2;
+   @state{input_offset} = 3;
+   @state{input_pos} = 196;
+   @state{line_pos} = 196;
+   @state{overlap} = 3;
+   @state{pos_sequence} = 72;
+}
+
 #
 # key_dump
 #   Write out the data in the history variable for debuging purposes.
@@ -2710,18 +2791,19 @@ sub key_dump
 
    loggit("Dumping files");
 
-   for my $key (keys %history) {
-      open($file,"> history.$key.log") || return;
-      binmode($file, ":utf8");
-      eval {
-      @address{$key}->{decode} = "utf8" if !defined @address{$key}->{decode};
-      printf($file "%s\n",
-             decode(@address{$key}->{decode},
-             print_var(@history{$key}))
-            );
-      };
-      close($file);
-   }
+    return loggit("%s\n",print_state(\%state));
+#   for my $key (keys %history) {
+#      open($file,"> history.$key.log") || return;
+#      binmode($file, ":utf8");
+#      eval {
+#      @address{$key}->{decode} = "utf8" if !defined @address{$key}->{decode};
+#      printf($file "%s\n",
+#             decode(@address{$key}->{decode},
+#             print_var(@history{$key}))
+#            );
+#      };
+#      close($file);
+#   }
 }
 
 
@@ -3458,9 +3540,9 @@ sub key_esc_w
 
    if($new eq undef) {
       if(is_web($conn)) {
-         switch_world($conn,@ws{$conn}->{world_last});
+         return switch_world($conn,@ws{$conn}->{world_last});
       } else {
-         switch_world($conn,@state{World_last});
+         return switch_world($conn,@state{world_last});
       }
    }
 
@@ -3620,6 +3702,7 @@ sub xy
    my ($x,$y,$use_the_force_luke) = @_;
 
    return if !console();
+#   loggit("xy: %s,%s -> %s\n",$x,$y,code());
    printf("\033[%s;%sH",$x,$y);
 }
 
@@ -5507,14 +5590,14 @@ sub print_var
 
       my $data = (ref($var) eq "HASH") ? $$var{$key} : $$var[$key];
 
-      if((ref($data) eq "HASH" || ref($data) eq "ARRAY") &&
-         !ignoreit($skip,$key,$depth)) {
-         $out .= sprintf("%s%s $PL\n"," " x ($depth*2),$key);
-         $out .= print_var($data,$depth+1,$key,$skip,1);
-         $out .= sprintf("%s$PR\n"," " x ($depth*2));
-      } elsif(!ignoreit($skip,$key,$depth)) {
+#      if((ref($data) eq "HASH" || ref($data) eq "ARRAY") &&
+#         !ignoreit($skip,$key,$depth)) {
+#         $out .= sprintf("%s%s $PL\n"," " x ($depth*2),$key);
+#         $out .= print_var($data,$depth+1,$key,$skip,1);
+#         $out .= sprintf("%s$PR\n"," " x ($depth*2));
+#      } elsif(!ignoreit($skip,$key,$depth)) {
          $out .= sprintf("%s%s = %s\n"," " x ($depth*2),$key,$data);
-      }
+#      }
    }
 
    $out .= (" " x (($depth-1)*2)) . "$PR\n" if(!$recursive);
