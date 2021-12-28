@@ -34,9 +34,17 @@ This screenshot is showing the two interfaces to muddler. In the background is m
 # Installation
 ```
    a. download muddler script
-   b. Install required perl modules.
-      muddler will tell you what modules are missing
-   c. chmod u+x muddler
+   b. chmod u+x muddler
+   c. Install required perl modules manually. Muddler will tell you wich
+      modules are missing.
+
+         or 
+
+      ./muddler --install
+
+         This will install missing modules and/or install the modules from
+         cpan. Currently this only works on linux systems supporting apt.
+
    d. ./muddler <options>
 
    Options:

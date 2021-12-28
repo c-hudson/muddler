@@ -70,6 +70,44 @@ my %state = (
    activity        => {},                       # store worlds with activity
 );
 
+#                                    cpan => "perl -MCPAN -e \"install " .
+#                                           "Net::WebSocket::Server\"",
+my %mod = (
+   'Term::ReadKey'          => { fatal => 0,
+                                 pkg => "libterm-readkey-perl",
+                                 for => 'screen size detection'
+                               },
+   'Net::WebSocket::Server' => { fatal => 0,
+                                 cpan => "yes",
+                                 for => 'web gui'
+                               },
+   'Encode'                 => { fatal => 0,
+                                 for => "utf8/fansi"
+                               },
+   'Digest::MD5'            => { fatal => 0,
+                                 pkg => "Digest::MD5",
+                                 for => "caching/code reloading"
+                               },
+   'Text::Aspell'           => { fatal => 0,
+                                 pkg => "libtext-aspell-perl", 
+                                 for => 'spell check' },
+   'IO::Socket::SSL'        => { fatal => 0,
+                                 for => 'ssl'
+                               },
+   'IO::Select'             => { fatal => 1,
+                                 for => 'networking'
+                               },
+   'IO::Socket'             => { fatal => 1,
+                                 for => 'networking'
+                               },
+   'Text::ParseWords'       => { fatal => 0,
+                                 for => 'tf compat'
+                               },
+   'IO::Socket::Timeout'    => { fatal => 0,
+                                 for => 'ssl websockets',
+                                 pkg => "libio-socket-timeout-perl"
+                               },
+);
 #
 # define all keys/commands in a manor so that they can be reloaded
 # while the program is still running.
@@ -226,53 +264,6 @@ sub load_modules
 {
    @state{modules} = [];
    my $type;
-
-   my %mod = (
-      'Term::ReadKey'          => { fatal => 0,
-                                    fix => "apt install libterm-readkey-perl",
-                                    for => 'screen size detection'
-                                  },
-      'Digest::MD5'            => { fatal => 0,
-                                    fix => "stand on head",
-                                    for => "caching ansi_init calls",
-                                  },
-      'Net::WebSocket::Server' => { fatal => 0,
-                                    fix => "perl -MCPAN -e \"install " .
-                                           "Net::WebSocket::Server\"",
-                                    for => 'web interface'
-                                  },
-      'Encode'                 => { fatal => 0,
-                                    fix => "install Encode module",
-                                    for => "utf8/fansi"
-                                  },
-      'Digest::MD5'            => { fatal => 0,
-                                    fix => "install Digest::MD5",
-                                    for => "code reloading"
-                                  },
-      'Text::Aspell'           => { fatal => 0,
-                                    fix => "apt install libtext-aspell-perl", 
-                                    for => 'spell check' },
-      'IO::Socket::SSL'        => { fatal => 0,
-                                    fix => "?",
-                                    for => 'ssl connections'
-                                  },
-      'IO::Select'             => { fatal => 1,
-                                    fix => "?",
-                                    for => 'networking'
-                                  },
-      'IO::Socket'             => { fatal => 1,
-                                    fix => "?",
-                                    for => 'networking'
-                                  },
-      'Text::ParseWords'       => { fatal => 0,
-                                    fix => "?",
-                                    for => 'tf compatability'
-                                  },
-      'IO::Socket::Timeout'    => { fatal => 0,
-                                    fix => "?",
-                                    for => 'ssl websockets'
-                                  },
-   );
 
    for my $key (keys %mod) {
       if(!defined @state{"mod_@mod{$key}"} || @state{"mod_@mod{$key}"} == -1) {
@@ -3875,12 +3866,13 @@ sub input_end
 #
 sub revert_console
 {
-   return if !console();
-   return if(@state{fatal});       # modules didn't load, no need to reset
-
-   normal();
-   printf("\033[r");
-   xy(24,1);
+   if(!console() || @state{fatal} || $term eq undef) {
+      return;
+   } else {
+      normal();
+      printf("\033[r");
+      xy(24,1);
+   }
 }
 
 
@@ -5821,11 +5813,43 @@ sub sig_winch
    redraw_screen(@state{world},1);
 }
 
+sub install_modules
+{
+   my (%pkg, %cpan);
+   load_modules();
+
+   for my $key (keys %mod) {
+      if(!module_enabled($key) && defined @mod{$key}->{pkg}) {
+         @pkg{@mod{$key}->{pkg}} = 1;
+      }
+      if(!module_enabled($key) && defined @mod{$key}->{cpan} && @mod{$key}->{cpan} eq "yes") {
+         @cpan{$key} = 1;
+      }
+   }
+
+   if(scalar keys %pkg > 0) {
+      printf("running: sudo apt install %s\n",join(" ",keys %pkg));
+      system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
+   }
+
+
+   if(scalar keys %cpan > 0) {
+      for my $key (keys %cpan) {
+         printf("running: perl -MCPAN -e \"install $key\"\n");
+         system("perl -MCPAN -e \"install $key\"");
+      }
+   }
+
+   exit();
+}
+
 load_modules();
 
 for my $i (0 .. $#ARGV) {
    if(@ARGV[$i] eq "--noconsole") {
       @state{console} = 0;
+   } elsif(@ARGV[$i] eq "--install") {
+     install_modules(); 
    } elsif(@ARGV[$i] =~ /^--port=(\d+)$/) {
       @state{port} = $1;
    } elsif(@ARGV[$i] =~ /^--(pass|password)=(.*)$/) {
