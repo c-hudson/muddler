@@ -128,7 +128,6 @@ sub key_init
    @key{14}                   = sub { return key_ctl_n(@_);            };
    @key{16}                   = sub { return key_ctl_p(@_);            };
    @key{18}                   = sub { return key_ctl_r(@_);            };
-   @key{6}                    = sub { return key_ctl_f(@_);            };
    @key{21}                   = sub { return key_ctl_u(@_);            };
    @key{23}                   = sub { return key_ctl_w(@_);            };
    @key{27}                   = sub { return key_escape(@_);           };
@@ -3217,7 +3216,9 @@ sub key_default
       # determine if character would be off the screen, if so done.
       if($i >= ((@state{size_y}-1) * input_size()) + 
                (@state{input_offset} * (@state{size_y}-1))) {
-         last;
+         printf("%s",$out);
+         xy(input_x(),input_y());
+         return;                                # nothing more to draw, done
       }
 
       # determine if we should drop down a line before next character
@@ -3227,8 +3228,6 @@ sub key_default
       $out .= @input[-1]->[$i];                   # add next char in buffer
    }
    printf("%s",$out);                                   # output generated txt
-   $out =~ s/\n/<N>/g;
-
 
    # if the input has gotten bigger then the input window, send a return now
    # plus the next line.
