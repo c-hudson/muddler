@@ -3136,11 +3136,19 @@ sub key_delete
       }
       xy(input_x(),input_y());
    } elsif(@state{line_pos} >= 1) {                           # delete at EOL
-      @state{line_pos}--;
-      pop(@{@input[-1]});
-      xy(input_x(),input_y());
-      printf("\033[P");
-      xy(input_x(),input_y());
+      @state{line_pos}--;                          # move cursor pos back one
+      pop(@{@input[-1]});                           # remove char from buffer
+      xy(input_x(),input_y());             # move cursor back incase it moved
+      printf("\033[P");                       # delete character under cursor
+
+      # check to see if the cursor needs to go up a line, and therefor needs
+      # to redraw the line.
+      if((@state{line_pos}-1)-(@state{input_offset}*(@state{size_y} - 1))==-2){
+         xy(input_x(),1);                   # move cursor to begining of line
+         @state{input_offset}--;               # move input focus one line up
+         printf("%s",input_line(input_on_line()));               # print line
+         # xy() - no need to move cursor to right location, its there.
+      }
    }
 }
 
@@ -4139,21 +4147,48 @@ sub cmd_common
 {
 #-# ------------------------------------------------------------------------
 #-# /common
-#-#
-#-#      Connects to a few places i use. This should be replaced with some-
-#-#      thing less taylored to just me.
+#-#      Connect to a list of places that someone might frequent often.
+#-# /common list
+#-#      Shows the list of worlds that are currently setup within /common
+#-# /common -world
+#-#      Deletes a world from the list of common worlds.
+#-# /common world
+#-#      Adds a world to the list of common worlds.
 #-#
 #-# ------------------------------------------------------------------------
-   cmd_world(@state{world},"global");
-   cmd_world(@state{world},"rhost");
-   cmd_world(@state{world},"del");
-   cmd_world(@state{world},"cavemush");
-##   cmd_world(@state{world},"puggy");
-   cmd_world(@state{world},"brazil");
-   cmd_world(@state{world},"tz");
-   cmd_world(@state{world},"iweb");
-   cmd_world(@state{world},"tim");
-   cmd_world(@state{world},"lark");
+   my ($conn,$txt) = @_;
+   my %list;
+
+   for my $world (split(/:/,@state{p_common})) {
+      @list{trim($world)} = 1;
+   }
+
+   if($txt =~ /^\s*list\s*$/) {
+      echo("%% Worlds: %s\n",join(', ', keys %list));
+   } elsif($txt =~ /^\s*$/) {
+      if(scalar keys %list == 0) {
+         echo("%% No worlds defined in /common.");
+      } else {
+         for my $world (keys %list) {
+            cmd_world(@state{world},$world);
+         }
+      }
+      return;
+   } elsif($txt =~ /^\s*-\s*/) {
+      if(defined @list{trim($')}) {
+         delete @state{trim{$'}};
+         save("p_common",join(":",keys %list));
+      } else {
+         echo("%% Worlds '%s' not defined in /common",trim($'));
+      }
+   } else {
+      if(defined @list{trim($txt)}) {
+         echo("%% Worlds '%s' already defined in /common",trim($txt));
+      } else {
+         @list{trim($txt)} = 1;
+         save("p_common",join(":",keys %list));
+      }
+   }
 }
 
 sub cmd_log
