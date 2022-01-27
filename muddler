@@ -1706,6 +1706,7 @@ sub hist_pos
 sub pending
 {
    my $w = shift;
+   my $flag = shift;
 
    return undef if $w eq undef || !defined @socket{$w};
 
@@ -2280,6 +2281,9 @@ sub release_pending_pagefull
       $txt_start = 0;
    }
 
+   # fix pending if there is nothing to be shown
+   @socket{$w}->{pending} = 0 if($start > history_max($w));
+
    more_update();
    optimize_end();
    draw_bar(1);
@@ -2527,9 +2531,9 @@ sub redraw_input_new
 
    return if(!console());
 
-   for my $i (0 .. $#input) {
-      loggit("#-#: '%s'\n",join('',@{@input[$i]}));
-   }
+#   for my $i (0 .. $#input) {
+#      loggit("#-#: '%s'\n",join('',@{@input[$i]}));
+#   }
 
    if(is_console($conn)) {
       update_scroll_region("input",1);
