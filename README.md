@@ -1,5 +1,5 @@
 ![Screenshot](screenshot.jpg)
-This screenshot is showing the two interfaces to muddler. In the background is muddler running in a terminal window. The foreground window is firefox connected to the same muddler session via websockets. Both are interactive and can show the same or different worlds.
+This screenshot shows the two interfaces of muddler. In the foreground is muddler running in a terminal window. The background window is firefox connected to the same muddler session via websockets. Both are interactive and can show the same or different worlds.
 
 # muddler
 
@@ -15,8 +15,8 @@ This screenshot is showing the two interfaces to muddler. In the background is m
    o Multiple worlds at the same time
    o More / pausing output as needed
    o Spell checking
-       mispelled words will be bold in console, red squiggly underline in
-       web interface (dependant upon browser).
+       mispelled words will be bold in console and red squiggly underline
+       in web interface (dependant upon browser).
    o Multiple Window Support(?) - The console interface does not support
        multiple windows but multiple browser "windows" can be opened and
        can view different worlds.
