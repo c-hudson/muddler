@@ -3416,7 +3416,6 @@ sub key_up
    my $w = world($conn);
    my $first;
 
-   loggit("key_up: start -> %s\n",scalar localtime());
    return if($w eq undef || !defined @socket{$w});
    my $pos = @socket{$w}->{pos};
 
@@ -3428,20 +3427,17 @@ sub key_up
       } else {
          mstate($conn,"last_active",world($conn));
       }
-      loggit("   key_up: end1 -> %s\n",scalar localtime());
       return key_esc_w(@_);
    }
 
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} > $pos &&
          (defined @socket{$key}->{sock} || pending($key) > 0)) {
-         loggit("   key_up: end2 -> %s\n",scalar localtime());
          return switch_world($conn,$key);
       }
       $first = $key if($first eq undef);
    }
 
-   loggit("   key_up: end3 -> %s\n",scalar localtime());
    switch_world($conn,$first) if($first ne undef);
 }
 
@@ -3458,7 +3454,6 @@ sub key_down
    my ($conn,$txt) = @_;
    my ($prev,$last);
 
-   loggit("key_down: start -> %s\n",scalar localtime());
    my $w = world($conn);
    return if $w eq undef || !defined @socket{$w};
    my $pos = @socket{$w}->{pos};
@@ -3471,7 +3466,6 @@ sub key_down
       } else {
          mstate($conn,"last_active",world($conn));
       }
-      loggit("   key_down: done1-> %s\n",scalar localtime());
       return key_esc_w(@_);
    }
 
@@ -3485,7 +3479,6 @@ sub key_down
          $last = $key;
       }
    }
-   loggit("   key_down: done2-> %s\n",scalar localtime());
    if($prev ne undef) {
       switch_world($conn,$prev);
    } elsif($last ne undef) {
