@@ -160,6 +160,7 @@ sub command_init
 {
    delete @command{keys %command};
    @command{debug}         = sub { return cmd_debug(@_);                   };
+   @command{stat}          = sub { return cmd_stat(@_);                    };
    @command{world}         = sub { return cmd_world(@_);                   };
    @command{quit}          = sub { return cmd_quit(@_);                    };
    @command{reload}        = sub { return cmd_reload(@_);                  };
@@ -1154,7 +1155,8 @@ sub ws_echo
    # currently crash will be treated as a disconnect.
 
    eval {
-      $ws->send('',$type . encode_utf8($msg) . "\r\n");
+#      $ws->send('',$type . encode_utf8($msg) . "\r\n");
+      $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
    if($@) {
       ws_disconnect($ws) if($@);
@@ -2986,6 +2988,7 @@ sub key_esc_j
    history_pos($conn,$#{@history{$conn}});
    delete @socket{$conn}->{more};
    delete @socket{$conn}->{more_count};
+   delete @socket{$conn}->{pending};
    @socket{$conn}->{pending} = 0;
    redraw_screen($conn,1);
 }
@@ -3094,6 +3097,7 @@ sub max_input
     return $result;
 }
 
+
 #
 # key_delete
 #    Handle when the user presses the delete key.
@@ -3108,37 +3112,43 @@ sub key_delete
    if(@state{line_pos} < 1) {                        # nothing left to delete
       return;
    } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
-      splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
 
       if((@state{line_pos}-1)-(@state{input_offset}*(@state{size_y} - 1))==-1){
+         splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
          key_left($ch);   # at begining of visible buffer, input window
                           # needs to be erased and redrawn. key_left will
                           # do this + move cursor one over. Remember splice
                           # deleted the character as needed first.
       } else {
-         xy(input_x(),input_y()-1); # move
-         printf("\033[P");
-         @state{line_pos}--;
-     
-         # delete character from the begining of each line after the cursor
-         # and print the deleted character at the end of the previous line
-         # to simulate characters scrolling onto the next line.
-         my $max = max_input() - @state{input_offset};
-         $max = input_end()-input_start() if($max > input_end()-input_start());
+         my $bol = 
+             (@state{size_y} - 1) *           # number of characters per line
+             (@state{input_offset} +            # number of lines not visible
+             input_x() - input_start());            # number of visible lines
 
-         my $start = input_x() - input_start() + 1;
-      
-         for my $i ((input_x() - input_start()+1) .. $max) {
-            my $pos = (@state{size_y} - 1) * ($i + @state{input_offset}) - 1;
-            if($i != 0 && $#{@input[-1]} >= $pos) {
-                xy(input_start() + $i - 1,79);
-                printf("%s",@input[-1]->[$pos]);
-                xy(input_start() + $i,0);
-                printf("\033[P");
+         my $bol =                                  # [find begining of line] 
+             (@state{size_y} - 1) *           # number of characters per line
+             (@state{input_offset} +            # number of lines not visible
+             input_x() - input_start());            # number of visible lines
+
+         for my $i (0 .. (@state{size_x} - input_x())) {
+            my $nbol = $bol += @state{size_y} - 1;      # next begin of line
+
+            if($i == 0) {
+               xy(input_x(),input_y()-1);
+               printf("\033[P");                   # delete ch before cursor
+            } else {
+               xy(input_x() + $i,0);       # delete char at begining of line
+               printf("\033[P");                   # for wrap around effect
             }
+            xy(input_x() + $i,79);                 # add char at end of line
+            printf("%s",@input[-1]->[$nbol]);
+           
+            $bol = $nbol;
          }
+         splice(@{@input[-1]},@state{line_pos}-1,1);      # remove character
+         @state{line_pos}--;
+         xy(input_x(),input_y());                            # return cursor
       }
-      xy(input_x(),input_y());
    } elsif(@state{line_pos} >= 1) {                           # delete at EOL
       @state{line_pos}--;                          # move cursor pos back one
       pop(@{@input[-1]});                           # remove char from buffer
@@ -3406,6 +3416,7 @@ sub key_up
    my $w = world($conn);
    my $first;
 
+   loggit("key_up: start -> %s\n",scalar localtime());
    return if($w eq undef || !defined @socket{$w});
    my $pos = @socket{$w}->{pos};
 
@@ -3417,17 +3428,20 @@ sub key_up
       } else {
          mstate($conn,"last_active",world($conn));
       }
+      loggit("   key_up: end1 -> %s\n",scalar localtime());
       return key_esc_w(@_);
    }
 
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} > $pos &&
          (defined @socket{$key}->{sock} || pending($key) > 0)) {
+         loggit("   key_up: end2 -> %s\n",scalar localtime());
          return switch_world($conn,$key);
       }
       $first = $key if($first eq undef);
    }
 
+   loggit("   key_up: end3 -> %s\n",scalar localtime());
    switch_world($conn,$first) if($first ne undef);
 }
 
@@ -3444,6 +3458,7 @@ sub key_down
    my ($conn,$txt) = @_;
    my ($prev,$last);
 
+   loggit("key_down: start -> %s\n",scalar localtime());
    my $w = world($conn);
    return if $w eq undef || !defined @socket{$w};
    my $pos = @socket{$w}->{pos};
@@ -3456,6 +3471,7 @@ sub key_down
       } else {
          mstate($conn,"last_active",world($conn));
       }
+      loggit("   key_down: done1-> %s\n",scalar localtime());
       return key_esc_w(@_);
    }
 
@@ -3469,6 +3485,7 @@ sub key_down
          $last = $key;
       }
    }
+   loggit("   key_down: done2-> %s\n",scalar localtime());
    if($prev ne undef) {
       switch_world($conn,$prev);
    } elsif($last ne undef) {
@@ -3814,17 +3831,27 @@ sub draw_bar
          }
          my $more = more_bar($conn);
          ws_echo($conn,
+                 "*",
+                 sprintf("%s:%02d    ",$hr,$min)
+                );
+         ws_echo($conn,
                  "b",
-                 sprintf("%-*s %-10s %s%s%s:%02d",
+#                 sprintf("%-*s %-10s %s%s%s:%02d",
+#                         9 - ansi_length($more),
+#                         $more,
+#                         name(@ws{$conn}->{world}),
+#                         $active,
+#                         " " x (@ws{$conn}->{size_y} - 
+#                                length(name(@ws{$conn}->{world})) -
+#                                length($active) - length($hr) - 30),
+#                         $hr,
+#                         $min
+#                        )
+                 sprintf("%-*s %-10s %s",
                          9 - ansi_length($more),
                          $more,
                          name(@ws{$conn}->{world}),
-                         $active,
-                         " " x (@ws{$conn}->{size_y} - 
-                                length(name(@ws{$conn}->{world})) -
-                                length($active) - length($hr) - 20),
-                         $hr,
-                         $min
+                         $active
                         )
                );
       }
@@ -4070,6 +4097,36 @@ sub cmd_dc
       history(world($conn),"% Connection already closed.");
    }
 }
+
+sub cmd_stat
+{
+   my ($conn,$txt) = @_;
+   my (%stat, $max,$sock);
+
+   delete @socket{"benji"};
+   for my $world (keys %history) {
+      $max = length($world) if length($world) > $max;
+      for my $i (0 .. $#{@history{$world}}) {
+         @stat{$world} += length(@history{$world}->[$i]->{txt});
+      }
+   }
+   for my $world (keys %stat) {
+      if(defined @socket{$world} && defined @socket{$world}->{sock}) {
+         $sock = @socket{$world}->{sock};
+      } else {
+         $sock = "N/A";
+      }
+      echo("%% %*s : %10s    %s",$max,$world,@stat{$world},$sock);
+   }
+
+   for my $world (keys %stat) {
+      if(!defined @socket{$world} || !defined @socket{$world}->{sock}) {
+         delete @socket{$world};
+         delete @history{$world};
+      }
+   }
+}
+
 
 sub cmd_perl
 {
@@ -4403,7 +4460,7 @@ sub cmd_color
       ws_all("d","theme $txt");
       save("p_color",$txt);
    } else {
-      echo("% color expects either dark or light.");
+      echo("%% color expects either dark or light.");
    }
 }
 
@@ -7066,7 +7123,7 @@ START: muddler_style.css
    /*     font-family: 'Courier New', monospace; */
    /*     font-family: 'termnine',Monospace; */
      font-family: Monospace;
-     font-size: 10pt;
+     font-size: 11pt;
      font-weight: normal;
    }
    
@@ -7125,15 +7182,18 @@ START: muddler_style.css
      position: absolute;
      margin: 0;
      border: 0;
-     padding: 0.5em 0.5% 0.5em 0.5%;
+     padding: 0.0em 0.0% 0.0em 0.0%;
      left: 0;
      width: 99%;
      top: 0;
-     bottom: 6em;
+     bottom: 70px; /* 6em */
+     line-height: 110%;
+#     word-spacing: 20;
      background: white; 
    }
    
    #bar {
+     padding: 0.0em 0.0% 0.0em 0.0%;
      white-space: pre-wrap;
      color: red;
      font-weight: bold;
@@ -7142,13 +7202,29 @@ START: muddler_style.css
      position: absolute;
      left: 0;
      width: 100%;
-     bottom: 4em;
+     bottom: 50px;
      height: 1.4em;
      vertical-align: middle;
      text-align: left;
      border-bottom: 1px solid black;
    }
    
+   #bartime {
+     padding: 0.0em 0.0% 0.0em 0.0%;
+     white-space: pre-wrap;
+     color: red;
+     font-weight: bold;
+     display: table-cell;
+     overflow: hidden;
+     position: absolute;
+     left: 0;
+     width: 100%;
+     bottom: 50px; /* 4em */
+     height: 1.4em;
+     vertical-align: middle;
+     text-align: right;
+   }
+
    #prompt {
      overflow: hidden;
      white-space: pre-wrap;
@@ -7169,7 +7245,7 @@ START: muddler_style.css
      border: none;
      outline: none;
      vertical-align: middle;
-     padding: 0.5em 0.5% 0.5em 0.5%;
+     padding: 0.1em 0.1% 0.1em 0.1%;
      resize: none;
      left: 0;
      width: 99%;
@@ -7300,6 +7376,7 @@ START: muddler_client.js
      
      Connection.CHANNEL_TEXT   = 't';
      Connection.CHANNEL_BAR    = 'b';
+     Connection.CHANNEL_BARTIME= '*';
      Connection.CHANNEL_JSON   = 'j';
      Connection.CHANNEL_HTML   = 'h';
      Connection.CHANNEL_PUEBLO = 'p';
@@ -7392,6 +7469,10 @@ START: muddler_client.js
        case Connection.CHANNEL_BAR:
          this.onBar && this.onBar(data);
          break;
+
+       case Connection.CHANNEL_BARTIME:
+         this.onBarTime && this.onBarTime(data);
+         break;
    
        case Connection.CHANNEL_JSON:
          this.onObject && this.onObject(window.JSON.parse(data));
@@ -7468,6 +7549,7 @@ START: muddler_client.js
      Connection.prototype.onText = null;
      Connection.prototype.onClear = null;
      Connection.prototype.onBar = null;
+     Connection.prototype.onBarTime = null;
      Connection.prototype.onObject = null;
      Connection.prototype.onHTML = null;
      Connection.prototype.onPueblo = null;
@@ -8452,6 +8534,7 @@ START: muddler_client.html
      <div id="output" class="ansi-37 ansi-40"></div>
      <div id="bar" class="ansi-37 ansi-1-37"></div>
      <div id="prompt" class="ansi-37 ansi-1-37"></div>
+     <div id="bartime" class="ansi-37 ansi-1-37"></div>
      <textarea id="input" autocomplete="off" autofocus></textarea>
    </div>
      <div id="buttonbar" "class=buttonbar" style=width:100%>
@@ -8480,6 +8563,7 @@ START: muddler_client.html
      var output = WSClient.output(document.getElementById('output'));
      var cmdprompt = WSClient.output(document.getElementById('prompt'));
      var bar = WSClient.output(document.getElementById('bar'));
+     var bartime = WSClient.output(document.getElementById('bartime'));
      var input = WSClient.input(document.getElementById('input'));
      var conn = WSClient.connect(serverUrl);
      // function to send a command string to the server
@@ -8532,7 +8616,8 @@ START: muddler_client.html
      conn.onText = function (text) { output.appendText(text); };
      conn.onHTML = function (html) { output.appendHTML(html); };
      conn.onPueblo = function (html) { output.appendPueblo(html); };
-     conn.onBar = function (text) { bar.clear();bar.appendText(text); };
+     conn.onBar = function (html) { bar.clear();bar.appendText(html); };
+     conn.onBarTime = function (html) { bartime.clear();bartime.appendText(html); };
      conn.onPrompt = function (text) { cmdprompt.clear(); cmdprompt.appendText(text + '\r\n'); };
      
      // handle incoming JSON objects. requires server specific implementation
