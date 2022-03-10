@@ -2439,8 +2439,8 @@ sub overlap
 #
 sub get_output
 {
-   my $conn = shift;
-   my ($start_pos,$partial,@out,@line,$x,$y);
+   my ($conn,$full) = @_;
+   my ($start_pos,$partial,@out,@line,$x,$y,$max);
 
    if(is_console($conn)) {
       ($x,$y) = (@state{size_x},@state{size_y});
@@ -2460,8 +2460,9 @@ sub get_output
 
    my $hist = @history{$w};
 
+   $max = $x - (($full) ? 0 : 3);
    for(my $i=$start_pos;
-       $i >= 0 && $#out <= $x - 3 && $i <= $#$hist;
+       $i >= 0 && $#out <= $max && $i <= $#$hist;
        $i--) {
       next if $$hist[$i]->{gagged};
 
@@ -2480,7 +2481,7 @@ sub get_output
       }
    }
 
-   for my $i (1 .. ($x - $#out + 1)) {             # fill in any blank lines
+   while($#out + 1 < $x) {
       unshift(@out,{ pos => -2, txt => "\033[K"});
    }
 
@@ -2504,7 +2505,7 @@ sub redraw_output
 
    if(is_console($conn)) {
       optimize_start();
-      for my $hash (get_output($conn)) {
+      for my $hash (get_output($conn,1)) {
          # show dashes before new output when switching to world
          if($$hash{pos} >= $last && $first eq undef) {
             echo_console("%s","=====");
@@ -2514,7 +2515,8 @@ sub redraw_output
       }
       optimize_end();
    } elsif(is_web($conn)) {
-      for my $hash (get_output($conn)) {
+      ws_echo($conn,"d","clear");          # clear output websocket window
+      for my $hash (get_output($conn,1)) {
          if($$hash{pos} >= $last && $first eq undef) {
             # show dashes before new output when switching to world
             ws_echo($conn,"t","=====");
@@ -2675,6 +2677,14 @@ sub key_pgup
    if(scan_history($conn,-1,$size)) {
       draw_bar();
       redraw_output($conn);
+
+      if(is_console($conn)) {                  # keep any webclients in sync
+         for my $s (keys %ws) {
+            redraw_output($s) if(@ws{$s}->{world} eq $conn);
+         }
+      } elsif(@ws{$conn}->{world} eq @state{world}) {
+         redraw_output(@state{world});                # keep console in sync
+      }
    }
 }
 
@@ -2689,6 +2699,14 @@ sub key_pgdn
    if(scan_history($conn,1,$size)) {
       redraw_output($conn);
       draw_bar();
+
+      if(is_console($conn)) {                  # keep any webclients in sync
+         for my $s (keys %ws) { 
+            redraw_output($s) if(@ws{$s}->{world} eq $conn);
+         }
+      } elsif(is_web($conn) && @ws{$conn}->{world} eq @state{world}) {
+         redraw_output(@state{world});                # keep console in sync
+      }
    } else {
       key_tab(@_);
    }
@@ -3114,22 +3132,18 @@ sub key_delete
    } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
 
       if((@state{line_pos}-1)-(@state{input_offset}*(@state{size_y} - 1))==-1){
-         splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
-         key_left($ch);   # at begining of visible buffer, input window
-                          # needs to be erased and redrawn. key_left will
-                          # do this + move cursor one over. Remember splice
-                          # deleted the character as needed first.
-      } else {
-         my $bol = 
-             (@state{size_y} - 1) *           # number of characters per line
-             (@state{input_offset} +            # number of lines not visible
-             input_x() - input_start());            # number of visible lines
+         # at begining of visible buffer, input window needs to be erased
+         # and redrawn. key_left will do this + move cursor one over.
 
+         splice(@{@input[-1]},@state{line_pos}-1,1);        # remove character
+         key_left($ch);
+      } else {                          # deleting in the middle of a line.
          my $bol =                                  # [find begining of line] 
              (@state{size_y} - 1) *           # number of characters per line
              (@state{input_offset} +            # number of lines not visible
              input_x() - input_start());            # number of visible lines
 
+         # loop from current line to end of screen horizontally
          for my $i (0 .. (@state{size_x} - input_x())) {
             my $nbol = $bol += @state{size_y} - 1;      # next begin of line
 
@@ -4989,6 +5003,7 @@ sub cmd_web_size
       if(@size[1] =~ /^\s*(\d+)\s*$/) {
          @ws{$conn}->{size_y} = $1 - 3;
       }
+#      loggit("web_size: '%s'\n",$txt);
    }
    redraw_output($conn,1);
 }
@@ -7108,8 +7123,13 @@ __ANSI__
 
 START: muddler_style.css
    html, body {
-     width: 100%;
-     height: 100%;
+     left: 0px;
+     right: 0px;
+     bottom: 0px;
+     top: 0px;
+     position: absolute;
+/*     width: 100%;
+     height: 100%; */
      margin: 0;
      overflow: hidden;
      background: #2667bd;
@@ -7179,10 +7199,11 @@ START: muddler_style.css
      left: 0;
      width: 99%;
      top: 0;
-     bottom: 70px; /* 6em */
+     bottom: 71px; /* 6em */
      line-height: 110%;
 #     word-spacing: 20;
      background: white; 
+     font-size: 10pt;
    }
    
    #bar {
@@ -7246,7 +7267,13 @@ START: muddler_style.css
      height: 3em;
    }
    #buttonbar {
-     position: absolute;
+     position: absolute; 
+     bottom: 5px;
+     left: 0;
+     right: 0;
+     height: 30px;
+     display: none;
+/*     position: absolute;
      margin: 0;
      background: white;
      color: black;
@@ -7260,7 +7287,8 @@ START: muddler_style.css
      bottom: 0;
      height: 30px;
      float: left;
-     display: none;
+     position: absolute; */
+#     display: none;
    }
 
    .triangle {
@@ -7339,22 +7367,22 @@ START: muddler_client.js
           input.onEnter('/web_size ' + get_xy_size() + '\r\n' );
       }
 
-     function get_xy_size() {
+      function get_xy_size() {
          var out = document.getElementById('output')
          var css = getComputedStyle(out,null);
          var ff  = css.getPropertyValue("font-family");
          var fs  = css.getPropertyValue("font-size");
-         
          var temp = document.createElement('span');
+
          temp.style = "margin:0px;padding:0px;font-family:"+ff+
-                       ";font-size:"+fs;
+                      ";font-size:" + fs;
+
          temp.innerText = "0123456789";
          var element = document.body.appendChild(temp);
-         var out = document.getElementById('output');
-         var x = Math.round(out.offsetHeight / temp.offsetHeight);
+         var x = Math.round(out.offsetHeight / (temp.offsetHeight-2));
          var y = Math.round(out.offsetWidth / (temp.offsetWidth / 10));
          temp.parentNode.removeChild(temp);
-         return x + "," + y;
+         return x + "," + y + "," + fs + "-" + ff + "=2";
      }
    
      function Connection(url) {
@@ -7489,20 +7517,33 @@ START: muddler_client.js
            // console.log("request: " + data);
 
            if(data === "mobile on") {
+              document.querySelector('#bar').style.bottom = "52px";
+              document.querySelector('#bartime').style.bottom = "52px";
               var obj = document.getElementById("output");
-              document.querySelector('#terminal').style.bottom = "37px";
+              document.querySelector('#terminal').style.bottom = "30px";
               document.querySelector('#buttonbar').style.display = 
                   "inline-block";
-              obj.style.fontSize = "9pt";
+              document.querySelector('#output').style.fontSize = "8pt";
+              document.querySelector('#output').style.bottom = "74px";
+              obj.style.fontSize = "8pt";
               obj.scrollTop = obj.scrollHeight;
-              get_xy_size();
+              document.querySelector('#input').style.bottom = '4px';
+              sendCommand('/web_size ' + get_xy_size("8pt") + '\r\n');
            } else if(data === "mobile off") {
               var obj = document.getElementById("output");
               document.querySelector('#terminal').style.bottom = 0;
               document.querySelector('#buttonbar').style.display = "none";
-              obj.style.fontSize = "10pt";
+              document.querySelector('#output').style.fontSize = "10pt";
+//              obj.style.fontSize = "10pt";
               obj.scrollTop = obj.scrollHeight;
-              get_xy_size();
+
+              document.querySelector('#bar').style.bottom = "50px";
+              document.querySelector('#bartime').style.bottom = "50px";
+              document.querySelector('#terminal').style.bottom = "0px";
+              document.querySelector('#output').style.bottom = "71px";
+              document.querySelector('#input').style.bottom = '0px';
+
+              sendCommand('/web_size ' + get_xy_size("10pt") + '\r\n');
            } else if(data === "theme light") {
               document.querySelector('.ansi-37').style.color='black';
               document.getElementById('output').style.backgroundColor='white';
@@ -8531,8 +8572,8 @@ START: muddler_client.html
      <textarea id="input" autocomplete="off" autofocus></textarea>
    </div>
      <div id="buttonbar" "class=buttonbar" style=width:100%>
-         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgup 5')">PgUP</button>
-         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgdn 5')">PgDN</button>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgup 5')">HistoryUP</button>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgdn 5')">HistoryDOWN</button>
          <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_up')">NextWld</button>
          <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 1px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_down')">PrevWld</button>
      </div>
@@ -8578,20 +8619,19 @@ START: muddler_client.html
          var css = getComputedStyle(out,null);
          var ff  = css.getPropertyValue("font-family");
          var fs  = css.getPropertyValue("font-size");
-   
          var temp = document.createElement('span');
+
          temp.style = "margin:0px;padding:0px;font-family:"+ff+
-                       ";font-size:"+fs;
+                      ";font-size:" + fs;
+        
          temp.innerText = "0123456789";
          var element = document.body.appendChild(temp);
-         var out = document.getElementById('output');
-         var x = Math.round(out.offsetHeight / temp.offsetHeight);
+         var x = Math.round(out.offsetHeight / (temp.offsetHeight-2));
          var y = Math.round(out.offsetWidth / (temp.offsetWidth / 10));
          temp.parentNode.removeChild(temp);
-         return x + "," + y;
+         return x + "," + y + "," + fs + "-" + ff + "=1";
      }
-   
-     
+
      // just log a standard message on these socket status events
      conn.onOpen = function (evt) { 
          output.appendMessage('logMessage', '%% Connected.');

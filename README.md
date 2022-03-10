@@ -9,10 +9,10 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 ```
    o Console support - Mudding via your favorite terminal
    o Http/websocket support - Think mudding via your browser
-   o UTF8 support 
    o 256 color support
-   o Inital fansi support
-   o Multiple worlds at the same time
+   o UTF8 support 
+   o fansi support
+   o Connect to multiple worlds at the same time
    o More / pausing output as needed
    o Spell checking
        mispelled words will be bold in console and red squiggly underline
