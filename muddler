@@ -210,6 +210,7 @@ sub command_init
    @command{input_size}    = sub { return cmd_input_size(@_);              };
    @command{isize}         = sub { return cmd_input_size(@_);              };
    @command{perl}          = sub { return cmd_perl(@_);                    };
+   @command{quote}         = sub { return cmd_quote(@_);                   };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -1702,6 +1703,10 @@ sub hist_pos
    } elsif($action ne undef) {
       @socket{$w}->{hist_pos} = $action;
       @socket{$w}->{hist_offset} += $offset;
+      if(@socket{$w}->{hist_offset} == 0) {
+         delete @socket{$w}->{hist_offset};
+         delete @socket{$w}->{hist_pos};
+      }
    } elsif(defined @socket{$w}) {
       return @socket{$w}->{hist_pos};
    }
@@ -5212,9 +5217,11 @@ sub get_segment_end
 {
    my $txt = shift;
    my ($in_single, $in_double);
+   loggit("get_segment_end: called '%s'\n",$txt);
 
    for(my $i=0;$i <= length($txt);$i++) {
       my $ch = substr($txt,$i,1);
+      loggit("   ch: '%s'\n",$ch);
 
       if($ch eq "\\") {
          $ch++;
@@ -5223,15 +5230,17 @@ sub get_segment_end
       } elsif($ch eq "\'" && !$in_double) {
          $in_single = !$in_single;
       } elsif($ch eq " " && !$in_single && !$in_double) {
-         return $i;                                          # done
+         loggit("RETURNING: '%s'\n",$i);
+         return $i;                                        # done
       }
    }
+   loggit("RETURNING_length: '%s'\n",length($txt));
    return length($txt);
 }
 
 sub getopt
 {
-   my ($opts,$txt,$result) = @_;
+   my ($opts,$txt,$result,$time) = @_;
    my ($in_arg,%lookfor,$prev,$end);
 
    for(my $i = 0;$i < length($opts);$i++) {     # determine what to look for
@@ -5254,16 +5263,20 @@ sub getopt
       } elsif($in_arg and $ch eq " ") {                      # end of option
          $in_arg = 0;
       } elsif($in_arg) {                                   # option contents
-         if(defined @lookfor{$ch}) {
+         if(defined @lookfor{$ch} || ($time && $ch =~ /^\d+$/)) {
             if(@lookfor{$ch} == 1) {                         # simple option
                $$result{$ch} = 1;
-            } elsif(@lookfor{$ch} == 2) {                   # option w/value
-               $end = get_segment_end(substr($txt,$i+1));      # scan to end
-               if($end eq undef) {                           # nothing found
+            } elsif(@lookfor{$ch} == 2 || ($time && $ch =~ /^\d+$/)) {
+               # option w/value
+               $end = get_segment_end(substr($txt,$i));      # scan to end
+               if($time && $ch =~ /^\d+$/) {
+                  $$result{time} = remove_quotes(substr($txt,$i,$end)); 
+                  $i += $end - 1;
+               } elsif($end eq undef) {                      # nothing found
                   $$result{$ch} = "";
                } else {                                    # found something
                   $$result{$ch} = remove_quotes(substr($txt,$i+1,$end)); 
-                  $i += $end;
+                  $i += $end - 1;
                }
             }
          } else {
@@ -5290,21 +5303,93 @@ sub ts
 
 sub cmd_quote
 {
+#-# ------------------------------------------------------------------------
+#-# /quote [options] <command>
+#-#
+#-#      Quotes a command, file, or muddler command to a world.
+#-#
+#-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
    my $w = world($conn);
-   my $fd;
+   my ($fd,$pre,$array,$when);
+   my $world = $conn;
+   my $opt = {};
 
-   if($txt =~ /^\s*!/) {
-      # command
-   } else { # file
-      open($fd,"< $txt") ||
-         return echo("%% Unable to open file '$txt' for reading.");
-      while(<$fd>) {
-         out($w,$_);
+   $txt = getopt("d:w:s",$txt,$opt,1);
+
+   # future impliment?
+   my $delay = 0;
+   if(defined $$opt{time}) {
+      if($$opt{time} =~ /^\s*([\d]+):([\d+]):([\d+])\s*/) {
+         if($1 > 24) {
+            return echo("%% QUOTE : there are only 24hrs in a day.");
+         } elsif($2 > 59) {
+            return echo("%% QUOTE : there are only 60 minutes in an hour.");
+         } elsif($3 > 59) {
+            return echo("%% QUOTE : there are only 60 seconds in an minute.");
+         }
+         $delay = ($1 * 3600) + ($2 * 60) + $3;
+      } elsif($txt =~ /^\s*([\d]+):([\d+])\s*/) {
+         if($1 > 59) {
+            return echo("%% QUOTE : there are only 24hrs in a day.");
+         } elsif($2 > 59) {
+            return echo("%% QUOTE : there are only 60 minutes in an hour.");
+         }
+         $delay = ($1 * 60) + $2;
+      } elsif($$opt{time} =~ /^\s*([\d]+)\s*/) {
+         if($1 > 59) {
+            return echo("%% QUOTE : there are only 60 seconds in an minute.");
+         }
+         $delay = $1;
       }
-      close($fd);
    }
+   loggit("delay: '%s'\n",$delay);
+
+   $$opt{w} = $conn if(!defined $$opt{w});
+   $$opt{d} = "send" if(!defined $$opt{d});
+   if($$opt{d} !~ /^(echo|send|exec|0|1|2)$/) {
+      return echo("%% QUOTE -d: Invalid -d value \"$$opt{d}\".  Valid " .
+         "values are: echo (0), send (1), exec (2)");
+   }
+
+   if(!defined @socket{$$opt{w}}) {
+      return echo("%% QUOTE: Not connected to world $$opt{$w}");
+   }
+
+   if($txt =~ /^([^!`']+)!\s*/) {
+      $pre = $1;
+      open($fd,"$' |") ||
+         return echo("%% Unable to run commmand '$''.");
+   } elsif($txt =~ /^([^!`']+)'\s*/) {
+      $pre = $1;
+      open($fd,"< $'") ||
+         return echo("%% Unable to open file '$txt' for reading.");
+   } elsif($txt =~ /^([^!`']+)`\s*/) {
+      $pre = $1;
+      return echo("%% Quoting muddler commands not supported yet");
+   } else {
+      return echo("%% QUOTE: missing command character");
+   }
+
+  
+   @socket{$$opt{w}}->{quote} = [] if(!defined @socket{$$opt{w}}->{quote});
+   $array = @socket{$$opt{w}}->{quote} = [];
+   $when = time();
+
+   while(<$fd>) {
+      # queue up output so it can be processed $when it is time, even
+      # if that is now.
+      push(@$array,{ when => $when,
+                     what => $pre . $_,
+                     how  => $$opt{d},
+                   }
+          );
+      $when += $delay;
+      loggit("When: $when\n");
+   }
+   close($fd);
 }
+
 sub cmd_recall
 {
 #-# ------------------------------------------------------------------------
@@ -5752,6 +5837,24 @@ sub tick
          } else {
             out($w,"\@\@ idle\n");
          }
+      }
+
+      # handle results from /quote command as they may need to be handled
+      # in the future and not specifically when cmd_quote() is running.
+      if(defined @socket{$w}->{quote}) {
+         my $quote = @socket{$w}->{quote};
+
+         while($#$quote > -1 && $$quote[0]->{when} <= time()) {
+             my $item = shift(@$quote);
+             if($$item{how} eq "echo" || $$item{how} eq 0) {
+                # impliment me, yes you.
+             } elsif($$item{how} eq "send" || $$item{how} eq 1) {
+                out($w,"%s\n",$$item{what});
+             } elsif($$item{how} eq "exec" || $$item{how} eq 2) {
+                # impliment me, yes you.
+             }
+         }
+         delete @socket{$w}->{quote} if($#$quote == -1);
       }
    }
 
