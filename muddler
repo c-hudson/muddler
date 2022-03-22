@@ -488,6 +488,32 @@ sub ansi_string
    return $buf;
 }
 
+
+
+sub dearray
+{
+   my $data = shift;
+   my $buf;
+
+   for my $i (0 .. $#{$$data{ch}}) {
+      $buf .= join('', @{@{$$data{code}}[$i]});
+      $buf .= @{$$data{ch}}[$i];
+   }
+   return $buf;
+}
+
+sub txt
+{
+   my @data = @_;
+   my @out;
+
+   for my $i (0 .. $#data) {
+      push(@out,dearray(@data[$i]));
+   }
+   return @out;
+}
+
+
 #
 # ansi_substr
 #    Do a substr on a string while preserving the escape codes.
@@ -496,38 +522,54 @@ sub ansi_string
 #
 sub ansi_substr
 {
-   my ($txt,$start,$count,$noansi) = @_;
-   my ($result,$data);
-   my $last = -1;
+   my ($data,$start,$count,$noansi) = @_;
+   my ($result,$i);
 
-   if(ref($txt) eq "HASH") {
-      $data = $txt;
-   } else {
-      $data = ansi_init($txt);
-   }
-
-   $start = 0 if($start !~ /^\s*\d+\s*$/);                  # sanity checks
+   $data = ansi_init($data) if(ref($data) ne "HASH");
+   $start = 0 if($start !~ /^\s*\d+\s*$/);                 # sanity checks
    if($count !~ /^\s*\d+\s*$/) {
-      $count = ansi_length($txt);
+      $count = ansi_length($data);
    } else {
       $count += $start;
    }
    return undef if($start < 0);                         # no starting point
 
-   # loop through each "character" w/attached ansi codes
-   for(my $i = $start;$i < $count && $i <= $#{$$data{ch}};$i++) {
+   my $new = { ch => [], code => [], state  => [], snap   => [] };
+
+   my $pos = 0;
+   # copy each "character" w/attached ansi codes
+   for($i = $start;$i < $count && $i <= $#{$$data{ch}};$i++) {
+      # add each escape code one at a time
+      $$new{code}->[$pos] = [];
+
       if(!$noansi) {
-         my $code=join('',@{@{$$data{($i == $start) ? "snap" : "code"}}[$i]});
-         $result .= $code . @{$$data{ch}}[$i];
-      } else {
-         $result .= @{$$data{ch}}[$i];
+         for my $x (0 .. $#{$$data{code}->[$i]}) {
+            $$new{code}->[$pos]->[$x] = $$data{code}->[$i]->[$x];
+         }
+
+         for my $x (0 .. $#{$$data{snap}->[$i]}) {
+            $$new{snap}->[$pos]->[$x] = $$data{snap}->[$i]->[$x];
+         }
       }
-      $last = $#{@{$$data{snap}}[$i]};
+      $$new{ch}->[$pos] = $$data{ch}->[$i];
+      # add the character that follows the escape code (if any)
+      $pos++;
    }
 
-   # are attributes turned on on last character? if so, reset them.
-   return $result . (($last == -1) ? "" : (chr(27) . "[0m"));
+   # add ending clear of all attributes to prevent bleeding
+   
+   if($i >= 1 && $#{$$data{snap}->[$i-1]} != -1) {
+      $$new{ch}->[$pos] = "";
+      $$new{code}->[$pos] = [ chr(27) . "[0m" ];
+      $$new{snap }->[$pos] = [];
+   }
+
+
+#   ansi_add($new,0,chr(27) . "[0m") if($#{$$data{snap}->[$i-1]} != -1);
+
+   return $new;
 }
+
 
 #
 # ansi_length
@@ -1250,7 +1292,7 @@ sub io
                  SSL_server    => 1,
                  SSL_reuse_ctx => $ctx,
              ) or do {
-                loggit("ssl handshake failed: $SSL_ERROR");
+                loggit("ssl handshake failed: $!,$SSL_ERROR");
                 $s->close;
                 return;
              };
@@ -1288,7 +1330,7 @@ sub io
                  SSL_server    => 1,
                  SSL_reuse_ctx => $ctx,
              ) or do {
-                loggit("ssl handshake failed: $SSL_ERROR");
+                loggit("ssl handshake failed: $!,$SSL_ERROR");
                 $s->close;
                 return;
              };
@@ -1629,7 +1671,7 @@ sub echo_wrap
 
    if(console()) {
       for my $line (ansi_wrap($txt)) {
-         echo_console("%s",$line);
+         echo_console("%s",txt($line));
       }
    }
    if(web()) {
@@ -1647,7 +1689,7 @@ sub echo_wrap
                ws_echo($c,'t',$txt);
             } else {
                for my $line (ansi_wrap($txt,$y)) {
-                  ws_echo($c,"t",$line);
+                  ws_echo($c,"t",txt($line));
                }
             }
          };
@@ -1756,8 +1798,8 @@ sub pending_fix
             $start = history_pos($w) + 1;
             $txt_start = 0; # but at character $
          }
-         $count +=scalar ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},
-                                          $txt_start));
+         $count +=scalar ansi_wrap(ansi_substr(
+             @history{$w}->[$i]->{txt},$txt_start));
       }
    }
    
@@ -1861,6 +1903,7 @@ sub echo
 sub echo_console
 {
    my $fmt = shift;
+
    my $msg = sprintf("$fmt",@_);
  
    return if(!console());
@@ -2081,7 +2124,6 @@ sub history_add
                          };
 
    if(!$gagged) {
-#      loggit("#> %s", $line);
       @socket{$world}->{pending} += 
           scalar cache_wrap(@state{world},$world,$#$array);
    }
@@ -2168,7 +2210,7 @@ sub echo_world
             ws_echo($c,"t");
          } else {
             for my $line (ansi_wrap($web,$y)) {
-               ws_echo($c,"t",$line);
+               ws_echo($c,"t",txt($line));
             }
          }
       }
@@ -2267,11 +2309,11 @@ sub release_pending_pagefull
          history_pos_partial($w,$txt_start + 
                                 ansi_length(join("",@list[0 .. ($end-1)])));
          echo_world($w,
-                    join("\n",@list[0 .. ($end-1)]),
-                    ansi_substr(@history{$w}->[$i]->{txt},
+                    join("\n",txt(@list[0 .. ($end-1)])),
+                    txt(ansi_substr(@history{$w}->[$i]->{txt},
                                 $txt_start,
                                 history_pos_partial()
-                               )
+                               ))
                    );
          @socket{$w}->{pending} -= $end;
          @socket{$w}->{more} = history_pos($w);        
@@ -2284,8 +2326,8 @@ sub release_pending_pagefull
       } else {                                       # full entry can be shown
          @socket{$w}->{pending} -= $#list + 1;
          echo_world($w,
-                    join("\n",@list),
-                    ansi_substr(@history{$w}->[$i]->{txt},$txt_start)
+                    join("\n",txt(@list)),
+                    txt(ansi_substr(@history{$w}->[$i]->{txt},$txt_start))
                    );
          history_pos_partial($w,-1);
          @socket{$w}->{more_count} += $#list + 1 if(more($w));
@@ -2397,39 +2439,77 @@ sub wrap_garbage_collect
 #
 sub ansi_wrap
 {
-   my ($txt,$y) = @_;
-   $txt =~ s/[\n\r]+$//g;
-   my $str = ansi_init($txt);
-   my ($start,$last,$len,@out) = (0);
-   @state{ansi_wrap}++;
-#   loggit("wrap: '%s'\n",code());
+   my ($str,$size_y) = @_;
+   $size_y = @state{size_y} if(!defined $size_y);
+   my ($break, $start, @result);
 
-   $y = @state{size_y} if($y eq undef);                  # default to console
+   $str = ansi_init(shift) if(ref($_[0]) ne "HASH");
 
-   for my $i (0 .. $#{$$str{ch}}) {
-      if(ansi_char($str,$i) =~ /[ ,\/\\\-\.]/ && $i-$start <= $y - 1) {
-         $len = $i + 1;                           # scan for breaking points
+   my $i = 0;
+   while($i <= $#{@$str{ch}}) {
+      if($$str{ch}-[$i] eq "\n") {
+         push(@result,ansi_substr($str,$start,$i - $start - 1));
+         ($break,$start) = (undef,$i + 1);
+      } elsif($i - $start >= $size_y) {
+         if(defined $break && $i - $break < 30) {
+            push(@result,ansi_substr($str,$start,$break-$start));
+            $start = $break + 1;
+         } else {
+            push(@result,ansi_substr($str,$start,$i-$start));
+            $start = $i + 1;
+         }
+         $break = undef;
+      } elsif(is_in($$str{ch}->[$i],"["," ",",","\\","/","-",".")) {
+         $break = $i;
       }
-
-      if($i - $start >= $y - 2) {                   # past max, use last point
-         # use $len unless at end of string or no breakpoints found
-         my $cut = (ansi_length($str) == $i+1 || $len eq undef) ? ($i+1) : $len;
-         push(@out,ansi_substr($str,$start,$cut - $start));
-         $start = $cut;
-         $len = undef;
-      }
+      $i++;
    }
 
-   # add left overs.
-   #
-   # fyi - $start should be started at -1 but instead its at zero which means
-   # one character could be ignored if the string is one character long.
-   if(($start == 0 && $start == $#{$$str{ch}}) || $start < $#{$$str{ch}}) {
-#      loggit("wraP: '%s'[%s]\n",ansi_substr($str,$start),code());
-      push(@out,ansi_substr($str,$start));
-   }
-   return @out;
+   # add left overs
+   push(@result,ansi_substr($str,$start)) if($start <= $#{@$str{ch}});
+   return @result;
 }
+
+
+
+
+
+#
+# ansi_cat
+#    Add string $add to the end of $str
+#
+sub ansi_cat
+{
+   my ($str,$add) = @_;
+
+   $str = ansi_init($str) if(ref($str) ne "HASH");
+   $add = ansi_init($add) if(ref($add) ne "HASH");
+
+   my $pos = $#{$$str{ch}} + 1;
+   for my $i (0 .. $#{$$add{ch}}) {
+      # add each escape code one at a time
+      $$str{code}->[$pos] = [];
+      for my $x (0 .. $#{$$add{code}->[$i]}) {
+         $$str{code}->[$pos]->[$x] = $$add{code}->[$i]->[$x];
+      }
+
+      for my $x (0 .. $#{$$add{snap}->[$i]}) {
+         $$str{snap}->[$pos]->[$x] = $$add{snap}->[$i]->[$x];
+      }
+      $$str{ch}->[$pos] = $$add{ch}->[$i];
+      # add the character that follows the escape code (if any)
+      $pos++;
+   }
+
+   if($#{$$str{snap}->[$pos-1]} != -1) {
+      $$str{ch}->[$pos] = "";
+      $$str{code}->[$pos] = [ chr(27) . "[0m" ];
+      $$str{snap }->[$pos] = [];
+   }
+   return $str;
+}
+
+
 
 #
 # overlap
@@ -2472,7 +2552,7 @@ sub get_output
 
    $max = $x - (($full) ? 0 : 3);
    for(my $i=$start_pos;
-       $i >= 0 && $#out <= $max && $i <= $#$hist;
+       $i >= 0 && $#out < $max && $i <= $#$hist;
        $i--) {
       next if $$hist[$i]->{gagged};
 
@@ -2486,7 +2566,12 @@ sub get_output
          unshift(@out,{ pos => $i, txt => ""});
       } else {                                   # add each line if possible
          for my $y (reverse 0 .. $#line) {
-            unshift(@out,{ pos => $i, txt => @line[$y]}) if($#out + 1 < $x);
+            if($#out - 1 < $x) {
+               unshift(@out,{ pos => $i, 
+                              txt => txt(@line[$y])
+                            }
+                      );
+            }
          }
       }
    }
@@ -2534,39 +2619,6 @@ sub redraw_output
           }
           ws_echo($conn,"t",$$hash{txt});
       }
-   }
-}
-
-sub redraw_input_new
-{
-   my $conn = shift;
-   my $count = 0;
-   my @out;
-
-   return if(!console());
-
-#   for my $i (0 .. $#input) {
-#      loggit("#-#: '%s'\n",join('',@{@input[$i]}));
-#   }
-
-   if(is_console($conn)) {
-      update_scroll_region("input",1);
-      xy(input_start(),1,1);
-      for(my $pos = $#input;$pos >= 0 && $#out < input_size() -1;$pos--){
-         my $end = input_lines($pos);
-         if($end eq 0) {
-             push(@out,"");
-         } else {
-            for my $i (reverse 1 .. $end) {
-               push(@out,input_line($i,$pos));
-               last if $#out >= input_size()-1;
-            }
-         }
-      }
-      for my $i (reverse 0 .. $#out) {
-         printf("%s\033[K%s",@out[$i],($i != 0) ? "\n" : "");
-      }
-      xy(input_x(),input_y(),1);
    }
 }
 
@@ -3738,7 +3790,6 @@ sub xy
    my ($x,$y,$use_the_force_luke) = @_;
 
    return if !console();
-#   loggit("xy: %s,%s -> %s\n",$x,$y,code());
    printf("\033[%s;%sH",$x,$y);
 }
 
@@ -3973,10 +4024,8 @@ sub code
          if($line =~ /at ([^ ]+) line (\d+)\s*$/) {
             my ($fun,$ln) = ($1,$2);
             if(defined $$prev{$fun}) {
-#               loggit("code: $line");
                push(@stack,(@{$$prev{$fun}}{line} + $ln) . "[$fun]");
             } else {
-#               loggit("!code: $line");
                push(@stack,"$ln*");
             }
          }
@@ -4767,14 +4816,14 @@ sub cmd_listdef
                     $key,
                     @def{$key}->{atr},
                     @def{$key}->{world},
-                    $line
+                    txt($line)
                    ));
             } else {
                history(world($conn),sprintf("%-15s %4s %-8s %s",
                     "",
                     "",
                     "",
-                    $line
+                    txt($line)
                    ));
             }
          }
@@ -5037,7 +5086,6 @@ sub cmd_web_size
       if(@size[1] =~ /^\s*(\d+)\s*$/) {
          @ws{$conn}->{size_y} = $1 - 3;
       }
-#      loggit("web_size: '%s'\n",$txt);
    }
    redraw_output($conn,1);
 }
@@ -5217,11 +5265,9 @@ sub get_segment_end
 {
    my $txt = shift;
    my ($in_single, $in_double);
-   loggit("get_segment_end: called '%s'\n",$txt);
 
    for(my $i=0;$i <= length($txt);$i++) {
       my $ch = substr($txt,$i,1);
-      loggit("   ch: '%s'\n",$ch);
 
       if($ch eq "\\") {
          $ch++;
@@ -5230,11 +5276,9 @@ sub get_segment_end
       } elsif($ch eq "\'" && !$in_double) {
          $in_single = !$in_single;
       } elsif($ch eq " " && !$in_single && !$in_double) {
-         loggit("RETURNING: '%s'\n",$i);
-         return $i;                                        # done
+         return $i;                                       # done
       }
    }
-   loggit("RETURNING_length: '%s'\n",length($txt));
    return length($txt);
 }
 
@@ -5270,12 +5314,12 @@ sub getopt
                # option w/value
                $end = get_segment_end(substr($txt,$i));      # scan to end
                if($time && $ch =~ /^\d+$/) {
-                  $$result{time} = remove_quotes(substr($txt,$i,$end)); 
+                  $$result{time} = remove_quotes(trim(substr($txt,$i,$end))); 
                   $i += $end - 1;
                } elsif($end eq undef) {                      # nothing found
                   $$result{$ch} = "";
                } else {                                    # found something
-                  $$result{$ch} = remove_quotes(substr($txt,$i+1,$end)); 
+                  $$result{$ch} = remove_quotes(trim(substr($txt,$i+1,$end))); 
                   $i += $end - 1;
                }
             }
@@ -5343,7 +5387,6 @@ sub cmd_quote
          $delay = $1;
       }
    }
-   loggit("delay: '%s'\n",$delay);
 
    $$opt{w} = $conn if(!defined $$opt{w});
    $$opt{d} = "send" if(!defined $$opt{d});
@@ -5385,7 +5428,6 @@ sub cmd_quote
                    }
           );
       $when += $delay;
-      loggit("When: $when\n");
    }
    close($fd);
 }
@@ -5646,7 +5688,7 @@ sub read_tfrc
          # comment;
       } elsif(/\s*\\\s*$/) {
          $prev .= $`;
-      } else {
+      } elsif($prev . $_ !~ /^\s*\/set /) {
          do_cmd(undef,$prev . $_);
          $prev = undef;
       }
