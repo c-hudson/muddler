@@ -42,6 +42,9 @@ my %def;                                        # tf style define information
 my %pid;                                              # internal process list
 my %telnet_ch;
 my %cache;
+my $client;                                                # websocket client
+my $wc;                                                    # websocket client
+my %var;                                                 # settable variables
 my @options = qw(
     BINARY ECHO RCP SGA NAMS STATUS TM RCTE NAOL NAOP NAOCRD NAOHTS NAOHTD
     NAOFFD NAOVTS NAOVTD NAOLFD XASCII LOGOUT BM DET SUPDUP SUPDUPOUTPUT SNDLOC
@@ -73,40 +76,44 @@ my %state = (
 #                                    cpan => "perl -MCPAN -e \"install " .
 #                                           "Net::WebSocket::Server\"",
 my %mod = (
-   'Term::ReadKey'          => { fatal => 0,
-                                 pkg => "libterm-readkey-perl",
-                                 for => 'screen size detection'
-                               },
-   'Net::WebSocket::Server' => { fatal => 0,
-                                 cpan => "yes",
-                                 for => 'web gui'
-                               },
-   'Encode'                 => { fatal => 0,
-                                 for => "utf8/fansi"
-                               },
-   'Digest::MD5'            => { fatal => 0,
-                                 pkg => "Digest::MD5",
-                                 for => "caching/code reloading"
-                               },
-   'Text::Aspell'           => { fatal => 0,
-                                 pkg => "libtext-aspell-perl", 
-                                 for => 'spell check' },
-   'IO::Socket::SSL'        => { fatal => 0,
-                                 for => 'ssl'
-                               },
-   'IO::Select'             => { fatal => 1,
-                                 for => 'networking'
-                               },
-   'IO::Socket'             => { fatal => 1,
-                                 for => 'networking'
-                               },
-   'Text::ParseWords'       => { fatal => 0,
-                                 for => 'tf compat'
-                               },
-   'IO::Socket::Timeout'    => { fatal => 0,
-                                 for => 'ssl websockets',
-                                 pkg => "libio-socket-timeout-perl"
-                               },
+   'Term::ReadKey'               => { fatal => 0,
+                                      pkg => "libterm-readkey-perl",
+                                      for => 'screen size detection'
+                                    },
+   'Net::WebSocket::Server'      => { fatal => 0,
+                                      cpan => "yes",
+                                      for => 'web gui'
+                                    },
+   'Encode'                      => { fatal => 0,
+                                      for => "utf8/fansi"
+                                    },
+   'Digest::MD5'                 => { fatal => 0,
+                                      pkg => "Digest::MD5",
+                                      for => "caching/code reloading"
+                                    },
+   'Text::Aspell'                => { fatal => 0,
+                                      pkg => "libtext-aspell-perl", 
+                                      for => 'spell check' },
+   'IO::Socket::SSL'             => { fatal => 0,
+                                      for => 'ssl'
+                                    },
+   'IO::Select'                  => { fatal => 1,
+                                      for => 'networking'
+                                    },
+   'IO::Socket'                  => { fatal => 1,
+                                      for => 'networking'
+                                    },
+   'Text::ParseWords'            => { fatal => 0,
+                                      for => 'tf compat'
+                                    },
+   'IO::Socket::Timeout'         => { fatal => 0,
+                                      for => 'ssl websockets',
+                                      pkg => "libio-socket-timeout-perl"
+                                    },
+   'Protocol::WebSocket::Client' => { fatal => 0,
+                                        for => 'remote console',
+                                    },
+
 );
 #
 # define all keys/commands in a manor so that they can be reloaded
@@ -159,9 +166,9 @@ sub key_init
 sub command_init
 {
    delete @command{keys %command};
+   @command{send}          = sub { return cmd_send(@_);                    };
    @command{blurred}       = sub { return cmd_blurred(@_);                 };
    @command{focused}       = sub { return cmd_focused(@_);                 };
-   @command{debug}         = sub { return cmd_debug(@_);                   };
    @command{stat}          = sub { return cmd_stat(@_);                    };
    @command{world}         = sub { return cmd_world(@_);                   };
    @command{quit}          = sub { return cmd_quit(@_);                    };
@@ -195,7 +202,6 @@ sub command_init
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    @command{keepalive}     = sub { return cmd_keepalive(@_);               };
    @command{color}         = sub { return cmd_color(@_);                   };
-   @command{password}      = sub { return cmd_password(@_);                };
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{sync}          = sub { return cmd_sync(@_);                    };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
@@ -207,10 +213,12 @@ sub command_init
    @command{console}       = sub { return cmd_console(@_);                 };
    @command{utf8}          = sub { return cmd_utf8(@_);                    };
    @command{fansi}         = sub { return cmd_fansi(@_);                   };
+   @command{latin}         = sub { return cmd_latin(@_);                   };
    @command{input_size}    = sub { return cmd_input_size(@_);              };
    @command{isize}         = sub { return cmd_input_size(@_);              };
    @command{perl}          = sub { return cmd_perl(@_);                    };
    @command{quote}         = sub { return cmd_quote(@_);                   };
+   @command{window}        = sub { return cmd_window(@_);                  };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -872,6 +880,135 @@ sub socket_connect
    draw_bar();
 }
 
+#
+# wc_init
+#    Connect to the websocket server at the port defined in the command
+#    line or default to localhost:9001.
+#
+sub wc_init
+{
+   my $gui = shift;
+   my ($host,$port) = @_;
+
+   if(defined @state{remote_address}) {
+      if(@state{remote_address} =~ /^\s*([^:]+)\s*:\s*(\d+)\s*$/) {
+         ($host,$port) = ($1,$2);
+      } else {
+         die("Invalid format to remote address, expected  --remote=host:port");
+      }
+    } else {
+         ($host,$port) = ("127.0.0.1",9001);
+    }
+
+    $wc = IO::Socket::SSL->new(PeerAddr => $host,
+                                  PeerPort => $port,
+                                  Proto => 'tcp',
+                                  SSL_startHandshake => 0,
+                                     #($proto eq 'wss' ? 1 : 0),
+                                  Blocking => 1) or
+       err("Failed to connect to $host on port $port:  $@");
+
+   $client = Protocol::WebSocket::Client->new(
+       url => "ws://$host:$port");
+
+   # setup handlers
+   $client->on( write   => sub { wc_write(@_); } );
+   $client->on( connect => sub { wc_connect(@_); } );
+   $client->on( error   => sub { wc_error(@_); } );
+   $client->on( read    => sub { wc_read(@_); } );
+
+   # add connection to the listener
+   $ws_server->{select_readable}->add($wc);
+
+   # connect to the server
+   $client->connect;
+}
+
+#
+# err
+#    Save the error in the state variable. The END declarition will
+#    then reset the terminal and show the messaqe afterwards.
+#
+sub err
+{
+   my $msg = shift;
+
+   @state{err} = $msg;
+   exit();
+}
+
+sub wc_write
+{
+   my ($client,$txt) = @_;
+
+   syswrite($wc,$txt);
+}
+
+sub wc_connect
+{
+   my ($client,$txt) = @_;
+
+   # the y size has 3 characters removed from it for better rendering,
+   # but isn't needed when doing the internal client.. so remove the
+   # fudge factor here by adding 3.
+   wc_out("/web_size %s,%s\n",@state{size_x},@state{size_y}+3);
+
+   if(defined @state{window_value}) {
+      wc_out("/window socket=@state{window_value}\n");
+   } else {
+      wc_out("/key_ctl_l\n",@state{size_x},@state{size_y});
+      wc_out("/focused\n");
+   }
+}
+
+sub wc_error
+{
+   my ($client,$buf) = @_;
+
+   loggit("WC_ERROR: '%s'\n",$buf);
+}
+
+sub wc_out
+{
+   my ($fmt,@args) = @_;
+
+   return if(!defined $client);
+#   loggit("SEND: 't$fmt'\n",@args);
+   $client->write(sprintf("t$fmt",@args));
+}
+
+sub wc_read
+{
+   my ($client,$buf) = @_;
+
+   my $tmp=$buf;
+   $tmp =~ s/\r|\n//g;
+#   loggit("#> %s\n",$tmp);
+   if($buf =~ /^m\r\n/) {
+      printf("%s\n",$');
+   } elsif($buf =~ /^d\r\npassword$/) {
+      if(defined @state{p_password}) {
+         wc_out("%s\n",@state{p_password});
+      } else {
+         show_banner();
+         draw_bar();
+         echo("%s","%% Enter muddler session password:");
+      }
+   } elsif(defined @state{monitor_value}) {
+      return;
+   } elsif($buf =~ /^(d|\*)\r\n/) {
+      clear_screen();
+   } elsif($buf =~ /^t\r\n/) {
+      echo_console("%s",$');
+   } elsif($buf =~ /^b\r\n/) {
+      @state{remote_bar} = $';
+      @state{remote_bar} =~ s/ /_/g;
+      draw_bar();
+   } else {
+      loggit("Ignored: '%s'\n",$buf);
+   }
+}
+
 sub is_enabled
 {
     my $opt = shift;
@@ -1058,6 +1195,23 @@ sub server_hostname
    }
 }
 
+
+#
+# remote
+#    Determine if muddler is remotely 'viewing' a session or displaying
+#    just information via another window. This should probably be two
+#    different tests?
+#
+sub remote
+{
+   if((defined @state{remote} && @state{remote}) ||
+      defined @state{window_value}) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
 sub listener_init
 {
    $ws_server->{select_readable}->add( \*STDIN );
@@ -1075,27 +1229,30 @@ sub listener_init
 sub ws_init
 {
   
-   if(!console()) {
-      printf("%% Web enabled, connect via: http://localhost:@state{p_port}\n");
-      printf("%%    Password: @state{p_password}\n");
-   }
-   @state{web} = 1;
+   # no websocket interface when using remote console
+   return if remote();
 
-   
    if(use_secure()) {
       $http_listen = IO::Socket::SSL->can_ipv6->new( LocalPort =>@state{p_port},
                                                      Listen    => 5,
                                                      Reuse     => 1,
                                                      timeout   => .1,
-                                                   )
-         or die "failed to set up httpd listener: $!";
+                                                   );
+      if(!defined $http_listen) {
+         echo("%% http server [Port:@state{p_port}] start failed: $!");
+         return 0;
+      }
       $ws_listen = IO::Socket::SSL->new(Listen             => 5,
                                         LocalPort          => @state{p_port}+1,
                                         Proto              => 'tcp',
                                         SSL_startHandshake => 0,
                                         SSL_cert_file      => @state{p_cert},
                                         SSL_key_file       => @state{p_key},
-      ) or die "failed to ws_listen: $!";
+                                       );
+      if(!defined $ws_listen) {
+          echo("%% websocket server [Port:@state{p_port}] start failed: $!");
+          return 0;
+      }
       IO::Socket::Timeout->enable_timeouts_on($ws_listen);
       IO::Socket::Timeout->enable_timeouts_on($http_listen);
       $ws_listen->read_timeout(.5);
@@ -1107,7 +1264,8 @@ sub ws_init
           SSL_server => 1,
           SSL_cert_file => 'cert.pem',
           SSL_key_file  => 'key.pem',
-          SSL_verify_mode => 0x00,  #SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
+          SSL_verify_mode => 0x00,  # SSL_VERIFY_PEER | 
+                                    # SSL_VERIFY_FAIL_IF_NO_PEER_CERT
           ) or die "cannot create context: $SSL_ERROR";
       @state{secure} = 1;
    } else {
@@ -1134,18 +1292,28 @@ sub ws_init
 #                                   );
 #                        },
 #      );
+   @state{web} = 1;
    $ws_server->{select_readable}->add($ws_listen);
    $ws_server->{select_readable}->add($http_listen);
    $ws_server->{conns} = {};
+   if(!console()) {
+      printf("%% WEb enabled, connect via: http://localhost:@state{p_port}\n");
+      printf("%%    Password: @state{p_password}\n");
+   }
+   return 1;
 }
 
 sub ws_disconnect
 {
    my $conn = shift;
+   my $sock;
 
-   my $sock = $conn->{socket};
-   $ws_server->{select_readable}->remove( $sock );
-   delete $ws_server->{conns}{$sock};
+#   loggit("ws_disconnect: '%s' [%s]\n",$conn,@ws{$conn});
+   eval {             # don't know how to test if $conn{sock} is valid
+      $sock = $conn->{sock};
+      $ws_server->{select_readable}->remove( $sock );
+      delete $ws_server->{conns}{$sock};
+   };
    delete @ws{$conn};
    # $sock->close;
 }
@@ -1199,6 +1367,13 @@ sub ws_echo
    # probably be removed once this is more stable. With that in mind,
    # currently crash will be treated as a disconnect.
 
+   #loggit("ws_echo: $type, $msg\n");
+
+   if(defined @state{reverse_window} &&
+      defined @state{reverse_window}->{$ws} &&
+      $type ne "m") {
+      return;
+   }
    eval {
 #      $ws->send('',$type . encode_utf8($msg) . "\r\n");
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
@@ -1348,6 +1523,12 @@ sub io
          my $connmeta = $ws_server->{conns}{$sock};
          $connmeta->{lastrecv} = time;
          $connmeta->{conn}->recv();
+      } elsif( remote() && $sock == $wc) {
+         if(sysread($sock,$buf,10240) <= 0) {
+            err("%% Fatal : connection closed to remote muddler session");
+         } else {
+            $client->read($buf);
+         }
       } else {
          loggit("filehandle $sock became readable, but no handler took " .
               "responsibility for it; removing it");
@@ -1605,12 +1786,13 @@ sub ws_process
    $ssl = $ssl ? ',SSL' : '';
 
    my $input = substr($msg,1);
+#   loggit("%s[%s]> %s\n",$conn,(defined @ws{$conn}) ? 1 : 0,$msg);
+   return if !defined @ws{$conn};
 
    # if unathorized check password before allowing any input. Websize
    # is sent on connect, so exclude that.
-   if(@ws{$conn}->{auth} eq 0 && $input =~ /^\/key_(pgdn|pgup)$/) {
-      return;
-   } elsif(@ws{$conn}->{auth} eq 0 && $input !~ /^\/(version|web_size)/) {
+   if((!defined @ws{$conn} || @ws{$conn}->{auth} eq 0) &&
+           $input !~ /^\/(version|web_size|focused|blured|key_ctl_l|monitor|window)/) {
       if($input eq @state{p_password}) {
          @ws{$conn}->{auth} = 1;
          redraw_screen($conn);
@@ -1618,9 +1800,11 @@ sub ws_process
          echo("%% Authenticated web connection from: %s",@ws{$conn}->{ip});
       } else {
          ws_echo($conn,"t","%% Invalid Password.",1);
+         echo("%% Failed web connect from: %s",@ws{$conn}->{ip});
          ws_disconnect($conn);
       }
    } elsif(do_cmd(world($conn),$input,$conn)) {
+#      loggit("do_cmd: '%s'\n",$input);
       # do_cmd runs the command.
    } elsif(no_world()) {
      # do nothing
@@ -2134,6 +2318,27 @@ sub gagged
    my ($w,$txt) = (shift,ansi_remove(shift));
    my $match;
 
+   if(defined @state{window} && ref(@state{window}) eq "HASH") {
+      for my $id (keys %{@state{window}}) {
+         my $window = @state{window}->{$id};
+         if(!defined $$window{sock} && time() - $$window{created} > 60) {
+            delete @state{window}->{$id};         #  connect took to long
+         } elsif(defined $$window{sock} && !defined @ws{$$window{sock}}) {
+            delete @state{window}->{$id};          # must have disconnected?
+            ws_disconnect($$window{sock});
+         } elsif(defined $$window{sock} && $txt =~ /$$window{regexp}/i) {
+            ws_echo($$window{sock},"m",
+                    join("\n                 ",
+                     txt(ansi_wrap(sprintf("%s %-7s | %s\n",
+                            t(),
+                            substr(world($w),0,7),
+                            $txt
+                           ),@ws{$$window{sock}}->{size_y} - 17)
+                   )));
+         }
+      }
+   }
+
    for my $key (keys %def) {
       if(@def{$key}->{world} eq undef || 
          lc(@def{$key}->{world}) eq lc($w)) {
@@ -2321,7 +2526,7 @@ sub release_pending_pagefull
 
          more_update();
          optimize_end();                                    # done, clean up
-         draw_bar(1);
+         draw_bar();
          return;
       } else {                                       # full entry can be shown
          @socket{$w}->{pending} -= $#list + 1;
@@ -2340,7 +2545,7 @@ sub release_pending_pagefull
 
    more_update();
    optimize_end();
-   draw_bar(1);
+   draw_bar();
 }
 
 #
@@ -2447,20 +2652,20 @@ sub ansi_wrap
 
    my $i = 0;
    while($i <= $#{@$str{ch}}) {
-      if($$str{ch}-[$i] eq "\n") {
+      if($$str{ch}->[$i] eq "\n") {
          push(@result,ansi_substr($str,$start,$i - $start - 1));
          ($break,$start) = (undef,$i + 1);
-      } elsif($i - $start >= $size_y) {
+      } elsif($i - $start >= $size_y - 1) {
          if(defined $break && $i - $break < 30) {
             push(@result,ansi_substr($str,$start,$break-$start));
-            $start = $break + 1;
+            $start = $break;
          } else {
             push(@result,ansi_substr($str,$start,$i-$start));
             $start = $i + 1;
          }
          $break = undef;
       } elsif(is_in($$str{ch}->[$i],"["," ",",","\\","/","-",".")) {
-         $break = $i;
+         $break = $i+1;
       }
       $i++;
    }
@@ -2628,13 +2833,19 @@ sub redraw_input
 
    return if(!console());
 
-   if(is_console($conn)) {
+   if(is_console($conn) || remote()) {
       update_scroll_region("input",1);
       xy(input_start(),1,1);
       my $start = @state{input_offset}+1;
       my $end = $start + input_size() - 1;
-      for my $i ($start .. $end) {
-         printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
+      for my $i (input_start() .. input_end()) {
+         if($i >= $start && $i <= $end) {
+            printf("%s\033[K%s",input_line($i),($i != $end) ? "\n" : "");
+         } elsif($i == @state{size_x}) {
+            printf("\033[K");
+         } else {
+            printf("\033[K\n");
+        }
       }
       xy(input_x(),input_y(),1);
    }
@@ -2645,6 +2856,7 @@ sub redraw_screen
 {
    my ($conn,$flag) = @_;
 
+   return if defined @state{monitor_value};
    my $clear = shift;
 
    return if(!console());
@@ -2661,7 +2873,7 @@ sub redraw_screen
 #    history. The show_output() function will actually handle outputing
 #    the text once this subroutine is done.
 #
-sub scan_history
+sub scan_history_new
 {
    my ($conn,$inc,$max) = @_;
    my $count = 0;
@@ -2688,15 +2900,27 @@ sub scan_history
    } else {
       $size = output_end() - overlap();
    }
+   loggit("SIZE: '%s', POS: '$pos'\n",$size);
 
 #   $size = $max if($max ne undef);
       
    my $hist = @history{$w};
-   while($pos > 0 && $pos <= $#$hist && $count <= $size) {
+   while($pos > 0 && $pos <= $#$hist && $count < $size) {
+      my $sub = 0;
       if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
-         for my $line (ansi_wrap($$hist[$pos]->{txt})) {
+         for my $line (reverse ansi_wrap($$hist[$pos]->{txt})) {
+            loggit("sh[$pos-$count]: %s\n",txt(ansi_substr($line,0,50)));
+            $sub += ansi_length($line);
             $count++;
-            next if $count > $size;
+            if($count > $size) {
+              loggit("POS: '%s' [%s]\n",$pos,$#$hist);
+              hist_pos($w,$pos,$count * $inc);
+              loggit("# %s\n",$$hist[$pos]->{txt});
+              hist_pos_partial($w,
+                  ansi_length($$hist[$pos]->{txt}) - $sub);
+#                  $sub);
+               return 1;
+            }
          }
       }
       $pos += $inc;
@@ -2712,10 +2936,66 @@ sub scan_history
       # do nothing;
       return 0;
    } else {
+      loggit("POS: $pos, %s\n",$count * $inc);
       hist_pos($w,$pos,$count * $inc);
       return 1;
    }
 }
+sub scan_history
+{
+   my ($conn,$inc,$max) = @_;
+   my $count = 0;
+   my ($pos, $size);
+
+   my $w = world($conn);
+   return if $w eq undef || !defined @socket{$w};
+
+   if($inc > 0 && (!in_hist($w) || hist_pos($w) == $#{@history{$w}})) {
+      hist_pos($w,"delete");
+      return 0;
+   } elsif(abs($inc) != 1) {
+      die("scan_history incrament must be -1 or +1");
+   } elsif($inc < 0 && !in_hist($w)) {
+      $pos = $#{@history{$w}};
+   } else {
+      $pos = hist_pos($w);
+   }
+
+   if(@state{world} eq $w) {
+      $size = output_end() - overlap();
+   } elsif(is_web($conn)) {
+      $size = @ws{$conn}->{size_x} - overlap();
+   } else {
+      $size = output_end() - overlap();
+   }
+
+#   $size = $max if($max ne undef);
+
+   my $hist = @history{$w};
+   while($pos > 0 && $pos <= $#$hist && $count <= $size) {
+      if(!$$hist[$pos]->{gagged} && $$hist[$pos]->{internal} == 0) {
+         @state{hist_start} += $inc;
+         for my $line (ansi_wrap($$hist[$pos]->{txt})) {
+            $count++;
+         }
+      }
+      $pos += $inc;
+   }
+   $pos++ if($pos == 0);
+   $pos = $#$hist if ($pos > $#$hist);
+
+   if($pos == $#$hist && $inc > 0) {
+      hist_pos($w,"delete");
+      return 1;
+   } elsif($count == 0) {
+      # do nothing;
+      return 0;
+   } else {
+      hist_pos($w,$pos,$count * $inc);
+      return 1;
+   }
+}
+
 
 sub key_shift_up
 {
@@ -2736,13 +3016,15 @@ sub key_pgup
    my ($conn,$size) = @_;
    my $count = -1;
 
+   return wc_out("/key_pgup") if(remote());
+
    if(scan_history($conn,-1,$size)) {
       draw_bar();
       redraw_output($conn);
 
       if(is_console($conn)) {                  # keep any webclients in sync
          for my $s (keys %ws) {
-            redraw_output($s) if(@ws{$s}->{world} eq $conn);
+#            redraw_output($s) if(@ws{$s}->{world} eq $conn);
          }
       } elsif(@ws{$conn}->{world} eq @state{world}) {
          redraw_output(@state{world});                # keep console in sync
@@ -2757,6 +3039,8 @@ sub key_pgup
 sub key_pgdn
 {
    my ($conn,$size) = @_;
+
+   return wc_out("/key_pgdn") if(remote());
 
    if(scan_history($conn,1,$size)) {
       redraw_output($conn);
@@ -2956,6 +3240,8 @@ sub key_ctl_r
 {
    @state{ansi_wrap} = 0;
    reload_code();
+
+   wc_out("/reload\n") if(remote());
 }
 
 #
@@ -2979,7 +3265,17 @@ sub key_ctl_l
    }
    pending_fix(world($conn));
    redraw_screen($conn,1);
+
+   if(remote()) {
+      wc_out("/web_size @state{size_x},@state{size_y}\n");
+      draw_bar();
+      redraw_input($conn);
+   } else {
+      pending_fix(world($conn));
+      redraw_screen($conn,1);
+   }
 }
+   
 
 #
 # key_tab
@@ -2988,6 +3284,8 @@ sub key_ctl_l
 sub key_tab
 {
    my ($conn,$txt) = @_;
+
+   return wc_out("/key_tab") if(remote());
 
    my $w = world($conn);
    return if $w eq undef || !defined @socket{$w};
@@ -3095,7 +3393,7 @@ sub out
       @socket{$world}->{last_send} = time();
    }
 }
-
+   
 sub out_noret
 {
    my ($world,$fmt,@args) = @_;
@@ -3492,6 +3790,8 @@ sub key_up
    my $w = world($conn);
    my $first;
 
+   return wc_out("/key_up") if(remote());
+
    return if($w eq undef || !defined @socket{$w});
    my $pos = @socket{$w}->{pos};
 
@@ -3529,6 +3829,8 @@ sub key_down
 {
    my ($conn,$txt) = @_;
    my ($prev,$last);
+
+   return wc_out("/key_up") if(remote());
 
    my $w = world($conn);
    return if $w eq undef || !defined @socket{$w};
@@ -3623,6 +3925,8 @@ sub key_esc_w
 {
    my ($conn,$txt) = @_;
 
+   return wc_out("/key_esc_w") if(remote());
+
    # try next active world
    my $new = (keys %{@state{activity}})[0];
 
@@ -3659,6 +3963,7 @@ sub key_esc_w
 sub update_scroll_region
 {
    return if !console();
+   return if defined @state{monitor_value};
 
    my ($region,$force) = @_;
    my ($start,$stop);
@@ -3766,6 +4071,7 @@ sub is_web
 sub clear_screen
 {
    my $conn = shift;
+   return if defined @state{monitor_value};
 
    if(is_console($conn) && console()) {
       for my $line (1 .. @state{size_x}) {
@@ -3790,6 +4096,7 @@ sub xy
    my ($x,$y,$use_the_force_luke) = @_;
 
    return if !console();
+   return if defined @state{monitor_value};
    printf("\033[%s;%sH",$x,$y);
 }
 
@@ -3825,6 +4132,27 @@ sub world
    }
 }
 
+sub size_x
+{
+   my $conn = shift;
+
+   if(is_web($conn)) {
+      return @ws{$conn}->{size_x} if(defined @ws{$conn});
+   } else {
+      return @state{size_x};
+   }
+}
+
+sub size_y
+{
+   my $conn = shift;
+
+   if(is_web($conn)) {
+      return @ws{$conn}->{size_y} if(defined @ws{$conn});
+   } else {
+      return @state{size_y};
+   }
+}
 
 #
 # draw_bar
@@ -3832,22 +4160,45 @@ sub world
 #
 sub draw_bar
 {
+   return if defined @state{window_value};
    my $force = shift;
    my $new = time();
    my ($hr,$min,$active) = ((localtime($new))[2,1]);
    $hr -= 12 if($hr > 12);
    $hr = 12 if $hr == 0;
 
-   if(console() && ($force || "$hr$min" ne @state{bar_time} ||
+   if(remote()) {
+      if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
+         @state{remote_bar} ne @state{bar_remote} ||
+         @state{bar_name} ne name(@state{world})) {
+         @state{bar_time} = "$hr$min";
+         @state{bar_size} = @state{size_x}.@state{size_y};
+         @state{bar_prev} = "_" if(!defined @state{bar_prev});
+         @state{bar_prev} = @state{remote_bar};
+            xy(@state{size_x} - input_size(),0);
+            printf("%s%s%s:%02d",
+                   @state{remote_bar},
+                   "_" x (@state{size_y} - ansi_length(@state{remote_bar}) - 
+                       length($hr) - 3),
+                   $hr,
+                   $min
+                  );
+            update_scroll_region("input");
+            xy(input_x(),input_y());
+      }
+      return;
+   } elsif(console() && ($force || "$hr$min" ne @state{bar_time} ||
       @state{bar_activity} ne scalar keys %{@state{activity}} ||
       @state{bar_name} ne name(@state{world}) ||
       @state{bar_more} ne pending(@state{world}) ||
-      @state{bar_pos} ne hist_pos(@state{world}))) {
+      @state{bar_pos} ne hist_pos(@state{world}) ||
+      @state{size_x}.@state{size_y} ne @state{bar_size})) {
       #---
       @state{bar_time} = "$hr$min";
       @state{bar_name} = name(@state{world});
       @state{bar_more} = pending(@state{world});
       @state{bar_pos} = hist_pos(@state{world});
+      @state{bar_size} = @state{size_x}.@state{size_y};
       @state{bar_activity} = scalar keys %{@state{activity}};
       if(scalar keys %{@state{activity}} > 0) {
          if(@state{size_y} < 50) {
@@ -3860,6 +4211,7 @@ sub draw_bar
       my $more = more_bar(@state{world});
       #---
       xy(@state{size_x} - input_size(),0);
+
       printf("%s%s_%s%s_%s_%s_%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
@@ -3877,7 +4229,13 @@ sub draw_bar
 
    my $hash = $ws_server->{conns};
    for my $key ( keys %$hash) {
+      
       my $conn = $$hash{$key}->{conn};
+
+      if(!defined @ws{$conn}) {
+         ws_disconnect($conn);
+         next;
+      }
       if($force || "$hr$min" ne @ws{$conn}->{bar_time} ||
          @ws{$conn}->{bar_activity} ne scalar keys %{@state{activity}} ||
          @ws{$conn}->{bar_name} ne name(world($conn)) ||
@@ -3904,17 +4262,6 @@ sub draw_bar
                 );
          ws_echo($conn,
                  "b",
-#                 sprintf("%-*s %-10s %s%s%s:%02d",
-#                         9 - ansi_length($more),
-#                         $more,
-#                         name(@ws{$conn}->{world}),
-#                         $active,
-#                         " " x (@ws{$conn}->{size_y} - 
-#                                length(name(@ws{$conn}->{world})) -
-#                                length($active) - length($hr) - 30),
-#                         $hr,
-#                         $min
-#                        )
                  sprintf("%-*s %-10s %s",
                          9 - ansi_length($more),
                          $more,
@@ -3976,7 +4323,7 @@ sub revert_console
       return;
    } else {
       normal();
-      printf("\033[r");
+      printf("\033[r\033[2J");
       xy(24,1);
    }
 }
@@ -4148,6 +4495,101 @@ sub single
     return $txt;
 }
 
+sub cmd_window
+{
+#-# ------------------------------------------------------------------------
+#-# /window <pattern>
+#-#
+#-#      Fires off another terminal window that will only show those
+#-#      lines that match <pattern> as they show up. 
+#-#
+#-#      Behind the scenes:
+#-#         This command will startup another instance of muddler in
+#-#         another window. That additional instance will connect via
+#-#         websockets to the first instance. The two copies of muddler
+#-#         will then relay the text that matches <pattern>.
+#-#
+#-#         For this to work, the following settings need to be set:
+#-#
+#-#            /web on
+#-#            /set terminal=<your prefered xterm>
+#-#            /password <secure password>
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+
+
+   if($txt =~ /^\s*kill\s*$/) {
+      delete @state{window};
+   } elsif($txt =~ /^\s*socket\s*=\s*(\d+)$/) {
+      if(defined @state{window} && 
+         defined @state{window}->{$1}) {
+         @state{window}->{$1}->{sock} = $conn;
+         @state{reverse_window}->{$conn} = $conn;
+      } else {
+         echo("%% Window session $1 does not exist");
+         ws_disconnect($conn);
+      }
+   } elsif($txt =~ /^\s*value\s*=\s*(\d+)\s*/) {
+      @state{window} = {} if !defined @state{window};
+      @state{reverse_window} = {} if !defined @state{reverse_window};
+
+      @state{window}->{$1} = {
+         glob => trim($'),
+         regexp => glob2re(trim($')),
+         created => time()
+      };
+   } elsif(remote() || is_web($conn)) {
+      my $t = time();
+      wc_out("/window value=%s %s\n",time(),$txt);
+      if(length $txt) {
+         @state{terminal_app} = "/usr/bin/xfce4-terminal -x ";
+
+         loggit("Starting: @state{terminal_app} ./muddler --remote=192.168.1:9001 --window=$t\n");
+         system("@state{terminal_app} perl ./muddler --remote=192.168.1.8:9001 --window=$t &");
+      }
+   } elsif(!length $txt) {
+      if(!defined @state{window} || scalar keys %{@state{window}} == 0) {
+         echo("%% No window monitoring patterns defined.");
+      } else {
+         echo("%15s | %-15s | %20s | %s\n", "Id","Status","Host","Pattern");
+         for my $key (keys %{@state{window}}) {
+            my $hash = @state{window}->{$key};
+            if(!defined $$hash{sock} && time() - $$hash{created} > 60) {
+               echo("%15s | %-15s | %20s | %s\n",
+                    $key,
+                    "timeout-deleted",
+                    $$hash{glob}
+                   );
+               delete @state{window}->{$key};
+            } elsif(!defined $$hash{sock}) {
+               echo("%15s | %-15s | %20s | %s\n",
+                    $key,
+                    "unconnected",
+                    "N/A",
+                    $$hash{glob});
+            } elsif(!defined @ws{$$hash{sock}}) {
+               echo("%15s | %-15s | %20s | %s\n",
+                    $key,
+                    "active",
+                    "orphaned?",
+                    $$hash{glob}
+                   );
+            } else {
+               echo("%15s | %-15s | %20s | %s\n",
+                    $key,
+                    "active",
+                    @ws{$$hash{sock}}->{ip},
+                    $$hash{glob}
+                   );
+            }
+         }
+      }
+   } else {
+      # show usage?
+   }
+}
+
 #
 # cmd_blurred
 #   The browser has just told muddler that the document/tab/whatever
@@ -4193,7 +4635,6 @@ sub cmd_stat
    my ($conn,$txt) = @_;
    my (%stat, $max,$sock);
 
-   delete @socket{"benji"};
    for my $world (keys %history) {
       $max = length($world) if length($world) > $max;
       for my $i (0 .. $#{@history{$world}}) {
@@ -4231,35 +4672,107 @@ sub cmd_perl
    eval($txt);
 }
 
-sub cmd_input_size
+sub vencode
 {
-#-# ------------------------------------------------------------------------
-#-# /input_size <number>
-#-#
-#-#      Sets the number of lines to use in the input window on the
-#-#      console.
-#-#
-#-# ------------------------------------------------------------------------
-   my ($conn,$txt) = @_;
+   my ($conn,$value) = @_;
+   my $enc;
 
-   if($txt =~ /^\s*(\d+)\s*$/) {
-      save("p_input_size",$1);
-      redraw_screen(@state{world},1);
+   if($value =~ /^\s*(utf8|cp437|iso-8859-1)\s*$/i) {
+      $enc = lc($1);
+   } elsif($value =~ /^\s*fansi\s*$/) {
+      $enc = "cp437";
+   } elsif($value =~ /^\s*latin\s*$/) {
+      $enc = "iso-8859-1";
+   } elsif($value =~ /^\s*\+\s*([^ ]+)\s*$/) {
+      $enc = $1;
    } else {
-      echo("%% usage: /input_size <size>");
+      echo("%% Recommended encodings are utf, fansi, and latin.");
+      return echo("%% Non-tested encodings can be set with: " . 
+          "/set encode = + <encoding_name>");
+   }
+
+   if(!defined @address{world($conn)}) {
+      return echo("%% Not connected to a world");
+   }
+
+   eval {
+      decode($enc,"this is a test");
+   };
+   if($@) {
+      return echo("%% Encoding '%s' not supported.",$value);
+   } else {
+      @address{world($conn)}->{decode} = $1;
+      save(world($conn));
    }
 }
 
-sub cmd_debug
+# undef= can value be undef/empty/null
+# fn   = is the value a file name
+# set  = should cmd_set save the variable
+# fun  = function to run to handle variable
+sub var_init
 {
-#-# ------------------------------------------------------------------------
-#-# /log <message>
-#-#
-#-#      Logs <message> to muddlers log file if debugging is enabled.
-#-#
-#-# ------------------------------------------------------------------------
-   save("p_sync",1);
-   echo("%% Enabling logging to muddler.log.");
+   delete @key{keys %var};
+  
+   @var{cert}    = { null=>1,fn=>1,set=>1                                  };
+   @var{key}     = { null=>1,fn=>1,set=>1                                  };
+   @var{isize}   = { set=>1,fun => sub { redraw_screen(@_);}               };
+   @var{port}    = { set=>1                                                };
+   @var{encode}  = { fun => sub { vencode(@_); }                           };
+   @var{debug}   = { set=>1                                                },
+   @var{password}= { set=>1                                                },
+   @var{sync}    = { set=>1,chk => "on|off|0|1",
+                    fun => switch_world(@_,@state{world})                 };
+}
+
+sub cmd_set
+{
+   my ($conn,$txt) = @_;
+   my $enc;
+
+   if($txt =~ /^\s*([^=]+?)\s*=\s*/) {
+      my ($name,$val) = ($1,$');
+      if(defined @var{$name}) {
+         if(defined @var{$name}->{chk}) { 
+            if($val =~ /^\s*(@var{$name}->{chk})\s*$/) {
+               $txt = $1;
+            } else {
+               return echo("%% Expected a value of: %s\n",
+                  join(", ",split(/\|/,@var{$name}->{chk})));
+            }
+         }
+         if(!length $val) {
+            if(@var{$name}->{null}) {
+               echo("%% Variable '%s' has been removed.",$name);
+            } else {
+               return echo("%% A value is required for variable '%s'",$name);
+            }
+         } else {
+            if(@var{$name}->{fn}) {
+               echo("%% file '%s' does not exist.",$val);
+            }
+         }
+
+         if(@var{$name}->{fun} ne undef) {
+            return &{@var{$name}->{fun}}($conn,$val);
+         }
+         
+         if(@var{$name}->{set}) {
+            save("p_" . $name,trim($val));
+            if(length $val) {
+               echo("%% Variable %s has been set to '%s'\n",$name,trim($val));
+            }
+         }
+      } else {
+         echo("%% Unknown variable '%s'\n",@var{$name});
+         echo("%% Valid variables are: \n");
+         echo("%%    %s\n",join(', ',keys %var));
+      }
+   } elsif($txt =~ /^\s*$/) {
+      cmd_showset(@_);
+   } else {
+      echo("%% All variables require a value: /set varible=value");
+   }
 }
 
 sub cmd_fansi
@@ -4276,6 +4789,22 @@ sub cmd_fansi
    @address{world($conn)}->{decode} = "cp437";
    save(world($conn),1);
    echo("%% Enabling fansi encoding.");
+}
+
+sub cmd_latin
+{
+#-# ------------------------------------------------------------------------
+#-# /fansi
+#-#
+#-#      Enables cp437 encoding on the current world, which gives fansi
+#-#      support. Default is utf8 which can be enabled with /utf8
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+
+   @address{world($conn)}->{decode} = "iso-8859-1";
+   save(world($conn),1);
+   echo("%% Enabling latin encoding.");
 }
 
 sub cmd_utf8
@@ -4355,7 +4884,7 @@ sub cmd_log
    loggit("log: $txt");
 }
 
-sub cmd_set
+sub cmd_showset
 {
 #-# ------------------------------------------------------------------------
 #-# /set
@@ -4384,6 +4913,13 @@ sub cmd_set
          echo("# %-15s %s",$',@state{$key});
       }
    }
+ 
+   if(defined @address{world($conn)} &&
+      defined @address{world($conn)}->{decode}) {
+      echo("# %-15s %s","encode",@address{world($conn)}->{decode});
+   }
+   echo("# %-15s %sx%s","screen size",@state{size_x},@state{size_y});
+   
 }
 
 #
@@ -4492,21 +5028,6 @@ sub cmd_more
       echo("% Invalid more syntax, syntax is: /more [on|off]");
    }
 }
-sub cmd_password
-{
-#-# ------------------------------------------------------------------------
-#-# /password <password>
-#-#
-#-#      Set the password that is required when connecting to muddler via
-#-#      the web.
-#-#
-#-# ------------------------------------------------------------------------
-   my ($conn,$txt) = @_;
-
-   @state{p_password} = trim($txt);
-   echo("% Password has been updated to '%s'",$txt);
-   save("p_password");
-}
 
 sub cmd_console
 {
@@ -4528,7 +5049,7 @@ sub cmd_console
       @state{console} = 0;
       if(@state{web} == 0) {
          cmd_web($conn,"on");
-         printf("%% Web enabled due to disabling console. Connect via:\n");
+         printf("%% WeB enabled due to disabling console. Connect via:\n");
          printf("%%   http://localhost:@state{p_port}, Password: @state{p_password}");
       }
    } else {
@@ -4689,7 +5210,7 @@ sub cmd_addworld
 #
 sub save
 {
-   my ($item,$value) = @_;
+   my ($item,$value,$force) = @_;
    my $append = 0;
    my $file;
 
@@ -4711,7 +5232,11 @@ sub save
       }
    }
 
-   @state{$item} = $value if($value ne undef);
+   if($value eq undef) {
+      delete @state{$item};
+   } else {
+      @state{$item} = $value;
+   }
 
    for my $key (keys %state) {
       if(!$append && $key =~ /^p_/) {
@@ -4722,7 +5247,7 @@ sub save
    }
    close($file);
 
-   echo("%% %s worlds written to @ENV{HOME}/.muddler",scalar keys %address) if(!$append);
+#   echo("%% %s worlds written to @ENV{HOME}/.muddler",scalar keys %address) if(!$append);
 }
 
 sub load
@@ -4769,6 +5294,23 @@ sub cmd_null
    # do nothing for now
 }
 
+#
+# connected:
+#    Determine if a world is connected or not.
+#
+sub connected
+{
+   my $world = lc(shift);
+
+   if(defined @socket{$world} && 
+      defined @socket{$world}->{sock} &&
+      @socket{$world}->{sock}->connected()) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
 sub cmd_allow
 {
 #-# ------------------------------------------------------------------------
@@ -4781,9 +5323,47 @@ sub cmd_allow
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
-   save("p_allow",trim($txt));
-   echo("%% Allow list has been set to: %s",trim($txt));
+   save("p_allow",trim($txt),1);
+   if(!length trim($txt)) {
+      echo("%% Allow list has been removed.");
+   } else {
+      echo("%% Allow list has been set to: %s",trim($txt));
+   }
 }
+
+sub cmd_send
+{
+   my ($conn,$txt) = @_;
+   my $hit = 0;
+   my $opt = {};
+
+   my $str = getopt("w:Wn",$txt,$opt);
+
+   # send to all worlds & send to just one world can't be defined
+   if(defined $$opt{w} && defined $$opt{W}) {
+      return echo("%% send: You may not use -w and -W at the same time.");
+   }
+
+   # default to current world.
+   if(!defined $$opt{W} && !defined $$opt{w}) {
+      $$opt{w} = world($conn);
+   }
+
+   for my $key (keys %socket) {
+      if((defined $$opt{W} || (defined $$opt{w} && lc($$opt{w}) eq $key)) &&
+         connected($key)) {
+         $hit++;
+         out($key,"%s\n",$str);
+      }
+   }
+
+   if(!$hit && defined $$opt{w}) {
+      return echo("%% send: Not connected.");
+   } elsif(!$hit) {
+      return echo("%% send: Not connected to any worlds.");
+   }
+}
+
 
 sub cmd_listdef
 {
@@ -5049,6 +5629,11 @@ sub do_cmd
 {
    my ($world,$input,$conn) = @_;
 
+   if(remote() && $input !~ /^\s*\/(window|quit|key_ctl_l)\s*/) {
+#      loggit("send: $input\n");
+      return wc_out($input);
+   }
+
    if($input =~ /^\/([^ ]+)\s*/) {
       if(defined @command{lc($1)}) {
          &{@command{lc($1)}}($conn,$');
@@ -5090,28 +5675,6 @@ sub cmd_web_size
    redraw_output($conn,1);
 }
 
-sub cmd_port
-{
-#-# ------------------------------------------------------------------------
-#-# /port <port>
-#-#      Sets the port to be used by the web server. To connect to muddler
-#-#      via the web use: http://localhost:<port>. Remember to turn web
-#-#      use on via '/web on'.
-#-#
-#-#  Note: The websocket port will be at <port> + 1, but this is only
-#-#        important for configuration of your firewall if needed.
-
-#-# ------------------------------------------------------------------------
-   my ($conn,$port) = (shift,trim(shift));
-
-   if($port =~ /^\d+$/) {
-      save("p_port",$port);
-   } else {
-      echo("%% Websocket port must be numeric.");
-   }
-}
-
-
 sub nvl
 {
    my ($value,$default) = @_;
@@ -5151,7 +5714,9 @@ sub cmd_web
 #-# ------------------------------------------------------------------------
    my ($conn,$status) = @_;
 
-   if(!module_enabled("Net::WebSocket::Server")) {
+   if(remote()) {
+      return echo("%% Web/Websocket is disabled when --remote is enabled.");
+   } elsif(!module_enabled("Net::WebSocket::Server")) {
       return echo("%% Web/Websocket disabled due to missing " .
          "Net::WebSocket::Server module");
    } elsif($status =~ /^\s*$/) {
@@ -5161,17 +5726,30 @@ sub cmd_web
       echo("   Cert file:     %s",nvl(@state{p_cert},"Not defined"));
       echo("   Key file:      %s",nvl(@state{p_key},"Not defined"));
    } elsif($status =~ /^\s*(key|cert)\s*=(.*)$/i) {
-      return echo("%% Could not locate file: %s",trim($2)) if(!-e trim($2));
-      echo("%% %s file is now: %s",lc($1),trim($2));
+
+      if(! length trim($2)) {
+         echo("%% Certificate will no longer be used.");
+      } else {
+         return echo("%% Could not locate file: %s",trim($2)) if(!-e trim($2));
+         echo("%% %s file is now: %s",lc($1),trim($2));
+      }
       save("p_" . lc($1),trim($2));
    } elsif($status =~ /^\s*on\s*$/i) {
-      echo("%% Web %senabled, Connect via: http%s://localhost:%s",
-           @state{secure} ? "already " : "",
-           use_secure() ? "s" : "",
-           @state{p_port}
-          );
-      echo("%%    Password: %s",@state{p_password});
-      ws_init() if @state{web} == 0;
+      if(@state{web} == 1) {
+         echo("%% Web already enabled, Connect via: http%s://localhost:%s",
+              use_secure() ? "s" : "",
+              @state{p_port}
+             );
+          echo("%%    Password: %s",@state{p_password});
+      } else {
+         if(ws_init()) {
+            echo("%% Web enabled, Connect via: http%s://localhost:%s",
+                 use_secure() ? "s" : "",
+                 @state{p_port}
+             );
+             echo("%%    Password: %s",@state{p_password});
+         }
+      }
    } elsif($status =~ /^\s*off\s*$/i) {
       if(@state{web} == 0) {
          echo("%% Web/Websocket server is already disabled.");
@@ -5333,6 +5911,20 @@ sub getopt
 }
 
 
+sub t
+{
+   my $pm;
+   my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                localtime();
+   if($hour > 12) {
+      $pm = "p";
+      $hour -= 12;
+   } else {
+      $pm = "a";
+   }
+   
+   return sprintf("%2d:%02d%s",$hour,$min,$pm);
+}
 sub ts
 {
    my $time = shift;
@@ -5498,6 +6090,17 @@ sub cmd_recall
    }
 }
 
+sub small
+{
+   my $txt = shift;
+
+   if($txt =~ /\(([^\)]+)\)/) {
+      return $1;
+   } else {
+      return $txt;
+   }
+}
+
 sub cmd_listsockets
 {
 #-# ------------------------------------------------------------------------
@@ -5506,11 +6109,13 @@ sub cmd_listsockets
 #-# ------------------------------------------------------------------------
    echo("%-16s %-26s %-5s %-3s","NAME","HOST","PORT","Secure");
    for my $key (keys %ws) {
-       echo("%-16s %-26s %-5s %-3s",
+#       loggit("%s\n",print_var(@ws{$key}));
+       echo("%-16s %-26s %-5s %-3s     %sx%s/%s",
             @ws{$key}->{auth} ? "Web [auth]" : "Web",
             @ws{$key}->{ip},
             @ws{$key}->{port},
-            @state{secure} ? "Yes" : "");
+            @state{secure} ? "Yes" : "",
+            @ws{$key}->{size_x},@ws{$key}->{size_y},small($key));
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
@@ -5597,9 +6202,8 @@ sub cmd_world
 #----------------------------------------------------------------------------#
 
 END {
-	#  if(module_enabled("Term::ReadKey")) {
      revert_console();
-     #  }
+     printf("%s\n",@state{err}) if(@state{err});
 }
 
 sub center
@@ -5609,11 +6213,23 @@ sub center
     return sprintf("%s%s",(" " x ((@state{size_y} - length($txt)-1) / 2)),$txt);
 }
 
+#
+# optimize_start
+#    Flag that the script will probably be doing multiple outputs. This flag
+#    will cause the script to not reset the scroll regions after each output
+#    until otimize_end is called.
+#
 sub optimize_start
 {
    @state{optimize_output} = 1;
 }
 
+#
+# optimize_end
+#    The script has just finished sending a block of output to the screen.
+#    Its now okay to set the scroll region and move the cursor back to where
+#    the user is expecting.
+#
 sub optimize_end
 {
    @state{optimize_output} = 0;
@@ -5644,6 +6260,8 @@ sub read_tfworlds
 {
    my ($fn,$quiet) = @_;
    my ($file, $bad);
+
+   return if remote();
 
    if(-e "@ENV{HOME}/.muddler" || !-e "@ENV{HOME}/.tfworlds") {
       return;
@@ -5679,6 +6297,8 @@ sub read_tfrc
 {
    my $fn = shift;
    my ($file, $prev);
+
+   return if remote();
 
    open($file,$fn) || return;
 
@@ -5792,6 +6412,7 @@ sub reload_code
    key_init();
    http_data_init();
    telnet_ch_init();
+   var_init();
    load_modules() if(!$nomodules);
 
 
@@ -5900,6 +6521,13 @@ sub tick
       }
    }
 
+   # a window change happened but we buffer it after the first change.
+   if(defined @state{winch_pending} && time() - @state{winch} >= 3) {
+      delete @state{winch_pending};
+      delete @state{winch};
+      change_window_size();
+   }
+
    if(time() - @state{wrap_garbage_collect_last} > 300) {
       @state{wrap_garbage_collect_last}  = time();
       wrap_garbage_collect();
@@ -5938,7 +6566,7 @@ sub read_file
 #
 sub muddler_init
 {
-   if(module_enabled("Net::WebSocket::Server")) {
+   if(module_enabled("Net::WebSocket::Server") && !remote()) {
       $ws_server = Net::WebSocket::Server->new(
          tick_period => 1,
          on_connect => 
@@ -5977,6 +6605,9 @@ sub muddler_init
    load(1);
    loggit("### START ###");
 
+   # initialize websocket client
+   wc_init() if remote();
+
    if(console()) {
       $| = 1;                                                  # unbuffer stdout
       cbreak();
@@ -5986,7 +6617,7 @@ sub muddler_init
    command_init();
 
    redraw_screen(@state{world},1);
-   show_banner();
+   show_banner() if !remote();
 
    read_tfworlds("@ENV{HOME}/.tfworlds",1) if(!-e "@ENV{HOME}/.muddler");
    read_tfrc("@ENV{HOME}/.tfrc",1);
@@ -6041,12 +6672,12 @@ sub muddler
 }
 
 #
-# sig_hup
-#    Handle the HUP signal and reload the perl code in case the code can
+# sig_usr1
+#    Handle the SIGUSR1 signal and reload the perl code in case the code can
 #    not be reloaded any other way.
 #
-$SIG{HUP} = sub { sig_hup(); };
-sub sig_hup
+$SIG{USR1} = sub { sig_usr1(); };
+sub sig_usr1
 {
    delete @pid{keys %pid};
    reload_code();
@@ -6076,7 +6707,7 @@ sub sig_int
 #
 $SIG{'WINCH'} = sub { sig_winch(); };
 
-sub sig_winch
+sub change_window_size
 {
    if(module_enabled("Term::ReadKey")) {
       (@state{size_y},@state{size_x}) = GetTerminalSize();
@@ -6084,10 +6715,33 @@ sub sig_winch
       (@state{size_x},@state{size_y}) =
           `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
    }
-   for my $key (keys %socket) {
-      pending_fix($key);
+
+   if(remote()) {
+      wc_out("/web_size %s,%s\n",@state{size_x},@state{size_y}+3);
+      redraw_input();
+   } else {
+      for my $key (keys %socket) {
+         pending_fix($key);
+      }
+      redraw_screen(@state{world},1);
    }
-   redraw_screen(@state{world},1);
+}
+
+#
+# sig_winch
+#    The window size has changed. This may happen to frequently, so
+#    do the change only every 3 seconds. tick() will handle the
+#    followup window size change.
+#
+sub sig_winch
+{
+   if(defined @state{winch} && time() - @state{winch} < 3) {
+      @state{winch} = time();
+      @state{winch_pending} = 1;
+   } else {
+      @state{winch} = time();
+      change_window_size();
+   } 
 }
 
 sub install_modules
@@ -6133,6 +6787,19 @@ for my $i (0 .. $#ARGV) {
       save("p_password",$2);
    } elsif(@ARGV[$i] =~ /^--xy=(\d+),(\d+)$/) {
       (@state{size_x},@state{size_y}) = ($1,$2);
+   } elsif(@ARGV[$i] =~ /^--window=/) {
+      @state{console} = 0;
+      @state{window_value} = $';
+   } elsif(@ARGV[$i] =~ /^--remote=/) {
+      my $value = $';
+      if($value =~ /^([^:]+):(\d+)$/) {
+         @state{remote} = 1;
+         @state{remote_address} = $value;
+      } else {
+         die("Remote usage: --remote or --remote=host:port [$value]");
+      }
+   } elsif(@ARGV[$i] =~ /^--remote$/) {
+      @state{remote} = 1;
    } else {
      die("Invalid Option: '@ARGV[$i]'");
    }
@@ -6140,7 +6807,7 @@ for my $i (0 .. $#ARGV) {
 
 ws_init() if !console();
 
-if(!module_enabled("Net::WebSocket::Server")) {
+if(!module_enabled("Net::WebSocket::Server") || remote()) {
    $ws_server = {};
    $ws_server->{select_readable} = IO::Select->new();
 }
@@ -8759,10 +9426,10 @@ START: muddler_client.html
      <textarea id="input" autocomplete="off" autofocus></textarea>
    </div>
      <div id="buttonbar" "class=buttonbar" style=width:100%>
-         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgup 5')">HistoryUP</button>
-         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgdn 5')">HistoryDOWN</button>
-         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_up')">NextWld</button>
-         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 1px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_down')">PrevWld</button>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgup 5')">Up</button>
+         <button style="display:inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding:0;float:left" onclick="input.onEnter('/key_pgdn 5')">Down</button>
+         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 0px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_up')">Next</button>
+         <button style="display: inline-block;width:25%;height:35px;border: 1px solid black;border-width:1px 1px 1px 1px;padding 0;float:left" onclick="input.onEnter('/key_down')">Prev</button>
      </div>
      </div class=triangle>
         <div class="inner-triangle" onclick="input.onEnter('/mobile')"><span>muddler</span></div>

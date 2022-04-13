@@ -8,18 +8,24 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 # Features
 ```
    o Console support - Mudding via your favorite terminal
-   o Http/websocket support - Think mudding via your browser
-   o 256 color support
-   o UTF8 support 
-   o fansi support
+   o websocket support - Think mudding via your browser
+        dark / light theme / mobile interface supported
+   o Tinyfugue like command support.
+   o SSL support when connect to worlds or via the browser
+   o 256 color, UTF8, fansi, latin encoding support 
    o Connect to multiple worlds at the same time
-   o More / pausing output as needed
+   o More / pausing output control by tab character
+   o History buffer via page up/down or /recall
+   o keep-a-live to prevent disconnects
+   o Activity notifications
+   o /update pulls the most current version of muddler from github
+     and loads it without restarting (usually).
    o Spell checking
        mispelled words will be bold in console and red squiggly underline
        in web interface (dependant upon browser).
-   o Multiple Window Support(?) - The console interface does not support
-       multiple windows but multiple browser "windows" can be opened and
-       can view different worlds.
+   o Multiple Window Support - Fire up multiple browser windows or terminals
+       as needed. Each window has its own focus independant of other windows.
+
 ```
 # muddler goals
 ```
