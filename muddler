@@ -242,9 +242,14 @@ sub normal {
 #                                                                            #
 #  modules                                                                   #
 #     Determine which modules exist and die on required modules.             # 
+#     Install required modules in a very specific case scenario.             #
 #                                                                            #
 #----------------------------------------------------------------------------#
 
+#
+# module_enabled
+#    Determine if a module is enabled or not.
+#
 sub module_enabled
 {
    my $txt = shift;
@@ -387,24 +392,6 @@ sub is_ansi_string
    }
 }
 
-
-sub ansi_reset
-{
-   my ($data,$pos) = @_;
-
-   my $string = (is_ansi_string($data)) ? $data : ansi_init($data);
-
-   return $string if $pos < 0;                               # sanity check
-
-   my $code = $$string{code};
-   my $array = $$code[$pos];
-
-   # check to see if the last code is a reset, or no codes at all
-   if($#$array == -1 || $$array[$#$array] ne "\e[0m") {
-      push(@$array,"\e[0m");
-   }
-   return $string;
-}
 #
 # ansi_add
 #   Add a character or escape code to the data array. Every add of a
@@ -528,7 +515,11 @@ sub ansi_string
 }
 
 
-
+#
+# dearray
+#    Take an array of ansi strings and convert them into txt with
+#    the embeded escape sequences.
+#
 sub dearray
 {
    my $data = shift;
@@ -541,6 +532,10 @@ sub dearray
    return $buf;
 }
 
+#
+# txt
+#    Take a single ansi string or mutliple and conver them into
+#    standard text.
 sub txt
 {
    my @data = @_;
@@ -623,7 +618,7 @@ sub ansi_length
    if(ref($txt) eq "HASH") {                           # already inited txt?
       $data = $txt;
    } else {
-      return length(ansi_remove($txt));
+      return length(ansi_remove($txt));   # faster if  not in out ansi format?
    }
 
    if($#{$$data{ch}} == -1) {                                       # empty
@@ -3047,6 +3042,27 @@ sub redraw_input
    my $conn = shift;
 
    return if(!console());
+
+   if(is_console($conn) || remote()) {
+      update_scroll_region("input",1);
+      xy(input_start(),1,1);
+
+      my $pos = @state{input_offset}+1;
+      my $end = $pos + input_size() - 1;
+      for my $i (input_start() .. input_end()) {
+         if($pos <= $end) {
+            printf("%s\033[K%s",input_line($pos),
+               ($i != input_end()) ? "\n" : "");
+         } elsif($i == @state{size_x}) {
+            printf("\033[K");
+         } else {
+            printf("\033[K\n");
+         }
+         $pos++;
+      }
+      xy(input_x(),input_y(),1);
+   }
+   return;
 
    if(is_console($conn) || remote()) {
       update_scroll_region("input",1);
