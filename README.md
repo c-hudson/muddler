@@ -21,8 +21,10 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    o /update pulls the most current version of muddler from github
      and loads it without restarting (usually).
    o Spell checking
-       mispelled words will be bold in console and red squiggly underline
-       in web interface (dependant upon browser).
+       Mispelled words will be shown as bold in the terminal.
+       Suggestions can be listed and cycled through with Esc-Q.
+       The web interface will show a red squiggly underline for
+       misspelled words (dependant upon browser).
    o Multiple Window Support - Fire up multiple browser windows or terminals
        as needed. Each window has its own focus independant of other windows.
 
@@ -54,21 +56,22 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    d. ./muddler <options>
 
    Options:
-      --noconsole     : disable the text based console and enable the
-                        web/websocket server.
-      --password      : specify the password for the websocket interface.
-      --port          : specify the port for the web server. The websocket
-                        server will be one port number higher.
+      --noconsole        : disable the text based console and enable the
+                           web/websocket server.
+      --password         : specify the password for the websocket interface.
+      --port             : specify the port for the web server. The websocket
+                           server will be one port number higher.
+      --remote=host:port : Specify the remote muddler websocket host/port
+                           to connect to.
 ```
 # Quick Start
    
 ```
    Basic Commands:
-      /add <world> [<user> <password] <address> <port>
+      /add [-s] <world> [<user> <password] <address> <port>
          Define a world so that muddler can connect with it. If a user and
          password are supplied, the user will be logged into at startup
-      /ssl <world> [<user> <password] <address> <port>
-         Same as /add but will connect via SSL.
+         Using the -s option will use an ssl connection
       /world <world>
          Connect to an already defined world or switch to that world if
          the world has already ben opened. This can be done with the up/down
@@ -77,23 +80,21 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
          Lists all commands or provides help on an individual command.
       /quit
          Had enough, quit muddler.
-      /utf8
-         Enable utf8 encoding for the current world. [default]
-      /fansi
-         Enable fansi encoding for the current world.
+      /set encode = fansi | utf8 | latin
+         Enable either fansi, utf8, or latin encoding for the current world.
 
    Web Commands:
       /web
          Show the status variables for the web server
       /web [on|off]
          Turn the web interace "on" or "off". Default is off.
-      /web cert = <file>
+      /set cert = <file>
          Specify your public certificate file for https.
-      /web key = <file>
+      /set key = <file>
          Specify your private key file for https [non-self signed required]
-      /password <password>
+      /set password = <password>
          Sets the password that must be entered when connecting vai the web.
-      /port <port>
+      /set port = <port>
          This command sets the port that muddler will use when you connect
          to muddler via your browser. Just type in http://localhost:<port>
          to connect. The default port is port 9000.
@@ -116,28 +117,24 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 
    Supported Keys:
 
-      Keys                 INTERFACE   DESCRIPTION
-      Arrow Right & Left : Both      : Move one character in the buffer
-      Arrow Up and Down  : Both      : Cycle to the next connected world.
-      Escape-q           : Console   : list 5 spelling suggestions for 
-                                       word before cursor, then cycle through
-                                       them if Escape-q is pressed again.
-      Escape-w           : Both      : Move to next active world
-      Control-w          : Both      : Delete previous word [console only]
-      Control-p          : Both      : Move down in the keyboard history
-      Control-n          : Both      : Move up in the keyboard history
-      Control-u          : Both      : Erase the current input line
-      Control-q          : Console   : Spell check line last word and give
-                                       suggestions. Ctrl-Q a second time and
-                                       it will swap in the first suggestion.
-      Control-a          : Console   : Move to begining of input
-      Control-e          : Console   : Move to end of input
-      Tab                : Both      : Move forward one screen full of text
-                                       if the world is paused by "more".
-      Control-l          : Both      : Redraw the screen 
-      PgUp               : Both      : Scroll up one page in history buffer
-      PgDown             : Both      : Scroll down one page in history buffer
-      Scroll Wheel       : Web       : Scroll up / Down in history buffer
+      Keys     DESCRIPTION
+      Ctl-A  | Move the cursor to the begining of the line
+      Ctl-E  | Move the cursor to the end of the line
+      Ctl-L  | Erases the screen and redraws it
+      Ctl-N  | Moves forward one entry in the keyboard history.
+      Ctl-P  | Moves back one entry in the keyboard history.
+      Ctl-R  | Reloads the code for muddler if there are any changes
+      Ctl-U  | Clears the keyboard input
+      Ctl-W  | Delete the last word before the cursor
+      Down   | Switch to world with activity, or cycle down through worlds.
+      Esc-J  | Skip to the end of any "mored" output.
+      Esc-Q  | Show spell suggestions for last word. Cycle thru on next esc-q
+      Esc-W  | Go to the next active world, or the last world
+      Pgdn   | Moves forward in the history of the current world
+      Pgup   | Moves back into the history of the current world
+      Tab    | Moves forward a screen full when more is enabled/triggered.
+      Up     | Switch to world with activity, or cycle up through worlds.
+
 ```
 # TinyFugue info/differences
 ```
