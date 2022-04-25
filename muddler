@@ -3036,7 +3036,12 @@ sub redraw_output
    }
 }
 
-
+#
+# redraw_input
+#    Draw the input window which is where the user to composes whatever they
+#    have to say. Replacing this with nothing would probably be a better
+#    replacement as I probably shouldn't ever say what I do say.
+#
 sub redraw_input
 {
    my $conn = shift;
@@ -3050,35 +3055,13 @@ sub redraw_input
       my $pos = @state{input_offset}+1;
       my $end = $pos + input_size() - 1;
       for my $i (input_start() .. input_end()) {
-         if($pos <= $end) {
+         if($pos <= $end) {                      # line $pos of typed input
             printf("%s\033[K%s",input_line($pos),
                ($i != input_end()) ? "\n" : "");
-         } elsif($i == @state{size_x}) {
-            printf("\033[K");
-         } else {
-            printf("\033[K\n");
+         } else {               # blank line with return but not on last line
+            printf("\033[K%s",($i != input_end()) ? "\n" : "");
          }
          $pos++;
-      }
-      xy(input_x(),input_y(),1);
-   }
-   return;
-
-   if(is_console($conn) || remote()) {
-      update_scroll_region("input",1);
-      xy(input_start(),1,1);
-      my $start = @state{input_offset}+1;
-      my $end = $start + input_size() - 1;
-      for my $i (input_start() .. input_end()) {
-         my $line = $i - input_start() + 1;
-         if($line >= $start && $line <= $end) {
-            printf("%s\033[K%s",input_line($line),
-               ($i != input_end()) ? "\n" : "");
-         } elsif($i == @state{size_x}) {
-            printf("\033[K");
-         } else {
-            printf("\033[K\n");
-        }
       }
       xy(input_x(),input_y(),1);
    }
@@ -3432,8 +3415,10 @@ sub key_ctl_p
    # set offset so just the end of the line is shown if the whole line is
    # not visible.
    if(max_input() > input_size()) {
+      loggit("OFFSET: '%s'\n",max_input(),input_size(),max_input()-input_size());
       @state{input_offset} = max_input() - input_size();
    } else {
+      loggit("OFFSET2: '%s'\n",max_input(),input_size(),max_input()-input_size());
       delete @state{input_offset};
    }
    @state{input_pos}--;
