@@ -30,7 +30,6 @@ my %socket;                                              # socket information
 my %socket_lookup;
 my %command;                            # command hash table for fast lookups
 my %address;                                                # world addresses 
-my %help;                                                         # help data
 my @input;                                                    # input history
 my %ws;                                             # websocket specific data
 my $ws_listen;                                           # websocket listener
@@ -136,7 +135,6 @@ sub key_init
    @key{14}                   = sub { return key_ctl_n(@_);            };
    @key{16}                   = sub { return key_ctl_p(@_);            };
    @key{18}                   = sub { return key_ctl_r(@_);            };
-   @key{20}                   = sub { return key_ctl_t(@_);            };
    @key{21}                   = sub { return key_ctl_u(@_);            };
    @key{23}                   = sub { return key_ctl_w(@_);            };
    @key{27}                   = sub { return key_escape(@_);           };
@@ -3229,6 +3227,7 @@ sub key_shift_down
 #
 sub key_pgup
 {
+#-# summary: Moves back into the history of the current world
    my ($conn,$size) = @_;
    my $count = -1;
 
@@ -3254,6 +3253,7 @@ sub key_pgup
 #
 sub key_pgdn
 {
+#-# summary: Moves forward in the history of the current world
    my ($conn,$size) = @_;
 
    return wc_out("/key_pgdn") if(remote());
@@ -3346,24 +3346,6 @@ sub print_state
    return $out;
 }
 
-sub key_ctl_t
-{
-   my ($conn,$txt) = @_;
-
-   my $w = world($conn);
-
-   loggit("pending: Collected=%s, Calculated=%s\n",
-          @socket{$w}->{pending},
-          calc_pending($w)
-         );
-#   @input[-1] = [ split(//,"Many a hand has scaled the grand old face of the plateau Some belong to strangers and some to folks you know Holy ghosts and talk show hosts are planted in the sand To beautify the foothills and shake the many hands Nothing on the top but a bucket and a mop And an illustrated book about birds See a lot up there but don't be scared Who needs action when you got words") ];
-#   @state{buffer_pos} = 2;
-#   @state{input_offset} = 3;
-#   @state{input_pos} = 196;
-#   @state{line_pos} = 196;
-#   @state{overlap} = 3;
-#   @state{pos_sequence} = 72;
-}
 
 #
 # key_dump
@@ -3397,6 +3379,7 @@ sub key_dump
 #
 sub key_ctl_p
 {
+#-# summary: Moves back one entry in the keyboard history.
    my ($conn,$txt) = @_;
 
    if(!defined @state{input_pos} || @state{input_pos} == -1) {  # first time
@@ -3415,10 +3398,8 @@ sub key_ctl_p
    # set offset so just the end of the line is shown if the whole line is
    # not visible.
    if(max_input() > input_size()) {
-      loggit("OFFSET: '%s'\n",max_input(),input_size(),max_input()-input_size());
       @state{input_offset} = max_input() - input_size();
    } else {
-      loggit("OFFSET2: '%s'\n",max_input(),input_size(),max_input()-input_size());
       delete @state{input_offset};
    }
    @state{input_pos}--;
@@ -3432,6 +3413,7 @@ sub key_ctl_p
 #
 sub key_ctl_n
 {
+#-# summary: Moves forward one entry in the keyboard history.
    my ($conn,$txt) = @_;
 
    if(!defined @state{input_pos} || @state{input_pos} == -1) {  # first time
@@ -3441,7 +3423,7 @@ sub key_ctl_n
 
    if(@state{input_pos} == $#input -1) {
       @state{input_pos} = 0;
-   } else {
+   } elsif(defined @input[@state{input_pos} + 1]) {
       @state{input_pos}++;
    }
 
@@ -3464,6 +3446,7 @@ sub key_ctl_n
 #
 sub key_ctl_r
 {
+#-# summary: Reloads the code for muddler if there are any changes
    my $conn = shift;
 
    @state{ansi_wrap} = 0;
@@ -3478,6 +3461,7 @@ sub key_ctl_r
 #
 sub key_ctl_l
 {
+#-# summary: Erases the screen and redraws it
    my ($conn,$txt) = @_;
 
    # screen seems to have some sort of bug where it stop sending winch
@@ -3509,6 +3493,7 @@ sub key_ctl_l
 #
 sub key_tab
 {
+#-# summary: Moves forward a screen full when more is enabled/triggered.
    my ($conn,$txt) = @_;
 
    return wc_out("/key_tab") if(remote());
@@ -3527,6 +3512,7 @@ sub key_tab
 #
 sub key_ctl_u
 {
+#-# summary: Clears the keyboard input
    my ($conn,$txt) = @_;
 
    if(is_console($conn)) {
@@ -3544,6 +3530,7 @@ sub key_ctl_u
 #
 sub key_ctl_w
 {
+#-# summary: Delete the last word before the cursor
    my $count = 0;
    my $i;
 
@@ -3577,6 +3564,7 @@ sub key_escape
 #
 sub key_esc_j
 {
+#-# summary: Skip to the end of any "mored" output.
    my ($conn,$txt) = @_;
 
    history_pos($conn,$#{@history{$conn}});
@@ -3687,7 +3675,7 @@ sub input_on_line
 sub max_input
 {
     my $result = sprintf("%d",($#{@input[-1]}+1) / (@state{size_y} - 1));
-    return $result + 1 if(($#{@input[-1]}+1) % (@state{size_y} - 1) >= 1);
+    return $result + 1 if(($#{@input[-1]}+1) % (@state{size_y} - 1) >= 0);
     return $result;
 }
 
@@ -3856,6 +3844,7 @@ sub key_default
 #
 sub key_ctl_a
 {
+#-# summary: Move the cursor to the begining of the line
    my ($conn,$key) = @_;
    my $offset = @state{input_offset};
 
@@ -3875,6 +3864,7 @@ sub key_ctl_a
 #
 sub key_ctl_e
 {
+#-# summary: Move the cursor to the end of the line
    my ($conn,$key) = @_;
 
    input_lines();
@@ -4002,6 +3992,7 @@ sub mstate
 #   
 sub key_up
 {
+#-# summary: Switch to world with activity, or cycle up through worlds.
    my ($conn,$txt) = @_;
    my $w = world($conn);
    my $first;
@@ -4043,6 +4034,7 @@ sub key_up
 #   
 sub key_down
 {
+#-# summary: Switch to world with activity, or cycle down through worlds.
    my ($conn,$txt) = @_;
    my ($prev,$last);
 
@@ -4146,6 +4138,7 @@ sub switch_world
 #
 sub key_esc_w
 {
+#-# summary: Go to the next active world, or the last world
    my ($conn,$txt) = @_;
 
    return wc_out("/key_esc_w") if(remote());
@@ -4652,6 +4645,7 @@ sub input_clear
 
 sub key_esc_q
 {
+#-# summary: Show spell suggestions for last word. Cycle thru on next esc-q
    my ($conn,$txt) = @_;
    my ($spell, $found);
 
@@ -6037,9 +6031,9 @@ sub cmd_help
 #-#   /quit - Quits Muddler
 #-# 
 #-# Help topics:
-#-#   /help basics    : More in depth help on how to get started
 #-#   /help commands  : Listing of all internal commands
-#-# 
+#-#   /help keys      : Keybindings and what they do.
+#-#
 #-# <text> are variables. [text] are optional.  Do not include <>[]
 #-# ------------------------------------------------------------------------
    my ($conn,$cmd) = (shift, lc(trim(shift)));
@@ -6064,6 +6058,18 @@ sub cmd_help
             }
 #         } else {                                     # tf null commands?
 #            history(world($conn),sprintf("/%-15s | %s",$item,"N/A"));
+         }
+      }
+   } elsif(trim($cmd) =~ /^keys{0,1}$/) {
+      for my $item (sort grep {/^key_/} keys %{@state{summary}}) {
+         if($item =~ /^key_/) {
+            my $name = $';
+            $name =~ s/_/-/;
+            $name =~ s/([\w']+)/\u\L$1/g;
+            history(world($conn),sprintf("%-6s | %s",
+                    $name,
+                    @state{summary}->{$item}),
+                   );
          }
       }
    } elsif(defined @state{help}->{"cmd_$cmd"}) {
@@ -6636,10 +6642,11 @@ sub get_checksums
          @data{$pos}->{chk}->add($line);
          @data{$pos}->{src} .= qq[#line 0 "$pos"\n] . $line;
          @data{$pos}->{line} = $ln;
-         if($pos =~ /^cmd_/) {
+         if($pos =~ /^(key|cmd)_/) {
             @state{help} = {} if not defined @state{help};
             @state{summary} = {} if not defined @state{summary};
             delete @state{help}->{$pos} if defined @state{help}->{$pos};
+            delete @state{summary}->{$pos} if defined @state{summary}->{$pos};
             delete @state{summary}->{$pos} if defined @state{summary}->{$pos};
          }
       } elsif($pos ne undef && $line =~ /^}\s*$/) {
@@ -6652,7 +6659,7 @@ sub get_checksums
          }
          $pos = undef;
       } elsif($pos ne undef) {
-         if($pos =~ /cmd_/) {
+         if($pos =~ /(key|cmd)_/) {
             if($line =~ /^#-# -+$/) {
                # header ignored
             } elsif($line =~ /^#-# summary: /) {
@@ -6689,8 +6696,6 @@ sub reload_code
 {
    my ($conn,$nomodules) = @_;
    my $count = 0;
-
-   return http_data_init() if(@ENV{PAR_0});
 
    my $new = get_checksums();
    my $old = @state{chksum};
@@ -6940,6 +6945,7 @@ sub muddler_init
    read_tfrc("@ENV{HOME}/.tfrc",1);
    reload_code(@state{world},1);
 #   Monitor::monitor(@pending{alpha}, "array");
+   @state{state} = "post-init";
 
    # these should go into another variable, but this allows reloading
    @state{IAC} = chr(255);
