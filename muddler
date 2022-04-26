@@ -198,7 +198,6 @@ sub command_init
    @command{add}           = sub { return cmd_add(@_);                     };
    @command{addworld}      = sub { return cmd_add(@_);                     };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
-   @command{keepalive}     = sub { return cmd_keepalive(@_);               };
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
    @command{set}           = sub { return cmd_set(@_);                     };
@@ -4329,7 +4328,7 @@ sub more_bar
 
    if(in_hist($w)) {
       return sprintf("\033[7mHist %4s\033[0m",abs(@socket{$w}->{hist_offset}));
-   } elsif(in_more(world($conn))) {
+   } elsif(in_more(world($conn)) && pending($w) != 0) {
       return sprintf("\033[7mMore %4s\033[0m",pending($w));
    }
    return undef;
@@ -4968,7 +4967,7 @@ sub vencode
    if($@) {
       return echo($conn,"%% Encoding '%s' not supported.",$value);
    } else {
-      @address{world($conn)}->{decode} = $1;
+      @address{world($conn)}->{decode} = $enc;
       save($conn,world($conn));
    }
 }
@@ -4992,9 +4991,19 @@ sub var_init
    @var{watchdog}= { set=>1, chk => "on|off|0|1"                           };
    @var{theme}   = { set=>1, chk => "light|dark", 
                      fun => sub { ws_all("d","theme ",@_[1]); }            };
+   @var{keepalive}={ set=>1, fun => sub {  update_keepalive(@_) }          };
    @var{overlap} = { set=>1, chk => "\\d+"                                 },
    @var{sync}    = { set=>1,chk => "on|off|0|1",
                     fun => sub { switch_world(@_,@state{world}); }         };
+}
+
+sub update_keepalive
+{
+   my ($conn,$val) = @_;
+
+   @address{world($conn)}->{keepalive} = $val;
+   save($conn,world($conn),1);
+   echo($conn,"% Keepalive for %s set to: %s",world($conn),$val);
 }
 
 sub cmd_set
@@ -5002,30 +5011,31 @@ sub cmd_set
 #-# summary: Set internal variables to customize muddler
 #-# ------------------------------------------------------------------------
 #-# /set
-#-#      Shows all variables that have been set.
+#-#   Shows all variables that have been set.
 #-#
 #-# /set <variable> = <value>
-#-#      Sets the variable to value.
+#-#   Sets the variable to value.
 #-#
 #-# Variables:
-#-#      cert   :  Full path & filename to certificate file for /web
-#-#      key    :  Full path & filename to key file for /web
-#-#      isize  :  Input window size in rows when using the console
-#-#      port   :  Port used for incoming connections for /web
-#-#      encode :  Sets the encoding style for the current world.
-#-#                You may use fansi, utf8, or latin.
-#-#      debug  :  Turns debugging on for logging to muddler.log file.
-#-#      password : Password required to log for /web
-#-#      allow    : Hostname(s) in csv format do not need to supply a
-#-#                 password within /web. Not recommended.
-#-#      watchdog : Used to supress spam. If 2 of 5 lines of output are
-#-#                 duplicates, then never display these lines again
-#-#                 until muddler is restarted.
-#-#      theme    : Select either a dark or light theme for /web
-#-#      overlap  : When showing a pagefull of text, how many lines are
-#-#                 left on the screen from the previous screen full.
-#-#      sync     : Keep /web & console in sync by showing the same world
-#-#                 Default is to allow viewing of different worlds.
+#-#   cert      : Full path & filename to certificate file for /web
+#-#   key       : Full path & filename to key file for /web
+#-#   isize     : Input window size in rows when using the console
+#-#   port      : Port used for incoming connections for /web
+#-#   encode    : Sets the encoding style for the current world.
+#-#               You may use fansi, utf8, or latin.
+#-#   debug     : Turns debugging on for logging to muddler.log file.
+#-#   password  : Password required to log for /web
+#-#   allow     : Hostname(s) in csv format do not need to supply a
+#-#               password within /web. Not recommended.
+#-#   watchdog  : Used to supress spam. If 2 of 5 lines of output are
+#-#               duplicates, then never display these lines again
+#-#               until muddler is restarted.
+#-#   theme     : Select either a dark or light theme for /web
+#-#   overlap   : When showing a pagefull of text, how many lines are
+#-#               left on the screen from the previous screen full.
+#-#   sync      : Keep /web & console in sync by showing the same world
+#-#               Default is to allow viewing of different worlds.
+#-#   keepalive : Sets the keepalive for the current world
 #-# ------------------------------------------------------------------------
 my ($conn,$txt) = @_;
    my $enc;
@@ -5299,31 +5309,6 @@ sub cmd_console
       }
    } else {
       echo($conn,"%% usage: /console <on|off>");
-   }
-}
-
-sub cmd_keepalive
-{
-#-# summary: Change what is sent when the connection is idle.
-#-# ------------------------------------------------------------------------
-#-# /keepalive <text>
-#-#
-#-#      Set what is sent to the current world when the socket is idle
-#-#      to keep the connection from timing out.
-#-#
-#-# ------------------------------------------------------------------------
-   my ($conn,$txt) = @_;
-
-   if($txt eq undef) {
-      for my $key (keys %socket) {
-         if(defined @address{$key}->{keepalive}) {
-             echo($conn,"%-15s   '%s'",$key,@address{$key}->{keepalive});
-         }
-      }
-   } else {
-      @address{world($conn)}->{keepalive} = $txt;
-      save($conn,world($conn),1);
-      echo($conn,"% Keepalive for %s set to: %s",world($conn),$txt);
    }
 }
 
