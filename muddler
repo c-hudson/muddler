@@ -5166,20 +5166,20 @@ sub cmd_showset
    my ($conn,$txt) = @_;
    my $count = 0;
 
-   echo($conn,"# cache hits      %s",@state{cached});
-   echo($conn,"# cache misses    %s",@state{nocache});
-
-   if(defined @state{cache}) {
-      my $cache = @state{cache};
-      for my $w (keys %$cache) {
-         for my $id (keys %{$$cache{$w}}) {
-            $count += scalar keys %{$$cache{$w}->{$id}}
-         }
-      }
-      echo($conn,"# cache_size      %s",$count);
-   }
+#   echo($conn,"# cache hits      %s",@state{cached});
+#   echo($conn,"# cache misses    %s",@state{nocache});
+#
+#   if(defined @state{cache}) {
+#      my $cache = @state{cache};
+#      for my $w (keys %$cache) {
+#         for my $id (keys %{$$cache{$w}}) {
+#            $count += scalar keys %{$$cache{$w}->{$id}}
+#         }
+#      }
+#      echo($conn,"# cache_size      %s",$count);
+#   }
    for my $key (keys %state) {
-      if($key =~ /^p_/) {
+      if(@state{$key} !~ /^\s*(0|off)\s*$/ && $key =~ /^p_/) {
          echo($conn,"# %-15s %s",$',@state{$key});
       }
    }
@@ -5187,6 +5187,10 @@ sub cmd_showset
    if(defined @address{world($conn)} &&
       defined @address{world($conn)}->{decode}) {
       echo($conn,"# %-15s %s","encode",@address{world($conn)}->{decode});
+   }
+   if(defined @address{world($conn)} &&
+      defined @address{world($conn)}->{keepalive}) {
+      echo($conn,"# %-15s %s","keepalive",@address{world($conn)}->{keepalive});
    }
    echo($conn,"# %-15s %sx%s","screen size",@state{size_x},@state{size_y});
    
