@@ -1318,7 +1318,7 @@ sub ws_init
 #      on_connect => sub { my( $serv, $conn ) = @_;
 #                          $conn->on( ready =>      sub{ ws_login_screen(@_); },
 #                                     utf8  =>      sub{ ws_process( @_, 0 ); },
-#                                     disconnect => sub{ ws_disconnect(@_);   },
+#                                     disconnect => sub{ us_disconnect(@_);   },
 #                                   );
 #                        },
 #      );
@@ -1338,7 +1338,9 @@ sub ws_disconnect
    my $conn = shift;
    my $sock;
 
-#   loggit("ws_disconnect: '%s' [%s]\n",$conn,@ws{$conn});
+#   loggit("ws_disconnect: '%s' [%s] %s\n",$conn,small(@ws{$conn}),code());
+#   $conn->disconnect;
+#   loggit(" --- [ foo ] ---");
    eval {             # don't know how to test if $conn{sock} is valid
       $sock = $conn->{sock};
       $ws_server->{select_readable}->remove( $sock );
@@ -2566,7 +2568,9 @@ sub min_visible
    $min = output_end() if($world eq @state{world}); 
 
    for my $key (keys %ws) {                      # now try websocket clients
-      if(@ws{$key}->{world} eq $world && @ws{$key}->{size_y} < $min) {
+      if(ref(@ws{$key}) ne "HASH") {
+         delete @ws{$key};
+      } elsif(@ws{$key}->{world} eq $world && @ws{$key}->{size_y} < $min) {
          $min = @ws{$key}->{size_x};
       }
    }
@@ -2727,6 +2731,7 @@ sub release_pending_pagefull
       delete @socket{$w}->{more};
       update_pending($w,@socket{$w}->{pending} * -1);
       update_more($w,0);
+      delete @state{activity}->{$w};
    }
    draw_bar();
 }
@@ -4119,7 +4124,9 @@ sub switch_world
       @state{world} = $world;
    }
 
-   delete @state{activity}->{$world};
+   if(!in_more($world)) {
+      delete @state{activity}->{$world};
+   }
 
    if(TRUE(@state{p_sync})) {
       redraw_output($conn,0);
@@ -4396,6 +4403,26 @@ sub size_y
 }
 
 #
+# activity_count
+#    Count up the number of worlds that have activity, excluding those
+#    worlds that are currently visibile. Worlds with pending activity
+#    should get activity notices as long as they're not visible.
+#
+sub activity_count
+{
+   my $w = world(shift);
+   my $cnt = 0;
+
+   # exclude currently viewed worlds in counts;
+
+   return if !defined @state{activity};
+   for my $world (keys %{@state{activity}}) {
+      $cnt++ if(!world_visible($world)) 
+   }
+   return $cnt;
+}
+
+#
 # draw_bar
 #    draw/redraw the input bar if need.
 #
@@ -4404,9 +4431,10 @@ sub draw_bar
    return if defined @state{window_value};
    my $force = shift;
    my $new = time();
-   my ($hr,$min,$active) = ((localtime($new))[2,1]);
+   my ($hr,$min,$act) = ((localtime($new))[2,1]);
    $hr -= 12 if($hr > 12);
    $hr = 12 if $hr == 0;
+   my $cnt = activity_count(@state{world});
 
    if(remote()) {
       if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
@@ -4429,7 +4457,7 @@ sub draw_bar
       }
       return;
    } elsif(console() && ($force || "$hr$min" ne @state{bar_time} ||
-      @state{bar_activity} ne scalar keys %{@state{activity}} ||
+      @state{bar_activity} ne $cnt ||
       @state{bar_name} ne name(@state{world}) ||
       @state{bar_more} ne pending(@state{world}) ||
       @state{bar_pos} ne hist_pos(@state{world}) ||
@@ -4440,13 +4468,11 @@ sub draw_bar
       @state{bar_more} = pending(@state{world});
       @state{bar_pos} = hist_pos(@state{world});
       @state{bar_size} = @state{size_x}.@state{size_y};
-      @state{bar_activity} = scalar keys %{@state{activity}};
-      if(scalar keys %{@state{activity}} > 0) {
-         if(@state{size_y} < 50) {
-            $active = sprintf("(Act: %d)",scalar keys %{@state{activity}});
-         } else {
-            $active = sprintf("(Active: %d)",scalar keys %{@state{activity}});
-         }
+      @state{bar_activity} = $cnt;
+
+      # determine activity count, if any.
+      if($cnt >= 1) {
+         $act = sprintf("(Act%s: %d)",(@state{size_y}<50) ? "" : "ive",$cnt);
       }
 
       my $more = more_bar(@state{world});
@@ -4458,8 +4484,8 @@ sub draw_bar
              $more,
              name(),
              "_" x (10 - length(name())),
-             $active,
-             "_" x (@state{size_y} - length("$active$hr")-26),
+             $act,
+             "_" x (@state{size_y} - length("$act$hr")-26),
              $hr,
              $min
             );
@@ -4478,7 +4504,7 @@ sub draw_bar
          next;
       }
       if($force || "$hr$min" ne @ws{$conn}->{bar_time} ||
-         @ws{$conn}->{bar_activity} ne scalar keys %{@state{activity}} ||
+         @ws{$conn}->{bar_activity} ne $cnt ||
          @ws{$conn}->{bar_name} ne name(world($conn)) ||
          @ws{$conn}->{bar_more} ne pending(world($conn)) ||
          @ws{$conn}->{bar_pos} ne hist_pos(world($conn))) {
@@ -4487,15 +4513,14 @@ sub draw_bar
          @ws{$conn}->{bar_name} = name(world($conn));
          @ws{$conn}->{bar_more} = pending(world($conn));
          @ws{$conn}->{bar_pos} = hist_pos(world($conn));
-         @ws{$conn}->{bar_activity} = scalar keys %{@state{activity}};
+         @ws{$conn}->{bar_activity} = $cnt;
 
-         if(scalar keys %{@state{activity}} > 0) {
-            if(@ws{$conn}->{size_y} < 50) {
-               $active=sprintf("(Act: %d)",scalar keys %{@state{activity}});
-            } else {
-               $active=sprintf("(Active: %d)",scalar keys %{@state{activity}});
-            }
+
+         # determine activity count, if any.
+         if($cnt >= 1) {
+            $act = sprintf("(Act%s: %d)",(@state{size_y}<50) ? "" : "ive",$cnt);
          }
+
          my $more = more_bar($conn);
          ws_echo($conn,
                  "*",
@@ -4507,7 +4532,7 @@ sub draw_bar
                          9 - ansi_length($more),
                          $more,
                          name(@ws{$conn}->{world}),
-                         $active
+                         $act
                         )
                );
       }
@@ -6842,7 +6867,9 @@ sub tick
 
    if(web()) {
       for my $key (keys %ws) {
-         if(@ws{$key}->{auth} eq 0 && time() - @ws{$key}->{start} > 60) {
+         if(ref(@ws{$key}) ne "HASH") {
+            delete @ws{$key};
+         } elsif(@ws{$key}->{auth} eq 0 && time() - @ws{$key}->{start} > 60) {
             ws_echo(@ws{$key}->{conn},"t","%% Password entry timed out",1);
             ws_disconnect(@ws{$key}->{conn});
          }
