@@ -1391,7 +1391,7 @@ sub ws_echo
    my ($ws, $type, $msg,$force) = @_;
 
    # only show something if authorized or those exceptions when logging in
-   return if(@ws{$ws}->{auth} eq 0 && !$force);
+   return if(!defined @ws{$ws} || (@ws{$ws}->{auth} eq 0 && !$force));
 
    # this might crash if the websocket dies, the evals should
    # probably be removed once this is more stable. With that in mind,

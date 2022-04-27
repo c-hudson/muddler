@@ -6,12 +6,19 @@ Installing muddler on Big Sur.
    the files.
 
    Download muddler from https://github.com/c-hudson/muddler. At this point
-   you may run muddler but you'll find that some peices of muddler will be
+   you may run muddler but you'll find that some pieces of muddler will be
    disabled due to missing modules. Listed below are the steps required and
    the benefits of doing so.
 
       Steps 1-2 : Required for better fansi/utf8 encoding
       Steps 3-7 : Console spell checking and mudding via your browser.
+
+   Also, it seems like safari doesn't like the text box prompt that is
+   used by the password authentication that /web uses. It passes a null
+   password regardless of whatever is entered. You may sidestep this by
+   adding an appropriate "/set allow = hostname" or use a different browser.
+   I will look into if the hmtl/javascript can be modified to accomodate
+   safari.
 
 1. Install a fansi/utf8 compatible font font. There are many decent fonts
    out there that you can use. Choose whichever one works best for you. If
@@ -56,3 +63,4 @@ Installing muddler on Big Sur.
       to
 
    #!/usr/bin/env perl5.30
+
