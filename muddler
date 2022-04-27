@@ -2842,7 +2842,7 @@ sub ansi_wrap
       if($$str{ch}->[$i] eq "\n") {
          push(@result,ansi_substr($str,$start,$i - $start));
          ($break,$cbreak,$start) = (undef,undef,$i + 1);
-      } elsif($i - $start >= $size_y) {             # line too long, break
+      } elsif($i - $start >= $size_y - 1) {             # line too long, break
          if(defined $break && $i - $break < 30 && $$str{ch}->[$i] ne " ") {
             if($cbreak eq " ") {          # eat space when breaking on space
                push(@result,ansi_substr($str,$start,$break-$start-1));
@@ -3759,7 +3759,8 @@ sub make_string_bold
    # move cursor to begingin of word
    xy(input_x(length($txt)),input_y(length($txt)));
 
-   printf("\033[1m") if($bold);                                  # start bold
+#   printf("\033[1m") if($bold);                                  # start bold
+   printf("\033[1m\033[1;31m") if($bold);                         # start bold
    for my $ch (split('',$txt)) {
 
       # determine if character would be off the screen, if so done.
@@ -5353,7 +5354,7 @@ sub cmd_add
       @address{@field[0]} = { host => @field[1],
                               port => @field[2],
                               name => @field[0],           # preserve case
-                              ssl  => 1
+                              ssl  => 0
                             };
    } elsif($#field == 4) {
       @address{@field[0]} = { name => @field[0],           # preserve case
@@ -5361,7 +5362,7 @@ sub cmd_add
                               pass => @field[2],
                               host => @field[3],
                               port => @field[4],
-                              ssl  => 1
+                              ssl  => 0
                             };
    } elsif($#field == 5) {                                         # has type
       @address{@field[0]} = { name => @field[0],              # preserve case
@@ -5369,7 +5370,7 @@ sub cmd_add
                               pass => @field[3],
                               host => @field[4],
                               port => @field[5],
-                              ssl  => 1
+                              ssl  => 0
                             };
    } else {
       return cmd_help($conn,"addworld");
@@ -7133,6 +7134,7 @@ if($@) {
 
 if(defined @state{modules}) {
    for my $i (0 .. $#{@state{modules}}) {
+      @state{modules}->[$i] =~ s/\r|\n//g;
       echo(@state{muddler},
            "%s %s",
            (($i == 0) ? "Optional:" : (" " x 9)),
