@@ -4988,7 +4988,7 @@ sub var_init
    @var{encode}  = { fun => sub { vencode(@_); }                           };
    @var{debug}   = { set=>1                                                };
    @var{password}= { set=>1                                                };
-   @var{allow}   = { set=>1                                                };
+   @var{allow}   = { set=>1, null=>1                                       };
    @var{watchdog}= { set=>1, chk => "on|off|0|1"                           };
    @var{theme}   = { set=>1, chk => "light|dark", 
                      fun => sub { ws_all("d","theme ",@_[1]); }            };
