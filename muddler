@@ -166,6 +166,7 @@ sub key_init
 sub command_init
 {
    delete @command{keys %command};
+   @command{key_ctl_r}     = sub { return key_ctl_r(@_);                   };
    @command{send}          = sub { return cmd_send(@_);                    };
    @command{blurred}       = sub { return cmd_blurred(@_);                 };
    @command{focused}       = sub { return cmd_focused(@_);                 };
@@ -2168,30 +2169,41 @@ sub update_more
    my ($w,$value) = @_;
 
    return if(!defined @socket{$w});
+#   loggit("[%s-%s] update_more: '%s'\n",min_visible($w),in_more($w),code());
 
    # always update more_cnt when not in /more, update when not reseting to
    # zero when more is on.
    if($value == 0) {
-      if(@socket{$w}->{more} < history_pos($w)) {
-#         loggit("update_more[$w]: reset %s,%s [%s,] \n",@socket{$w}->{more},history($w),code());
+      if(!defined @socket{$w}->{more} ||
+         @socket{$w} <= 0 ||
+         @socket{$w}->{more} < history_pos($w)) {
          @socket{$w}->{more_cnt} = 0;
+#         loggit("    set more_cnt[%s]: 0 == $value\n",$w); 
+      } else {
+#         loggit("    set more_cnt[%s]: skip $value\n",$w); 
       }
    } else {
-#      loggit("update_more: changed to $value\n");
       @socket{$w}->{more_cnt} = $value;
+#      loggit("    set more_cnt[%s]: $value\n",$w); 
    }
 
    # We have enough output to turn on more, but this is on non displayed
    # output. If we turn more on now, it will pause the output to soon.
    # With that in mind, set more to the position in which we want to
    # turn more on when we get there.
+   #loggit("more: '%s' - '%s' >= '%s'\n",min_visible($w),overlap(),
+   #   @socket{$w}->{more_cnt});
    if(@socket{$w}->{more_cnt} >= min_visible($w) - overlap() && 
       (@socket{$w}->{more} == 0 || @socket{$w}->{more} eq undef)) {
-#      loggit("## $w turn more on at %s [%s:%s]\n",history_max($w),@socket{$w}->{more_cnt},min_visible($w));
+   #   loggit("--------------------> more: cnt: %s,pos:%s,min=%s\n",@socket{$w}->{more_cnt},@socket{$w}->{more},min_visible($w));
       @socket{$w}->{more} = history_max($w);
    }
 }
 
+#
+# echo
+#   This should be replaced with history() since history() now properly
+#   handles internal messages (or at lease my thoughts on it).
 sub echo
 {
    my ($world,$fmt,@args) = @_;
@@ -2270,11 +2282,16 @@ sub in_more
   } elsif(!defined @socket{$world}) {
      return 0;
   } elsif(history_pos($world) == -1 ||                 # no history, no /more
+          !defined @socket{$world}->{more} ||
           @socket{$world}->{more} == 0 ||
           @socket{$world}->{more} eq undef) {
      return 0;
 #  } elsif(@socket{$world}->{more} == 1) {
-  } elsif(@socket{$world}->{more} <= history_pos($world)) {
+  } elsif( @socket{$world}->{more} <= history_pos($world)) {
+#      loggit("##$world>  more on: %s <= %s [pend: %s]\n",
+#             @socket{$world}->{more},
+#             history_pos($world));
+# ,pending($world)) 
 #     loggit("in_more: return 1 [%s,%s,%s]\n",
 #            @socket{$world}->{more},
 #            history_pos($world),@socket{$world}->{more_cnt});
@@ -2486,8 +2503,8 @@ sub history
 #      }
 #      loggit("---[ end ]---\n");
       
-      @state{last_line} = "$txt\->$new->" . scalar cache_wrap(@state{world},$world,$#{@history{$world}}) . "->" . @history{$world}->[-1]->{txt};
       update_pending($world,$new,$txt);
+#      loggit("## more_cnt %s + %s = %s\n",@socket{$world}->{more_cnt},$new,@socket{$world}->{more_cnt} + $new);
       update_more($world,@socket{$world}->{more_cnt} + $new);
 
       # update activity notice
@@ -2562,20 +2579,25 @@ sub world_visible
 sub min_visible
 {
    my $world = shift;
-   my $min;
+   my $min = 0;
 
    # console is on world, start with that.
    $min = output_end() if($world eq @state{world}); 
+#   loggit(" #### MIN: $world -> %s == %s\n",@state{world},$min);
 
    for my $key (keys %ws) {                      # now try websocket clients
       if(ref(@ws{$key}) ne "HASH") {
          delete @ws{$key};
-      } elsif(@ws{$key}->{world} eq $world && @ws{$key}->{size_y} < $min) {
+      } elsif(@ws{$key}->{world} eq $world && 
+              (@ws{$key}->{size_y} < $min || 
+              $min eq 0)
+             ) {
          $min = @ws{$key}->{size_x};
       }
    }
 
-   if(!defined $min) {              # no world on $world, default to console
+#   loggit(" #### MIN: return: %s\n",(defined $min) ? $min : output_end());
+   if($min < output_end() || $min eq undef) {
       return output_end();
    } else {
       return $min;
@@ -2644,7 +2666,7 @@ sub release_pending_pagefull
 {
    my ($conn,$w,$tab) = @_;
    my ($max,$start,$txt_start,$tlines,@list);
-   my $count = 0;
+   my $count = 1;
 
    if(!defined @socket{$w} || 
       !world_visible($w) || 
@@ -2727,7 +2749,10 @@ sub release_pending_pagefull
    optimize_end();
 
    # end of history reached, disable more if enabled.
-   if(history_pos($w) == $#{@history{$w}} && in_more($w) && $tab) {
+   if(history_pos($w) < $#{@history{$w}}) {
+      @socket{$w}->{more} = $start;
+      @socket{$w}->{more_cnt} = $count;
+   } elsif(history_pos($w) == $#{@history{$w}} && in_more($w) && $tab) {
       delete @socket{$w}->{more};
       update_pending($w,@socket{$w}->{pending} * -1);
       update_more($w,0);
@@ -3010,7 +3035,12 @@ sub redraw_output
    my $w = current_world($conn);
    return if $w eq undef || !defined @socket{$w};
    my $last = history_pos($w) + 1;
-   release_pending_pagefull($conn,$w);                       # show new lines?
+
+   if(is_console($conn)) {
+      @state{p_overlap}++;                          # account for "===" line
+      release_pending_pagefull($conn,$w);                   # show new lines?
+      @state{p_overlap}--;                                           # revert
+   }
 
    if(is_console($conn)) {
 #      loggit("redraw_output[console]: '%s'\n",$conn);
@@ -3019,6 +3049,7 @@ sub redraw_output
          # show dashes before new output when switching to world
          if($$hash{pos} >= $last && $first eq undef) {
             echo_console("%s","=====");
+            update_more($w,0);
             $first++;
          }
          echo_console("%s",$$hash{txt});
@@ -3456,7 +3487,7 @@ sub key_ctl_r
    @state{ansi_wrap} = 0;
    reload_code($conn);
 
-   wc_out("/reload\n") if(remote());
+   wc_out("/key_ctl_r\n") if(remote());
 }
 
 #
@@ -4021,11 +4052,17 @@ sub key_up
    for my $key (sort {@socket{$a}->{pos} <=> @socket{$b}->{pos}} keys %socket){
       if(@socket{$key}->{pos} > $pos &&
          (defined @socket{$key}->{sock} || pending($key) > 0)) {
+#         loggit("moving from $w to $key\n");
+         
+         @state{world} = $key if(is_console($conn));
+         update_more($key,0) if($key ne "muddler");
          return switch_world($conn,$key);
       }
       $first = $key if($first eq undef);
    }
 
+   @state{world} = $first if(is_console($conn));
+   update_more($first,0) if($first ne "muddler");
    switch_world($conn,$first) if($first ne undef);
 }
 
@@ -4049,7 +4086,7 @@ sub key_down
    return if $w eq undef || !defined @socket{$w};
    my $pos = @socket{$w}->{pos};
 
-   # if active, switch to it.. but also switch back one last time.
+   # if activity, switch to it.. but also switch back one last time.
    if(mstate($conn,"last_active") ne undef || 
       scalar keys %{@state{activity}} > 0) {
       if(scalar keys %{@state{activity}} > 0) {
@@ -4071,27 +4108,43 @@ sub key_down
       }
    }
    if($prev ne undef) {
+      @state{world} = $prev if(is_console($conn));
+      update_more($prev,0) if($prev ne "muddler");
       switch_world($conn,$prev);
    } elsif($last ne undef) {
+      @state{world} = $last if(is_console($conn));
+      update_more($last,0) if($last ne "muddler");
       switch_world($conn,$last);
    }
 }
 
+#
+# key_right
+#   Handle the pressing of the right arrow key
+#
 sub key_right
 {
    return if !console();
 
-   if(@state{line_pos} <= $#{@input[-1]}) {
+   if(@state{line_pos} <= $#{@input[-1]}) {     # not at the end of the line?
+      # will cursor go off screen?
+      #    1 adjust the input_offset to reflect this
+      #    2 show next line
       if(@state{line_pos} % (@state{size_y}-1)==@state{size_y} - 2 &&
          input_x() == @state{size_x}) {
          @state{input_offset}++;
          printf("\n%s",input_line(input_on_line()+1));
       }
+
       @state{line_pos}++;
-      xy(input_x(),input_y());
+      xy(input_x(),input_y());         # move cursor to expected location
    }
 }
 
+#
+# TRUE
+#    What is true these days? no idea. We'll accept 1, on, yes, and true.
+#
 sub TRUE
 {
    my $txt = shift;
@@ -5876,6 +5929,7 @@ sub do_cmd
 
    if($input =~ /^\/([^ ]+)\s*/) {
       if(defined @command{lc($1)}) {
+         update_more($world,0) if($world ne "muddler");
          &{@command{lc($1)}}($conn,$');
          return 1;
       } else {
@@ -6428,12 +6482,12 @@ sub cmd_listsockets
    for my $key (keys %ws) {
 #       loggit("%s\n",print_var(@ws{$key}));
        echo($conn,
-            "%-16s %-26s %-5s %-3s     %sx%s/%s",
+            "%-16s %-26s %-5s %-3s",
             @ws{$key}->{auth} ? "Web [auth]" : "Web",
             @ws{$key}->{ip},
             @ws{$key}->{port},
-            @state{secure} ? "Yes" : "",
-            @ws{$key}->{size_x},@ws{$key}->{size_y},small($key));
+            @state{secure} ? "Yes" : ""
+           );
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock}) {
