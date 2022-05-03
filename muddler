@@ -2362,7 +2362,7 @@ sub send_to_window
 {
    my ($w,$txt) = @_;
 
-   return if($$txt{gagged});                             # gagged, ignored
+   return if($$txt{gagged} || $$txt{internal});    # gagged/internal, ignored
 
    if(defined @state{window} && ref(@state{window}) eq "HASH") {
       for my $id (keys %{@state{window}}) {
@@ -2492,7 +2492,7 @@ sub history
    push(@{@history{$world}},$str);
    remove_nospoof($str);
    gagged($world,$str);                                    # set gagged flag?
-   send_to_window($str);                              # handle /window stuff
+   send_to_window($world,$str);                        # handle /window stuff
 
    if(displayable($str) && defined @socket{$world}) {
       my $new = scalar cache_wrap(@state{world},$world,$#{@history{$world}});
@@ -3036,12 +3036,11 @@ sub redraw_output
    return if $w eq undef || !defined @socket{$w};
    my $last = history_pos($w) + 1;
 
-   if(is_console($conn)) {
-      @state{p_overlap}++;                          # account for "===" line
-      release_pending_pagefull($conn,$w);                   # show new lines?
-      @state{p_overlap}--;                                           # revert
-   }
-
+   # releaqse 1 less line for the "===" that will be shown. This probably
+   # should be handled differently but its simple.
+   @state{p_overlap}++;
+   release_pending_pagefull($conn,$w);                     # show new lines
+   @state{p_overlap}--;
    if(is_console($conn)) {
 #      loggit("redraw_output[console]: '%s'\n",$conn);
       optimize_start();
@@ -3157,13 +3156,10 @@ sub scan_history_new
       my $sub = 0;
       if(!$$hist[$pos]->{gagged} && !$$hist[$pos]->{internal} == 2) {
          for my $line (reverse ansi_wrap($$hist[$pos]->{txt})) {
-            loggit("sh[$pos-$count]: %s\n",txt(ansi_substr($line,0,50)));
             $sub += ansi_length($line);
             $count++;
             if($count > $size) {
-              loggit("POS: '%s' [%s]\n",$pos,$#$hist);
               hist_pos($w,$pos,$count * $inc);
-              loggit("# %s\n",$$hist[$pos]->{txt});
               hist_pos_partial($w,
                   ansi_length($$hist[$pos]->{txt}) - $sub);
 #                  $sub);
@@ -3184,7 +3180,6 @@ sub scan_history_new
       # do nothing;
       return 0;
    } else {
-      loggit("POS: $pos, %s\n",$count * $inc);
       hist_pos($w,$pos,$count * $inc);
       return 1;
    }
@@ -4169,20 +4164,20 @@ sub switch_world
          @ws{$conn}->{world_last} = @state{world};
          @ws{$conn}->{world} = $world;
       }
-   } elsif(is_web($conn)) { # switch websocket
+   } elsif(is_web($conn)) {                              # switch websocket
       @ws{$conn}->{world_last} = @ws{$conn}->{world};
       @ws{$conn}->{world} = $world;
-   } else {
+   } else {                                               # switch console
       @state{world_last} = @state{world};
       @state{world} = $world;
    }
 
-   if(!in_more($world)) {
+   if(!in_more($world)) {               # remove activity notice if !in more
       delete @state{activity}->{$world};
    }
 
-   if(TRUE(@state{p_sync})) {
-      redraw_output($conn,0);
+   if(TRUE(@state{p_sync})) {                     # world syncing turned on,
+      redraw_output($conn,0);                      # keep all worlds in sync
       for my $key (keys %ws) {
          redraw_output(@ws{$key}->{conn},0);
       }
@@ -4857,7 +4852,10 @@ sub cmd_window
       my ($id,$glob,$good) = ($1,trim($'),0);
       my $reg = glob2re($glob);
       eval {                                      # check if pattern is bad
-         $good = 1 if ("badglob" =~ /$reg/);
+         if ("badglob" =~ /$reg/) {
+            # nothing
+         } 
+         $good = 1;
       };
       return echo($conn,"%% Invalid pattern '%s' specified",$glob) if(!$good);
 
@@ -4870,20 +4868,21 @@ sub cmd_window
          created => time()
       };
       
-   } elsif(remote() || is_web($conn)) {
+   } elsif((remote() || is_web($conn)) && length $txt) {
       my $t = time();
       wc_out("/window value=%s %s\n",time(),$txt);
       if(length $txt) {
          @state{terminal_app} = "/usr/bin/xfce4-terminal -x ";
-
-         loggit("Starting: @state{terminal_app} ./muddler --remote=192.168.1:9001 --window=$t\n");
-         system("@state{terminal_app} perl ./muddler --remote=192.168.1.8:9001 --window=$t &");
+         system("@state{terminal_app} perl ./muddler --remote=" .
+                "@state{remote_address} --window=$t &");
       }
+   } elsif(!length $txt && remote()) {
+      wc_out("/window");
    } elsif(!length $txt) {
       if(!defined @state{window} || scalar keys %{@state{window}} == 0) {
          echo($conn,"%% No window monitoring patterns defined.");
       } else {
-         echo($conn,"%15s | %-15s | %20s | %s\n",
+         echo($conn,"%15s | %-15s | %20s | %s",
               "Id",
               "Status",
               "Host",
@@ -4892,28 +4891,29 @@ sub cmd_window
          for my $key (keys %{@state{window}}) {
             my $hash = @state{window}->{$key};
             if(!defined $$hash{sock} && time() - $$hash{created} > 60) {
-               echo($conn,"%15s | %-15s | %20s | %s\n",
+               echo($conn,"%15s | %-15s | %20s | %s",
                     $key,
                     "timeout-deleted",
                     $$hash{glob}
                    );
                delete @state{window}->{$key};
             } elsif(!defined $$hash{sock}) {
-               echo($conn,"%15s | %-15s | %20s | %s\n",
+               echo($conn,"%15s | %-15s | %20s | %s",
                     $key,
                     "unconnected",
                     "N/A",
                     $$hash{glob});
             } elsif(!defined @ws{$$hash{sock}}) {
-               echo($conn,"%15s | %-15s | %20s | %s\n",
+               echo($conn,"%15s | %-15s | %20s | %s",
                     $key,
                     "active",
                     "orphaned?",
                     $$hash{glob}
                    );
+               delete @state{window}->{$key};
             } else {
                echo($conn,
-                    "%15s | %-15s | %20s | %s\n",
+                    "%15s | %-15s | %20s | %s",
                     $key,
                     "active",
                     @ws{$$hash{sock}}->{ip},
@@ -4923,7 +4923,11 @@ sub cmd_window
          }
       }
    } else {
-      # show usage?
+      if(remote()) {
+         echo($conn,"Usage: /window or /window <pattern>");
+      } else {
+         echo($conn,"Usage: /window");
+      }
    }
 }
 
@@ -7187,11 +7191,11 @@ for my $i (0 .. $#ARGV) {
       @state{window_value} = $';
    } elsif(@ARGV[$i] =~ /^--remote=/) {
       my $value = $';
+      @state{remote} = 1;
       if($value =~ /^([^:]+):(\d+)$/) {
-         @state{remote} = 1;
          @state{remote_address} = $value;
       } else {
-         die("Remote usage: --remote or --remote=host:port [$value]");
+         @state{remote_address} = "$value:9001";
       }
    } elsif(@ARGV[$i] =~ /^--remote$/) {
       @state{remote} = 1;
