@@ -1668,11 +1668,16 @@ sub http_process_line
       $$data{get} =~ s/\// /g;
       $$data{get} =~ s/^\s+|\s+$//g;
 
-      if($$data{get} eq undef) {
-         $$data{get} = "muddler_client.html";
-         my $tmp = @http_data{$$data{get}};
+      if($$data{get} eq undef || $$data{get} eq "m") {
+         my $tmp = @http_data{"muddler_client.html"};
          my $port = @state{p_port} + 1;
-         $tmp =~ s/9001/$port/;
+         $tmp =~ s/__PORT__/$port/;
+
+         # turn comment into the enabling of the mobile "interface"
+         if($$data{get} eq "m") {
+            $tmp =~ s/\/\/ ENABLE_MOBILE/input.onEnter('\/mobile');/
+         }
+         $$data{get} = "muddler_client.html"; # used to determine mime type
          http_reply($sock,$data,"%s",$tmp);
       } elsif(!defined @http_data{$$data{get}}) {
          http_error($sock,"%s","Invalid path");
@@ -2672,7 +2677,7 @@ sub release_pending_pagefull
       !world_visible($w) || 
       (paused($w) && !$tab) ||                   # paused & !tab key pressed
       # nothing to display including partial lines
-      (history_pos($w) == $#{@history{$w}} && history_pos_partial($w) == -1) ||
+#      (history_pos($w) == $#{@history{$w}} && history_pos_partial($w) == -1) ||
 
       in_hist($w)) {
       return;
@@ -5972,6 +5977,7 @@ sub cmd_web_size
       }
    }
    redraw_output($conn,1);
+   draw_bar($conn,1);
 }
 
 sub nvl
@@ -8784,12 +8790,14 @@ START: muddler_client.js
               document.querySelector('#terminal').style.bottom = "30px";
               document.querySelector('#buttonbar').style.display = 
                   "inline-block";
-              document.querySelector('#output').style.fontSize = "8pt";
+              document.querySelector('#output').style.fontSize = "6pt";
               document.querySelector('#output').style.bottom = "74px";
-              obj.style.fontSize = "8pt";
+              document.querySelector('#bar').style.fontSize = "6pt";
+              document.querySelector('#bartime').style.fontSize= "6pt";
+              obj.style.fontSize = "6pt";
               obj.scrollTop = obj.scrollHeight;
               document.querySelector('#input').style.bottom = '4px';
-              sendCommand('/web_size ' + get_xy_size("8pt") + '\r\n');
+              sendCommand('/web_size ' + get_xy_size("6pt") + '\r\n');
            } else if(data === "mobile off") {
               var obj = document.getElementById("output");
               document.querySelector('#terminal').style.bottom = 0;
@@ -8803,6 +8811,8 @@ START: muddler_client.js
               document.querySelector('#terminal').style.bottom = "0px";
               document.querySelector('#output').style.bottom = "71px";
               document.querySelector('#input').style.bottom = '0px';
+              document.querySelector('#bar').style.fontSize = "11pt";
+              document.querySelector('#bartime').style.fontSize= "11pt";
 
               sendCommand('/web_size ' + get_xy_size("10pt") + '\r\n');
            } else if(data === "theme light") {
@@ -9848,7 +9858,7 @@ START: muddler_client.html
      var serverAddress = window.location.hostname;
      var serverSSL = window.location.protocol == "https:";
      var serverProto = serverSSL ? "wss://" : "ws://";
-     var serverPort = serverSSL ? '9001' : '9001';
+     var serverPort = '__PORT__';
      
      var customUrl = window.location.search.substring(1) ? window.location.search.substring(1) : serverAddress + ":" + serverPort;
      // The connection URL is ws://host:port/wsclient (or wss:// for SSL connections)
@@ -9897,6 +9907,7 @@ START: muddler_client.html
      conn.onOpen = function (evt) { 
          output.appendMessage('logMessage', '%% Connected.');
          sendCommand('/web_size ' + get_xy_size() + '\r\n');
+         // ENABLE_MOBILE
          // sendCommand(window.prompt("Enter password","xyzzy"));
      };
      conn.onError = function (evt) { output.appendMessage('logMessage', '%% Connection error!'); console.log(evt); };
