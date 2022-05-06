@@ -1651,6 +1651,10 @@ sub http_disconnect
 }
 
 
+#
+# http_process_line
+#    Handle enough of HTTP's header data to make things work.
+#
 sub http_process_line
 {
    my ($sock,$txt) = @_;
@@ -1668,40 +1672,29 @@ sub http_process_line
       $$data{get} =~ s/\// /g;
       $$data{get} =~ s/^\s+|\s+$//g;
 
-      if($$data{get} eq undef || $$data{get} eq "m") {
+      # initial request of no path or an m and/or d (mobile or dark)
+      if($$data{get} eq undef || $$data{get} =~ /^([m|d]{1,2})$/) {
          my $tmp = @http_data{"muddler_client.html"};
          my $port = @state{p_port} + 1;
          $tmp =~ s/__PORT__/$port/;
 
          # turn comment into the enabling of the mobile "interface"
-         if($$data{get} eq "m") {
+         if($$data{get} =~ /m/) {
             $tmp =~ s/\/\/ ENABLE_MOBILE/input.onEnter('\/mobile');/
+         }
+         if($$data{get} =~ /d/) {
+            $tmp =~ s/\/\/ ENABLE_DARK/input.onEnter('\/set theme=dark');/
          }
          $$data{get} = "muddler_client.html"; # used to determine mime type
          http_reply($sock,$data,"%s",$tmp);
-      } elsif(!defined @http_data{$$data{get}}) {
+      } elsif(!defined @http_data{$$data{get}}) {           # invalid page
          http_error($sock,"%s","Invalid path");
-      } elsif(-e $$data{get}) {
-         http_reply($sock,$data,"%s",getfile($$data{get}));
       } else {
          http_reply($sock,$data,"%s",@http_data{$$data{get}});
       }
    } else {
       http_error($sock,"Malformed Request");
    }
-}
-
-sub getfile
-{
-   my $fn = shift;
-   my ($content,$file);
-   open($file,$fn) || return undef;
-   {
-      local $/;
-      $content = <$file>;
-   }
-   close($file);
-   return $content;
 }
 
 #
@@ -1721,7 +1714,8 @@ sub http_error
    http_out($s,"Connection: close");
    http_out($s,"Content-Type: text/html; charset=ISO-8859-1");
    http_out($s,"");
-   http_out($s,"<html><meta name=\"viewport\" content=\"initial-scale=.5, maximum-scale=1\">");
+   http_out($s,"<html><meta name=\"viewport\" content=\"initial-scale=.5, ".
+            "maximum-scale=1\">");
    http_out($s,"<style>");
    http_out($s,".big {");
    http_out($s,"   line-height: .7;");
@@ -2016,7 +2010,6 @@ sub calc_pending
       $start = history_pos($w);                       # start where left off
    }
 
-#   loggit("--- [calc start] --\n");
    for(my $i = $start;$i <= history_max($w);$i++) {
       if($i == $start && history_pos_partial($w) != -1) {
          my $start = history_pos_partial($w);
@@ -2025,59 +2018,13 @@ sub calc_pending
                                              ),
                                  @state{size_y}
                                  );
-#         for my $line (ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},
-#                                              $start
-#                                             ),
-#                                 @state{size_y}
-#                                 )) {
-#            loggit("c1-$i> %s\n",txt($line));
-#         }
       } else {
-         $new = scalar cache_wrap(@state{world},
-                                   @state{world},
-                                   $i);
-#         for my $line (cache_wrap(@state{world},@state{world},$i)) {
-#            loggit("c2-$i> %s\n",txt($line));
-#         }
+         $new = scalar cache_wrap($w,$w,$i);
       }
       $cnt += ($new <= 0) ? 1 : $new;           # blank line fudge factor
    }
 #   loggit("--- [calc end] --\n");
    return $cnt;
-}
-
-sub pending_fix
-{
-   my $w = shift;
-   $w = @state{world} if $w eq undef;
-   my ($start, $txt_start);
-   my $count = 0;
-
-   return if !defined @socket{$w};
-
-   my $hist = @history{$w};
-
-   if(history_pos_partial($w) == -1) {
-      $start = history_pos($w) + 1;   # prev partial line, start on same line
-   } else {
-      $start = history_pos($w);       # prev partial line, start on same line
-   }
-
-   for(my $i=$start;$i <= history_max($w);$i++) {
-      if(!$$hist[$i]->{gagged}) {
-         if($i == history_pos($w) && history_pos_partial($w) >= -1) {
-            $start = history_pos($w);
-            $txt_start = history_pos_partial($w);
-         } else {
-            $start = history_pos($w) + 1;
-            $txt_start = 0; # but at character $
-         }
-         $count +=scalar ansi_wrap(ansi_substr(
-             @history{$w}->[$i]->{txt},$txt_start));
-      }
-   }
-   
-   @socket{$w}->{pending} = $count;
 }
 
 sub history_pos
@@ -2435,12 +2382,25 @@ sub gagged
          }
       }
    }
+
+   # this mush duplicates messages in a particular room to the public
+   # channel. This will remove the dups as long as the non-public
+   # channel text comes first.
+   if($w eq "n") {
+      my $prev = ansi_remove(@history{$w}->[-2]->{txt});
+      if($str eq "<Pub> $prev" ||
+         ($str =~ /says, "(.*)"$/ && $prev eq "You say, \"$1\"")) {
+         $$txt{gagged} = 1;
+         return 1;
+      }
+   }
     
+   # handle /def defined gags
    for my $key (keys %def) {
-      if(@def{$key}->{world} eq undef || 
-         lc(@def{$key}->{world}) eq lc($w)) {
-         if(@def{$key}->{atr} =~ /g/) {
-            if(@def{$key}->{match} eq undef) {
+      if(@def{$key}->{world} eq undef ||              # world not specified
+         lc(@def{$key}->{world}) eq lc($w)) {               # world matches
+         if(@def{$key}->{atr} =~ /g/) {                     # gag attribute
+            if(@def{$key}->{match} eq undef) { 
                my $pat = @def{$key}->{txt};
                $pat = glob2re($pat) if(@def{$key}->{match} ne "regexp");
 
@@ -2640,13 +2600,14 @@ sub update_pending
 #      @socket{$w}->{pending} = $calc;
 #      loggit("pending: setting to $calc\n");
 #   } elsif(@socket{$w}->{pending} + $count < 0) {
-#      loggit("NEGATIVE pending[%s]: %s-%s=%s at %s\n",
+#      loggit("NEGATIVE pending[%s]: %s-%s=%s at %s [set to zero]\n",
 #             $w,
 #             @socket{$w}->{pending},
 #             $count,
 #             @socket{$w}->{pending} + $count,
 #             code()
 #            );
+#       @socket{$w}->{pending} = 0;
 #   } else {
 #      loggit("pending[%s]: good -> %s+%s=%s\n",
 #             $w,
@@ -2809,14 +2770,14 @@ sub cache_wrap
 {
    my ($conn,$world,$id,$force) = @_;
 
-   delete @state{cache};
+#   loggit("-----------> cache_wrap: '%s'\n",$world);
    @state{cache} = {} if !defined @state{cache};
    my $cache = @state{cache};
    if(defined @history{$world} && defined @history{$world}->[$id]) {
       my $y = is_web($conn) ? @ws{size_y} : @state{size_y};
-      if(!defined $$cache{$world} ||
+      if((!defined $$cache{$world} ||
          !defined $$cache{$world}->{$id} ||
-         !defined $$cache{$world}->{$id}->{$y} || $force) {
+         !defined $$cache{$world}->{$id}->{$y}) || $force) {
          $$cache{$world}={} if !defined $$cache{$world};
          $$cache{$world}->{$id}={} if !defined $$cache{$world}->{$id};
          if(!defined $$cache{$world}->{$id}->{$y}) {
@@ -2824,9 +2785,13 @@ sub cache_wrap
          }
          $$cache{$world}->{$id}->{$y}->{txt} =[
             ansi_wrap(@history{$world}->[$id]->{txt},$y)];
-         my $tmp = txt(ansi_substr(@history{$world}->[$id]->{txt},1,40));
          $$cache{$world}->{$id}->{$y}->{ts} = time(); 
          @state{cached}++;
+#         loggit("#! '%s' [%s-$force]\n",@history{$world}->[$id]->{txt});
+#         for my $line (ansi_wrap(@history{$world}->[$id]->{txt},$y)) {
+#            loggit("   > '%s'\n",txt($line));
+#         }
+#         loggit("    got here 1\n");
       } else {
          @state{nocache}++;
          $$cache{$world}->{$id}->{$y}->{ts} = time();     # update timestamp
@@ -3516,7 +3481,6 @@ sub key_ctl_l
       draw_bar();
       redraw_input($conn);
    } else {
-      pending_fix(world($conn));
       redraw_screen($conn,1);
    }
 }
@@ -5078,7 +5042,7 @@ sub var_init
    @var{allow}   = { set=>1, null=>1                                       };
    @var{watchdog}= { set=>1, chk => "on|off|0|1"                           };
    @var{theme}   = { set=>1, chk => "light|dark", 
-                     fun => sub { ws_all("d","theme ",@_[1]); }            };
+                     fun => sub { ws_all("d","theme " . @_[1]); }          };
    @var{keepalive}={ set=>1, fun => sub {  update_keepalive(@_) }          };
    @var{overlap} = { set=>1, chk => "\\d+"                                 },
    @var{sync}    = { set=>1,chk => "on|off|0|1",
@@ -6464,7 +6428,8 @@ sub cmd_recall
       };
    }
    for my $i (0 .. $#out) {
-      echo_wrap(@out[$i]);                       # output in correct order
+#      echo_wrap(@out[$i]);                       # output in correct order
+      history(world($conn),@out[$i]);              # output in correct order
    }
 }
 
@@ -7125,8 +7090,13 @@ sub change_window_size
       wc_out("/web_size %s,%s\n",@state{size_x},@state{size_y}+3);
       redraw_input();
    } else {
+
+      # re-calc all pending because of screen size change.
       for my $key (keys %socket) {
-         pending_fix($key);
+         my $w = world($key);
+         if(defined @socket{$w}) { # re-calc pending because of screen size
+            @socket{$w}->{pending} = calc_pending($w);
+         }
       }
       redraw_screen(@state{world},1);
    }
@@ -9908,6 +9878,7 @@ START: muddler_client.html
          output.appendMessage('logMessage', '%% Connected.');
          sendCommand('/web_size ' + get_xy_size() + '\r\n');
          // ENABLE_MOBILE
+         // ENABLE_DARK
          // sendCommand(window.prompt("Enter password","xyzzy"));
      };
      conn.onError = function (evt) { output.appendMessage('logMessage', '%% Connection error!'); console.log(evt); };
