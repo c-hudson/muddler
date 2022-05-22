@@ -1410,12 +1410,12 @@ sub ws_echo
    $msg =~ s/[\r\n]+$//;
    eval {
 #      $ws->send('',$type . encode_utf8($msg) . "\r\n");
-#      loggit("send: '%s' [%s]\n",$msg,code());
+#      loggit("send[$type,$ws]: '%s' [%s]\n",$msg,code());
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
    if($@) {
-      ws_disconnect($ws) if($@);
       loggit("FATALs: $@");
+      ws_disconnect($ws);
    }
 }
 
@@ -3240,7 +3240,7 @@ sub key_pgup
 
       if(is_console($conn)) {                  # keep any webclients in sync
          for my $s (keys %ws) {
-            redraw_output($s) if(@ws{$s}->{world} eq $conn);
+            redraw_output(@ws{$s}->{conn}) if(@ws{$s}->{world} eq $conn);
          }
       } elsif(@ws{$conn}->{world} eq @state{world}) {
          redraw_output($conn);                         # keep console in sync
@@ -3265,7 +3265,7 @@ sub key_pgdn
 
       if(is_console($conn)) {                  # keep any webclients in sync
          for my $s (keys %ws) { 
-            redraw_output($s) if(@ws{$s}->{world} eq $conn);
+            redraw_output(@ws{$s}->{conn}) if(@ws{$s}->{world} eq $conn);
          }
       } elsif(is_web($conn) && @ws{$conn}->{world} eq @state{world}) {
          redraw_output(@state{world});                # keep console in sync
@@ -4131,8 +4131,8 @@ sub switch_world
       @state{world_last} = @state{world};
       @state{world} = $world;
       for my $key (keys %ws) {
-         @ws{$conn}->{world_last} = @state{world};
-         @ws{$conn}->{world} = $world;
+         @ws{$key}->{world_last} = @state{world};
+         @ws{$key}->{world} = $world;
       }
    } elsif(is_web($conn)) {                              # switch websocket
       @ws{$conn}->{world_last} = @ws{$conn}->{world};
