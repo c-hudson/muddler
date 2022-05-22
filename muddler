@@ -62,7 +62,7 @@ my %state = (
    web             => 0,                        # websocket enabled/disabled
    console         => 1,                            # disable console output
    p_password      => "xyzzy",
-   p_color         => "light",                     # default websocket theme
+   p_theme         => "light",                     # default websocket theme
    p_port          => 9000,                 # web/websock port starting port
    p_debug         => 0,                   # store debuging info to log file
    p_more          => 1,                                      # enable /more
@@ -1369,8 +1369,8 @@ sub ws_login_screen
    my $ws = shift;
 #   ws_echo($ws,"t",@state{version},1);
 
-   if(defined @state{p_color}) {
-      ws_echo($ws,"d","theme @state{p_color}",1);
+   if(defined @state{p_theme}) {
+      ws_echo($ws,"d","theme @state{p_theme}",1);
    }
 
    if(allowed($ws)) {
