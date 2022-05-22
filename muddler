@@ -62,7 +62,7 @@ my %state = (
    web             => 0,                        # websocket enabled/disabled
    console         => 1,                            # disable console output
    p_password      => "xyzzy",
-   p_color         => "light",                     # default websocket theme
+   p_theme         => "light",                     # default websocket theme
    p_port          => 9000,                 # web/websock port starting port
    p_debug         => 0,                   # store debuging info to log file
    p_more          => 1,                                      # enable /more
@@ -1369,8 +1369,8 @@ sub ws_login_screen
    my $ws = shift;
 #   ws_echo($ws,"t",@state{version},1);
 
-   if(defined @state{p_color}) {
-      ws_echo($ws,"d","theme @state{p_color}",1);
+   if(defined @state{p_theme}) {
+      ws_echo($ws,"d","theme @state{p_theme}",1);
    }
 
    if(allowed($ws)) {
@@ -2127,7 +2127,6 @@ sub update_more
    # zero when more is on.
    if($value == 0) {
       if(!defined @socket{$w}->{more} ||
-         @socket{$w} <= 0 ||
          @socket{$w}->{more} < history_pos($w)) {
          @socket{$w}->{more_cnt} = 0;
 #         loggit("    set more_cnt[%s]: 0 == $value\n",$w); 
@@ -2388,7 +2387,9 @@ sub gagged
    # channel text comes first.
    if($w eq "n") {
       my $prev = ansi_remove(@history{$w}->[-2]->{txt});
-      if($str eq "<Pub> $prev" ||
+      if( $str eq "<Pub> $prev" ||                   # pub/non dup message
+          ($str =~ /^<Pub> / && $str eq $prev) ||        # dup pub message
+                                    # match your dups via say & pub channel
          ($str =~ /says, "(.*)"$/ && $prev eq "You say, \"$1\"")) {
          $$txt{gagged} = 1;
          return 1;
@@ -4950,12 +4951,19 @@ sub cmd_dc
 sub cmd_stat
 {
    my ($conn,$txt) = @_;
-   my (%stat, $max,$sock);
+   my (%stat, %cache, $max,$sock);
 
    for my $world (keys %history) {
       $max = length($world) if length($world) > $max;
       for my $i (0 .. $#{@history{$world}}) {
          @stat{$world} += length(@history{$world}->[$i]->{txt});
+      }
+
+      my $cache = @state{cache};
+      for my $id (keys %{$$cache{$world}}) {
+         for my $y (keys %{$$cache{$world}->{$id}}) {
+            @cache{$world} += length($$cache{$world}->{$id}->{$y}->{txt});
+         }
       }
    }
    for my $world (keys %stat) {
@@ -4964,7 +4972,8 @@ sub cmd_stat
       } else {
          $sock = "N/A";
       }
-      echo($conn,"%% %*s : %10s    %s",$max,$world,@stat{$world},$sock);
+      echo($conn,"%% %*s : %10s  %10s",
+           $max,$world,@stat{$world},@cache{$world});
    }
 
    for my $world (keys %stat) {
@@ -4973,6 +4982,11 @@ sub cmd_stat
          delete @history{$world};
       }
    }
+
+#   @history{ascii} = [];
+#   delete @history{ascii};
+#   @socket{ascii}->{history_pos} = -1;
+#   @socket{ascii}->{history_pos_partial} = -1;
 }
 
 
@@ -5606,7 +5620,7 @@ sub cmd_listdef
 
    $pat = glob2re(trim($str)) if($str !~ /^\s*$/);
    
-   for my $key (keys %def) {
+   for my $key (sort keys %def) {
       next if @def{$key}->{atr} !~ /g/;
       my $count = 0;
 
@@ -7110,13 +7124,13 @@ sub change_window_size
 #
 sub sig_winch
 {
-   if(defined @state{winch} && time() - @state{winch} < 3) {
-      @state{winch} = time();
-      @state{winch_pending} = 1;
-   } else {
-      @state{winch} = time();
+#   if(defined @state{winch} && time() - @state{winch} < 3) {
+#      @state{winch} = time();
+#      @state{winch_pending} = 1;
+#   } else {
+#      @state{winch} = time();
       change_window_size();
-   } 
+#   } 
 }
 
 sub install_modules
