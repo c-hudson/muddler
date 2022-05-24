@@ -824,7 +824,7 @@ sub socket_connect
       @socket{$world} = { name      => $world,
                           host      => $host,
                           port      => $port,
-                          more      => 0,
+#                          more      => 0,
                           more_count=> 0,
                           last_read => -1,
                           history_pos => -1,
@@ -2148,6 +2148,7 @@ sub update_more
       (@socket{$w}->{more} == 0 || @socket{$w}->{more} eq undef)) {
    #   loggit("--------------------> more: cnt: %s,pos:%s,min=%s\n",@socket{$w}->{more_cnt},@socket{$w}->{more},min_visible($w));
       @socket{$w}->{more} = history_max($w);
+#      loggit("set_more[$w] = %s -> %s\n",history_max($w),code());
    }
 }
 
@@ -2234,8 +2235,8 @@ sub in_more
      return 0;
   } elsif(history_pos($world) == -1 ||                 # no history, no /more
           !defined @socket{$world}->{more} ||
-          @socket{$world}->{more} == 0 ||
-          @socket{$world}->{more} eq undef) {
+          @socket{$world}->{more} eq undef ||
+          @socket{$world}->{more} == 0) {
      return 0;
 #  } elsif(@socket{$world}->{more} == 1) {
   } elsif( @socket{$world}->{more} <= history_pos($world)) {
@@ -2715,10 +2716,12 @@ sub release_pending_pagefull
    }
    optimize_end();
 
-   # end of history reached, disable more if enabled.
-   if(history_pos($w) < $#{@history{$w}}) {
-      @socket{$w}->{more} = $start;
-      @socket{$w}->{more_cnt} = $count;
+   # end of history reached, enable moredisable more if enabled.
+   if(history_pos($w) < $#{@history{$w}}) { # 
+#      loggit("# updating more[$w]: %s\n",$count);
+#      @socket{$w}->{more_cnt} = $count;
+      update_more($w,$count);
+      @socket{$w}->{more} = 1;
    } elsif(history_pos($w) == $#{@history{$w}} && in_more($w) && $tab) {
       delete @socket{$w}->{more};
       update_pending($w,@socket{$w}->{pending} * -1);
@@ -3018,7 +3021,7 @@ sub redraw_output
       for my $hash (get_output(@state{world},1)) {
          # show dashes before new output when switching to world
          if($$hash{pos} >= $last && $first eq undef) {
-            echo_console("%s","=====");
+            echo_console("%s","=====* ". history_pos($conn));
             update_more($w,0);
             $first++;
          }
@@ -3031,7 +3034,7 @@ sub redraw_output
       for my $hash (get_output($conn,1)) {
          if($$hash{pos} >= $last && $first eq undef) {
             # show dashes before new output when switching to world
-            ws_echo($conn,"t","=====");
+            ws_echo($conn,"t","===== " . history_pos($conn));
             $first++;
           }
           ws_echo($conn,"t",$$hash{txt});
@@ -4154,7 +4157,9 @@ sub switch_world
    } else {
       redraw_output($conn,0);
    }
-   draw_bar();
+#   loggit("------[ start ]-----\n");
+#   draw_bar();
+#   loggit("------[ end ]-----\n");
 }
 
 #
@@ -4354,7 +4359,7 @@ sub more_bar
 
    if(in_hist($w)) {
       return sprintf("\033[7mHist %4s\033[0m",abs(@socket{$w}->{hist_offset}));
-   } elsif(in_more(world($conn)) && pending($w) != 0) {
+   } elsif(in_more($w) && pending($w) != 0) {
       return sprintf("\033[7mMore %4s\033[0m",pending($w));
    }
    return undef;
@@ -4446,6 +4451,7 @@ sub activity_count
 #
 sub draw_bar
 {
+#   loggit("draw_bar: called : %s == %s\n",@state{bar_name},name(@state{world}));
    return if defined @state{window_value};
    my $force = shift;
    my $new = time();
@@ -4487,6 +4493,12 @@ sub draw_bar
       @state{bar_pos} = hist_pos(@state{world});
       @state{bar_size} = @state{size_x}.@state{size_y};
       @state{bar_activity} = $cnt;
+#      loggit("draw_bar: update console %s [%s]\n",more_bar(@state{world}),@state{world});
+#      loggit("          in_more: '%s', more: '%s', more_cnt: %s, pos: '%s'\n",
+#                 in_more(world(@state{world})),
+#                 @socket{@state{world}}->{more},
+#                 @socket{@state{world}}->{more_cnt},
+#                 history_pos(@state{world}));
 
       # determine activity count, if any.
       if($cnt >= 1) {
@@ -5191,7 +5203,7 @@ sub cmd_common
       return;
    } elsif($txt =~ /^\s*-\s*/) {
       if(defined @list{trim($')}) {
-         delete @state{trim{$'}};
+         delete @list{trim{$'}};
          save($conn,"p_common",join(":",keys %list));
       } else {
          echo($conn,"%% Worlds '%s' not defined in /common",trim($'));
@@ -5199,6 +5211,8 @@ sub cmd_common
    } else {
       if(defined @list{trim($txt)}) {
          echo($conn,"%% Worlds '%s' already defined in /common",trim($txt));
+      } elsif($txt =~ /:/) {
+         echo($conn,"%% World name may not contain \":\"");
       } else {
          @list{trim($txt)} = 1;
          save($conn,"p_common",join(":",keys %list));
