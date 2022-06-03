@@ -1685,6 +1685,7 @@ sub http_process_line
          if($$data{get} =~ /d/) {
             $tmp =~ s/\/\/ ENABLE_DARK/input.onEnter('\/set theme=dark');/
          }
+
          $$data{get} = "muddler_client.html"; # used to determine mime type
          http_reply($sock,$data,"%s",$tmp);
       } elsif(!defined @http_data{$$data{get}}) {           # invalid page
@@ -2128,10 +2129,22 @@ sub update_more
    if($value == 0) {
       if(!defined @socket{$w}->{more} ||
          @socket{$w}->{more} < history_pos($w)) {
+         loggit("%s-%s> reset : more_cnt: %s, more: %s, pend: %s, pos: %s\n",
+                ts(),
+                $w,
+                @socket{$w}->{more_cnt},
+                (defined @socket{$w}->{more}) ? @socket{$w}->{more} : "N/A",
+                pending($w),
+                history_pos($w)) if @state{debug};
          @socket{$w}->{more_cnt} = 0;
-#         loggit("    set more_cnt[%s]: 0 == $value\n",$w); 
       } else {
-#         loggit("    set more_cnt[%s]: skip $value\n",$w); 
+      loggit("%s-%s> reset-skip : more_cnt: %s, more: %s, pend: %s, pos: %s\n",
+                ts(),
+                $w,
+                @socket{$w}->{more_cnt},
+                (defined @socket{$w}->{more}) ? @socket{$w}->{more} : "N/A",
+                pending($w),
+                history_pos($w)) if @state{debug};
       }
    } else {
       @socket{$w}->{more_cnt} = $value;
@@ -2146,7 +2159,7 @@ sub update_more
    #   @socket{$w}->{more_cnt});
    if(@socket{$w}->{more_cnt} >= min_visible($w) - overlap() && 
       (@socket{$w}->{more} == 0 || @socket{$w}->{more} eq undef)) {
-   #   loggit("--------------------> more: cnt: %s,pos:%s,min=%s\n",@socket{$w}->{more_cnt},@socket{$w}->{more},min_visible($w));
+      loggit("--------------------> more: cnt: %s,pos:%s,min=%s\n",@socket{$w}->{more_cnt},@socket{$w}->{more},min_visible($w)) if @state{debug};
       @socket{$w}->{more} = history_max($w);
 #      loggit("set_more[$w] = %s -> %s\n",history_max($w),code());
    }
