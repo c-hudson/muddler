@@ -2414,28 +2414,25 @@ sub gagged
    for my $key (keys %def) {
       if(@def{$key}->{world} eq undef ||              # world not specified
          lc(@def{$key}->{world}) eq lc($w)) {               # world matches
-         if(@def{$key}->{atr} =~ /g/) {                     # gag attribute
-            if(@def{$key}->{match} eq undef) { 
-               my $pat = @def{$key}->{txt};
-               $pat = glob2re($pat) if(@def{$key}->{match} ne "regexp");
 
-               eval {                           # protect against bad patterns
-                  $match = 1 if($str =~ /$pat/);
-               };
-               if($match) {
-                  $$txt{gagged} = 1;                  # mark string as gagged
-                  return 1;
-               }
-            } elsif(@def{$key}->{match} eq "exact") {
-               if($key =~ /^w_\d{6}$/) {               # watchdog exact match
-                  if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
-                     $$txt{gagged} = 1;
-                     return 1;
-                  }
-               } elsif($str eq @def{$key}->{txt}) {     # general exact match
-                  $$txt{gagged} = 1;
-                  return 1;
-               }
+         if($key =~ /^w_\d{6}$/ && defined @def{$key}->{txt}) { # watchdog match
+             if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
+                $$txt{gagged} = 1;
+                return 1;
+             }
+         } elsif(defined @def{$key}->{regexp} && 
+                 @def{$key}->{atr} =~ /g/ &&
+                 (!defined @def{$key}->{status} ||
+                 @def{$key}->{status} == 1)) {
+            @def{$key}->{badregexp} = 0;
+            eval {
+               $match = 1 if($str =~ /@def{$key}->{regexp}/);
+               @def{$key}->{badregexp} = 1;
+            };
+
+            if($match) {
+               $$txt{gagged} = 1;
+               return 1;
             }
          }
       }
@@ -5749,16 +5746,51 @@ sub cmd_def
 #-#      -t"text"         Text to match. May include wild cards.
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
-   my $opt = {};
+   my ($opt,$reg,$name,$value) = ({},undef,undef,undef);
+   
 
    my $str = getopt("m:n:E:t:h:b:B:p:c:w:T:Fa:P:fiIq1",$txt,$opt);
 
+   if($str =~ /=/) {
+      $name = trim($`);
+      $value = $';
+   } else {
+      $name = $str;
+   }
+
+   return if($name =~ /^\s*$/ || $$opt{t}=~ /^\s*$/);
+
    if(!$$opt{h}) {
-      @def{trim($str)} = { atr   => $$opt{a},
-                           txt   => $$opt{t},
-                           world => $$opt{w},
-                           match => $$opt{m},
-                         };
+
+      if($str =~ /^\s*$/) {
+         echo($conn,"%% No definition name provided.");
+         return echo($conn,"%% Usage: /def [<options>] [<name>] [= <body>]");
+      }
+
+      if($$opt{t}=~ /^\s*$/) {
+         return echo($conn,"%% No text to match provided.");
+         return echo($conn,"%% Usage: /def [<options>] [<name>] [= <body>]");
+      }
+
+      if(defined $$opt{m}) {
+         if(lc($$opt{m}) eq "r" || lc($$opt{m}) eq "regexp") {
+            $reg = $$opt{t};
+         } elsif(lc($$opt{m}) eq "g" || lc($$opt{m}) eq "global" ||
+                 lc($$opt{m}) eq "s" || lc($$opt{m}) eq "simple") {
+            $reg = glob2re($$opt{t});
+         } else {
+            echo("%% Invalid -m value \"%s\".",$$opt{m});
+            echo("%% Values are: simple, global, regexp, and substr");
+         }
+      } else {
+         $reg = glob2re($$opt{t});
+      }
+
+      @def{$name} = { atr   => $$opt{a},
+                      txt   => $$opt{t},
+                      world => $$opt{w},
+                      regexp=> $reg,
+                    };
    }
 }
 
