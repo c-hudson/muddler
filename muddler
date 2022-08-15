@@ -209,6 +209,7 @@ sub command_init
    @command{perl}          = sub { return cmd_perl(@_);                    };
    @command{quote}         = sub { return cmd_quote(@_);                   };
    @command{window}        = sub { return cmd_window(@_);                  };
+   @command{gc}            = sub { wrap_garbage_collect();                 };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -2466,9 +2467,18 @@ sub history
                internal  => ($mud) ? 0 : 1,                 # internal output
              };
 
-   push(@{@history{$world}},$str);
    remove_nospoof($str);
    gagged($world,$str);                                    # set gagged flag?
+
+   if($$str{gagged} &&            # delete all gagged unless specified not to 
+      ((!defined @address{$world}->{delgagged}) ||
+      (defined @address{$world}->{delgagged} &&
+      @address{$world}->{delgagged}))) {
+      return;
+   }
+
+   push(@{@history{$world}},$str);
+
    send_to_window($world,$str);                        # handle /window stuff
 
    if(displayable($str) && defined @socket{$world}) {
@@ -2822,13 +2832,22 @@ sub cache_wrap
 #
 sub wrap_garbage_collect
 {
+   my $count = 0;
+#   loggit("wgc: called\n");
    @state{cache} = {} if !defined @state{cache};
    my $cache = @state{cache};
+   delete $$cache{del}; 
    for my $w (keys %$cache) {
       for my $id (keys %{$$cache{$w}}) {
          for my $y (keys %{$$cache{$w}->{$id}}) {
             if(time() - $$cache{$w}->{$id}->{$y}->{ts} > 900) {
                delete @$cache{$w}->{$id}->{$y};
+#            } elsif($w eq "del") {
+#               if($count++ < 10) {
+#                  for my $line ($$cache{$w}->{$id}->{$y}->{txt}) {
+#                     loggit("$w: %s\n",join('',$line));
+#                  }
+#               }
             }
          }
          if(scalar keys %{$$cache{$w}->{$id}} == 0) {
@@ -2836,6 +2855,7 @@ sub wrap_garbage_collect
          }
       }
    }
+#   loggit("   wgc: end\n");
 }
 
 #
@@ -3706,7 +3726,7 @@ sub key_delete
    
    if(@state{line_pos} < 1) {                        # nothing left to delete
       return;
-   } elsif(@state{line_pos} < $#{@input[-1]}) {          # delete in middle
+   } elsif(@state{line_pos} < $#{@input[-1]}+1) {          # delete in middle
 
       if((@state{line_pos}-1)-(@state{input_offset}*(@state{size_y} - 1))==-1){
          # at begining of visible buffer, input window needs to be erased
@@ -4975,6 +4995,11 @@ sub cmd_stat
    my ($conn,$txt) = @_;
    my (%stat, %cache, $max,$sock);
 
+#   @history{dev} = [];
+#   delete @history{dev};
+#   @socket{dev}->{history_pos} = -1;
+#   @socket{dev}->{history_pos_partial} = -1;
+
    for my $world (keys %history) {
       $max = length($world) if length($world) > $max;
       for my $i (0 .. $#{@history{$world}}) {
@@ -5083,6 +5108,7 @@ sub var_init
    @var{overlap} = { set=>1, chk => "\\d+"                                 },
    @var{sync}    = { set=>1,chk => "on|off|0|1",
                     fun => sub { switch_world(@_,@state{world}); }         };
+   @var{delgag}  = { chk => "on|off|0|1", fun => sub { set_delgag(@_);}    };
 }
 
 sub update_keepalive
@@ -5092,6 +5118,16 @@ sub update_keepalive
    @address{world($conn)}->{keepalive} = $val;
    save($conn,world($conn),1);
    echo($conn,"% Keepalive for %s set to: %s",world($conn),$val);
+}
+
+sub set_delgag
+{
+   my ($conn,$val) = @_;
+
+   @address{world($conn)}->{delgag} = TRUE($val);
+   save($conn,world($conn),1);
+   echo($conn,"%% Deleting of gagged text will now be %s.",
+      TRUE($val) ? "deleted" : "kept");
 }
 
 sub cmd_set
@@ -6925,7 +6961,7 @@ sub trim
 sub tick
 {
    # keep alive. Send something to a world to keep it alive if nothing has
-   # been sent / recieved.
+   # bloggiteen sent / recieved.
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && 
          time()-@socket{$w}->{last_send} > 100) {
