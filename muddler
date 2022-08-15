@@ -2400,7 +2400,7 @@ sub gagged
    # this mush duplicates messages in a particular room to the public
    # channel. This will remove the dups as long as the non-public
    # channel text comes first.
-   if($w eq "n") {
+   if($w eq "n" && $#{@history{$w}} > 1) {
       my $prev = ansi_remove(@history{$w}->[-2]->{txt});
       if( $str eq "<Pub> $prev" ||                   # pub/non dup message
           ($str =~ /^<Pub> / && $str eq $prev) ||        # dup pub message
@@ -4056,9 +4056,10 @@ sub key_up
          update_more($key,0) if($key ne "muddler");
          return switch_world($conn,$key);
       }
-      $first = $key if($first eq undef);
+      $first = $key if($first eq undef && defined @socket{$key}->{sock});
    }
 
+#   loggit("trying: first\n");
    @state{world} = $first if(is_console($conn));
    update_more($first,0) if($first ne "muddler");
    switch_world($conn,$first) if($first ne undef);
