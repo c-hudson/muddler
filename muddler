@@ -113,7 +113,9 @@ my %mod = (
    'Protocol::WebSocket::Client' => { fatal => 0,
                                         for => 'remote console',
                                     },
-
+   'MIME::Base64'                => { fatal => 0,
+                                      for => 'file transfer',
+                                    },
 );
 #
 # define all keys/commands in a manor so that they can be reloaded
@@ -210,6 +212,7 @@ sub command_init
    @command{quote}         = sub { return cmd_quote(@_);                   };
    @command{window}        = sub { return cmd_window(@_);                  };
    @command{gc}            = sub { wrap_garbage_collect();                 };
+   @command{file}          = sub { return cmd_file(@_);                    };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -2415,6 +2418,7 @@ sub gagged
    for my $key (keys %def) {
       if(@def{$key}->{world} eq undef ||              # world not specified
          lc(@def{$key}->{world}) eq lc($w)) {               # world matches
+         loggit("STR1: '%s'\n",$str);
 
          if($key =~ /^w_\d{6}$/ && defined @def{$key}->{txt}) { # watchdog match
              if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
@@ -2436,6 +2440,71 @@ sub gagged
                return 1;
             }
          }
+      } elsif($str =~                                      # request start
+         /^#(\d+)# Request from ([^\(]+)\(#(\d+)\): fn=([^,]+), sz=(\d+)$/) {
+         loggit("STR2: '%s'\n",$str);
+         loggit("#### found start\n");
+         if(defined @socket{$w}->{fn}) {
+            send_deny("User already has file transfer in progress");
+         } else {
+            # send_accept();
+           
+            echo($w,
+                 "%% File transfer of %s started from %s(#%s).",
+                 $4,
+                 $2,
+                 $3
+                );
+            @socket{$w}->{ft} = { fn => $4,
+                                  id => $1,
+                                  dbref => $3,
+                                  name => $2,
+                                  size => $5,
+                                  data => []
+                                };
+         }
+         $$txt{gagged} = 1;
+         return 1;
+      } elsif($str =~ /^#(\d+)# request complete$/) { # request end
+         my $fn;
+         if(defined @socket{$w}->{ft} && $1 eq @socket{$w}->{ft}->{id}) {
+            if(!-e @socket{$w}->{ft}->{fn}) {
+               $fn = @socket{$w}->{ft}->{fn};
+            } elsif(!-e @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id}) {
+               $fn = @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id};
+            }
+
+            if(!defined $fn) {
+               echo($w,
+                    "%% Could not save file as '%s' or '%s.%s' since they " .
+                    "already exist",
+                    @socket{$w}->{ft}->{fn},
+                    @socket{$w}->{ft}->{fn} . "." . @socket{$w}->{ft}->{id}
+                   );
+            } elsif(!open(FILE,"> $fn")) {
+               echo($w,"%% File '%s' could not be opened for writing.",$fn);
+            } else {
+               printf(FILE "%s",
+                 decode_base64(join("\n",@{@socket{$w}->{ft}->{data}})));
+               close(FILE);
+               echo($w,
+                    "%% File downloaded as %s from %s(#%s).",
+                    $fn,
+                    @socket{$w}->{ft}->{name},
+                    @socket{$w}->{ft}->{dbref},
+                   );
+                system("firefox $fn &");
+            }
+         }
+         $$txt{gagged} = 1;
+         return 1;
+      } elsif($str =~ /^#(\d+)# ([A-Za-z0-9\/=\+]+)$/) {       # request data
+         if(defined @socket{$w}->{ft} && 
+            $1 eq @socket{$w}->{ft}->{id}) {
+            push(@{@socket{$w}->{ft}->{data}},$2);
+         }
+         $$txt{gagged} = 1;
+         return 1;
       }
    }
    return 0;
@@ -4711,7 +4780,6 @@ sub code
       return Carp::shortmess;
    }
 }
-
 sub input_clear
 {
    return if !console();
@@ -4823,6 +4891,47 @@ sub single
     my $txt = shift;
     $txt =~ s/\r|\n//g;
     return $txt;
+}
+
+sub cmd_file
+{
+   my ($conn,$txt) = @_;
+   my ($fh, $content);
+
+   if(!module_enabled("MIME::Base64")) {
+      return echo($conn,"%% file transfers disabled due to missing " .
+         "MIME::Base64 module");
+   } elsif(-e $txt) {
+      open($fh,$txt) ||
+         return echo($conn,"%% Could not open '%s' for reading",$txt);
+      binmode($fh);
+
+      {
+         local $/;
+         $content =  <$fh>;
+      };
+      close($fh);
+
+      @socket{$conn}->{ftsend} = { fn  => $txt,
+                                   data=>[split(/\n/,encode_base64($content))],
+                                   pos => 0,
+                                   id  => time(),
+                                 };
+
+      @socket{$conn}->{ftsend}->{size} =
+          length(join('',@{@socket{$conn}->{ftsend}->{data}}));
+      out($conn,"\@pemit %s=#%s# Request from %%n(%%#): fn=%s, sz=%d\n",
+          "*adrick",
+          @socket{$conn}->{ftsend}->{id},
+          $txt,
+          @socket{$conn}->{ftsend}->{size}
+         );
+      loggit("---[ start ]---\n");
+      loggit("%s\n",join('#',@{@socket{$conn}->{ftsend}->{data}}));
+      loggit("---[ end ]---\n");
+   } else {
+      echo($conn,"%% File '%s' does not exist.",$txt);
+   }
 }
 
 sub cmd_window
@@ -5447,7 +5556,7 @@ sub cmd_add
 {
 #-# summary: Define a world that can be connected to.
 #-# ------------------------------------------------------------------------
-#-# /add [-s] [<name> [<user> <pass>] <host> <port>
+#-# /add [-s] <name> [<user> <pass>] <host> <port>
 #-#
 #-#      Adds a world or overwrites an existing world. If a username and
 #-#      password are provided, muddler will issue a connect command
@@ -6989,6 +7098,23 @@ sub tick
              }
          }
          delete @socket{$w}->{quote} if($#$quote == -1);
+      }
+
+      if(defined @socket{$w}->{ftsend}) {
+#         delete @socket{$w}->{ftsend};
+         if(@socket{$w}->{ftsend}->{pos} <= $#{@socket{$w}->{ftsend}->{data}}){
+            out(@state{world},"\@pemit *adrick=#%s# %s\n",
+               @socket{$w}->{ftsend}->{id},
+               @socket{$w}->{ftsend}->{data}->[@socket{$w}->{ftsend}->{pos}]);
+            @socket{$w}->{ftsend}->{pos}++;
+         } else {
+            loggit("FILE TRANSFTER COMPLETE\n");
+            out(@state{world},"\@pemit *adrick=#%s# request complete\n",
+               @socket{$w}->{ftsend}->{id},
+               @socket{$w}->{ftsend}->{data}->[@socket{$w}->{ftsend}->{pos}]);
+            
+            delete @socket{$w}->{ftsend};
+         }
       }
    }
 
