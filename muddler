@@ -2418,7 +2418,6 @@ sub gagged
    for my $key (keys %def) {
       if(@def{$key}->{world} eq undef ||              # world not specified
          lc(@def{$key}->{world}) eq lc($w)) {               # world matches
-         loggit("STR1: '%s'\n",$str);
 
          if($key =~ /^w_\d{6}$/ && defined @def{$key}->{txt}) { # watchdog match
              if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
@@ -2442,15 +2441,13 @@ sub gagged
          }
       } elsif($str =~                                      # request start
          /^#(\d+)# Request from ([^\(]+)\(#(\d+)\): fn=([^,]+), sz=(\d+)$/) {
-         loggit("STR2: '%s'\n",$str);
-         loggit("#### found start\n");
          if(defined @socket{$w}->{fn}) {
             send_deny("User already has file transfer in progress");
          } else {
             # send_accept();
            
             echo($w,
-                 "%% File transfer of %s started from %s(#%s).",
+                 "%% File transfer of %s offered from %s(#%s).",
                  $4,
                  $2,
                  $3
@@ -2460,14 +2457,23 @@ sub gagged
                                   dbref => $3,
                                   name => $2,
                                   size => $5,
-                                  data => []
+                                  data => [],
+                                  approved => 0
                                 };
          }
          $$txt{gagged} = 1;
          return 1;
+      } elsif($str =~ /^#(\d+)# file approved for download\./) {
+         if(defined @socket{$w}->{ft} &&
+            @socket{$w}->{ft}->{id} == $1) {
+            @socket{$w}->{ft}->{approved} = 1;
+            echo($w,"%% File transfer offer approved.");
+         }
       } elsif($str =~ /^#(\d+)# request complete$/) { # request end
          my $fn;
-         if(defined @socket{$w}->{ft} && $1 eq @socket{$w}->{ft}->{id}) {
+         if(defined @socket{$w}->{ft} && 
+            $1 eq @socket{$w}->{ft}->{id} &&
+            @socket{$w}->{ft}->{approved}) {
             if(!-e @socket{$w}->{ft}->{fn}) {
                $fn = @socket{$w}->{ft}->{fn};
             } elsif(!-e @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id}) {
@@ -2500,7 +2506,8 @@ sub gagged
          return 1;
       } elsif($str =~ /^#(\d+)# ([A-Za-z0-9\/=\+]+)$/) {       # request data
          if(defined @socket{$w}->{ft} && 
-            $1 eq @socket{$w}->{ft}->{id}) {
+            $1 eq @socket{$w}->{ft}->{id} &&
+            @socket{$w}->{ft}->{approved}) {
             push(@{@socket{$w}->{ft}->{data}},$2);
          }
          $$txt{gagged} = 1;
@@ -4893,6 +4900,19 @@ sub single
     return $txt;
 }
 
+sub cmd_accept
+{
+   my ($conn,$txt) = @_;
+
+   if(defined @socket{$conn}->{ft}) {
+      out($conn,"\@pemit %s=#%d# file approved for download.",
+         @socket{$conn}->{ft}->{dbref},@socket{$conn}->{ft}->{id});
+      @socket{$conn}->{ft}->{approved} = 1;
+   } else {
+      echo($conn,"%% No requested file transfers have been offered.");
+   }
+}
+
 sub cmd_file
 {
    my ($conn,$txt) = @_;
@@ -4916,6 +4936,7 @@ sub cmd_file
                                    data=>[split(/\n/,encode_base64($content))],
                                    pos => 0,
                                    id  => time(),
+                                   approved => 0,
                                  };
 
       @socket{$conn}->{ftsend}->{size} =
@@ -5585,7 +5606,7 @@ sub cmd_add
 
    if(trim(@field[0]) =~ /^p_/) {
       echo($conn,"%% World names may not start with 'p_' at this time");
-   } elsif($#field == 1) {
+   } elsif($#field == 2) {
       @address{@field[0]} = { host => @field[1],
                               port => @field[2],
                               name => @field[0],           # preserve case
@@ -5608,7 +5629,8 @@ sub cmd_add
                               ssl  => 0
                             };
    } else {
-      return cmd_help($conn,"addworld");
+      echo($conn,"showing help");
+      return cmd_help($conn,"add");
    }
 
    @address{@field[0]}->{ssl} = 1 if($$opt{s});
@@ -7100,21 +7122,23 @@ sub tick
          delete @socket{$w}->{quote} if($#$quote == -1);
       }
 
-      if(defined @socket{$w}->{ftsend}) {
+      # handle file transfer over a MUSH
+      if(defined @socket{$w}->{ftsend} && @socket{$w}->{ftsend}->{approved}) {
 #         delete @socket{$w}->{ftsend};
-         if(@socket{$w}->{ftsend}->{pos} <= $#{@socket{$w}->{ftsend}->{data}}){
-            out(@state{world},"\@pemit *adrick=#%s# %s\n",
+         if($#{@socket{$w}->{ftsend}->{data}} >= 0) {
+            out($w,"\@pemit *adrick=#%s# %s\n",
                @socket{$w}->{ftsend}->{id},
-               @socket{$w}->{ftsend}->{data}->[@socket{$w}->{ftsend}->{pos}]);
-            @socket{$w}->{ftsend}->{pos}++;
+               join('%r#' . @socket{$w}->{ftsend}->{id}."# ",
+                    splice(@{@socket{$w}->{ftsend}->{data}},0,55)
+                   )
+               );
          } else {
-            loggit("FILE TRANSFTER COMPLETE\n");
-            out(@state{world},"\@pemit *adrick=#%s# request complete\n",
-               @socket{$w}->{ftsend}->{id},
-               @socket{$w}->{ftsend}->{data}->[@socket{$w}->{ftsend}->{pos}]);
-            
+            out($w,"\@pemit *adrick=#%s# request complete\n",
+               @socket{$w}->{ftsend}->{id});
             delete @socket{$w}->{ftsend};
+            last;
          }
+         loggit("send[$w]: %s\n",$#{@socket{$w}->{ftsend}->{data}});
       }
    }
 
