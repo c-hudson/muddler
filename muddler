@@ -2375,7 +2375,7 @@ sub gagged
    my ($match, $i,$count,$hit);
 
    # no defines, no need to search
-   return if scalar keys %def == 0;
+#   return if scalar keys %def == 0;
 
    my $str = ansi_remove($$txt{txt});
 
@@ -6392,6 +6392,7 @@ sub cmd_version
 
    my ($conn,$txt) = @_;
    show_banner($conn,1);
+   echo($conn,"Cksum: '%s'\n",join(',',keys %{@state{chksum}}));
 }
 
 #
