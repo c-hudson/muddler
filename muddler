@@ -213,6 +213,7 @@ sub command_init
    @command{window}        = sub { return cmd_window(@_);                  };
    @command{gc}            = sub { wrap_garbage_collect();                 };
    @command{file}          = sub { return cmd_file(@_);                    };
+   @command{accept}        = sub { return cmd_accept(@_);                  };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -2439,82 +2440,91 @@ sub gagged
                return 1;
             }
          }
-      } elsif($str =~                                      # request start
-         /^#(\d+)# Request from ([^\(]+)\(#(\d+)\): fn=([^,]+), sz=(\d+)$/) {
-         if(defined @socket{$w}->{fn}) {
-            send_deny("User already has file transfer in progress");
-         } else {
-            # send_accept();
-           
-            echo($w,
-                 "%% File transfer of %s offered from %s(#%s).",
-                 $4,
-                 $2,
-                 $3
-                );
-            @socket{$w}->{ft} = { fn => $4,
-                                  id => $1,
-                                  dbref => $3,
-                                  name => $2,
-                                  size => $5,
-                                  data => [],
-                                  approved => 0
-                                };
-         }
-         $$txt{gagged} = 1;
-         return 1;
-      } elsif($str =~ /^#(\d+)# file approved for download\./) {
-         if(defined @socket{$w}->{ft} &&
-            @socket{$w}->{ft}->{id} == $1) {
-            @socket{$w}->{ft}->{approved} = 1;
-            echo($w,"%% File transfer offer approved.");
-         }
-      } elsif($str =~ /^#(\d+)# request complete$/) { # request end
-         my $fn;
-         if(defined @socket{$w}->{ft} && 
-            $1 eq @socket{$w}->{ft}->{id} &&
-            @socket{$w}->{ft}->{approved}) {
-            if(!-e @socket{$w}->{ft}->{fn}) {
-               $fn = @socket{$w}->{ft}->{fn};
-            } elsif(!-e @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id}) {
-               $fn = @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id};
-            }
-
-            if(!defined $fn) {
-               echo($w,
-                    "%% Could not save file as '%s' or '%s.%s' since they " .
-                    "already exist",
-                    @socket{$w}->{ft}->{fn},
-                    @socket{$w}->{ft}->{fn} . "." . @socket{$w}->{ft}->{id}
-                   );
-            } elsif(!open(FILE,"> $fn")) {
-               echo($w,"%% File '%s' could not be opened for writing.",$fn);
-            } else {
-               printf(FILE "%s",
-                 decode_base64(join("\n",@{@socket{$w}->{ft}->{data}})));
-               close(FILE);
-               echo($w,
-                    "%% File downloaded as %s from %s(#%s).",
-                    $fn,
-                    @socket{$w}->{ft}->{name},
-                    @socket{$w}->{ft}->{dbref},
-                   );
-                system("firefox $fn &");
-            }
-         }
-         $$txt{gagged} = 1;
-         return 1;
-      } elsif($str =~ /^#(\d+)# ([A-Za-z0-9\/=\+]+)$/) {       # request data
-         if(defined @socket{$w}->{ft} && 
-            $1 eq @socket{$w}->{ft}->{id} &&
-            @socket{$w}->{ft}->{approved}) {
-            push(@{@socket{$w}->{ft}->{data}},$2);
-         }
-         $$txt{gagged} = 1;
-         return 1;
       }
    }
-   return 0;
+
+   return 0 if($str !~ /^#(\d+)# /);
+
+   if($str =~                                      # request start
+      /^#(\d+)# Request from ([^\(]+)\(#(\d+)\): fn=([^,]+), sz=(\d+)$/) {
+      if(defined @socket{$w}->{fn}) {
+         send_deny("User already has file transfer in progress");
+      } else {
+         # send_accept();
+        
+         echo($w,
+              "%% File transfer of %s offered from %s(#%s).",
+              $4,
+              $2,
+              $3
+             );
+         @socket{$w}->{ft} = { fn => $4,
+                               id => $1,
+                               dbref => $3,
+                               name => $2,
+                               size => $5,
+                               data => [],
+                               approved => 0
+                             };
+      }
+      $$txt{gagged} = 1;
+      return 1;
+   } elsif($str =~ /^#(\d+)# file approved for download$/) {
+      if(defined @socket{$w}->{ftsend} &&
+         @socket{$w}->{ftsend}->{id} == $1) {
+         @socket{$w}->{ftsend}->{approved} = 1;
+         echo($w,"%% File transfer offer approved by %s.",
+              @socket{$w}->{ftsend}->{name}
+             );
+      }
+   } elsif($str =~ /^#(\d+)# request complete$/) { # request end
+      my $fn;
+      if(defined @socket{$w}->{ft} && 
+         $1 eq @socket{$w}->{ft}->{id} &&
+         @socket{$w}->{ft}->{approved}) {
+         if(!-e @socket{$w}->{ft}->{fn}) {
+            $fn = @socket{$w}->{ft}->{fn};
+         } elsif(!-e @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id}) {
+            $fn = @socket{$w}->{ft}->{fn}.".".@socket{$w}->{ft}->{id};
+         }
+
+         if(!defined $fn) {
+            echo($w,
+                 "%% Could not save file as '%s' or '%s.%s' since they " .
+                 "already exist",
+                 @socket{$w}->{ft}->{fn},
+                 @socket{$w}->{ft}->{fn} . "." . @socket{$w}->{ft}->{id}
+                );
+         } elsif(!open(FILE,"> $fn")) {
+            echo($w,"%% File '%s' could not be opened for writing.",$fn);
+         } else {
+            printf(FILE "%s",
+              decode_base64(join("\n",@{@socket{$w}->{ft}->{data}})));
+            close(FILE);
+            echo($w,
+                 "%% File downloaded as %s from %s(#%s).",
+                 $fn,
+                 @socket{$w}->{ft}->{name},
+                 @socket{$w}->{ft}->{dbref},
+                );
+             system("firefox $fn 2>&1 /dev/null &");
+         }
+      }
+      $$txt{gagged} = 1;
+      return 1;
+   } elsif($str =~ /^#(\d+)# ([A-Za-z0-9\/=\+]+)$/) {       # request data
+      if(defined @socket{$w}->{ft} && 
+         $1 eq @socket{$w}->{ft}->{id} &&
+         @socket{$w}->{ft}->{approved}) {
+         push(@{@socket{$w}->{ft}->{data}},$2);
+      }
+      $$txt{gagged} = 1;
+      return 1;
+   }
+   loggit("STR: '%s'\n",$str);
+
+   $$txt{gagged} = 1;
+   return 1;
 }
 
 #
@@ -4905,9 +4915,12 @@ sub cmd_accept
    my ($conn,$txt) = @_;
 
    if(defined @socket{$conn}->{ft}) {
-      out($conn,"\@pemit %s=#%d# file approved for download.",
+      out($conn,"\@pemit #%s=#%d# file approved for download",
          @socket{$conn}->{ft}->{dbref},@socket{$conn}->{ft}->{id});
       @socket{$conn}->{ft}->{approved} = 1;
+      echo($conn,"%% File transfer from %s(#%s) accepted.",
+         @socket{$conn}->{ft}->{name},
+         @socket{$conn}->{ft}->{dbref});
    } else {
       echo($conn,"%% No requested file transfers have been offered.");
    }
@@ -4916,14 +4929,22 @@ sub cmd_accept
 sub cmd_file
 {
    my ($conn,$txt) = @_;
-   my ($fh, $content);
+   my ($fh, $content,$name,$file);
 
    if(!module_enabled("MIME::Base64")) {
       return echo($conn,"%% file transfers disabled due to missing " .
          "MIME::Base64 module");
-   } elsif(-e $txt) {
-      open($fh,$txt) ||
-         return echo($conn,"%% Could not open '%s' for reading",$txt);
+   } elsif($txt =~ /=/) {
+      ($name,$file) = (trim($`),trim($'));
+   } else {
+      return echo($conn,"%% usage: /file <person> = <filename>");
+   }
+
+   if(!-e $file) {
+      echo($conn,"%% File '%s' does not exist.",$file);
+   } else {
+      open($fh,$file) ||
+         return echo($conn,"%% Could not open '%s' for reading",$file);
       binmode($fh);
 
       {
@@ -4932,26 +4953,23 @@ sub cmd_file
       };
       close($fh);
 
-      @socket{$conn}->{ftsend} = { fn  => $txt,
+      @socket{$conn}->{ftsend} = { fn  => $file,
                                    data=>[split(/\n/,encode_base64($content))],
                                    pos => 0,
                                    id  => time(),
+                                   name => $name,
                                    approved => 0,
                                  };
 
       @socket{$conn}->{ftsend}->{size} =
           length(join('',@{@socket{$conn}->{ftsend}->{data}}));
       out($conn,"\@pemit %s=#%s# Request from %%n(%%#): fn=%s, sz=%d\n",
-          "*adrick",
+          "*" . $name,
           @socket{$conn}->{ftsend}->{id},
-          $txt,
+          $file,
           @socket{$conn}->{ftsend}->{size}
          );
-      loggit("---[ start ]---\n");
-      loggit("%s\n",join('#',@{@socket{$conn}->{ftsend}->{data}}));
-      loggit("---[ end ]---\n");
-   } else {
-      echo($conn,"%% File '%s' does not exist.",$txt);
+      echo($conn,"%% $file file offered to $name.");
    }
 }
 
@@ -7126,15 +7144,19 @@ sub tick
       if(defined @socket{$w}->{ftsend} && @socket{$w}->{ftsend}->{approved}) {
 #         delete @socket{$w}->{ftsend};
          if($#{@socket{$w}->{ftsend}->{data}} >= 0) {
-            out($w,"\@pemit *adrick=#%s# %s\n",
+            out($w,"\@pemit *%s=#%s# %s\n",
+               @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id},
                join('%r#' . @socket{$w}->{ftsend}->{id}."# ",
                     splice(@{@socket{$w}->{ftsend}->{data}},0,55)
                    )
                );
          } else {
-            out($w,"\@pemit *adrick=#%s# request complete\n",
+            out($w,"\@pemit *%s=#%s# request complete\n",
+               @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id});
+            echo($w,"%% File transfer to %s completed.",
+               @socket{$w}->{ftsend}->{name});
             delete @socket{$w}->{ftsend};
             last;
          }
