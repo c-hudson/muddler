@@ -118,22 +118,25 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    Supported Keys:
 
       Keys     DESCRIPTION
-      Ctl-A  | Move the cursor to the begining of the line
-      Ctl-E  | Move the cursor to the end of the line
-      Ctl-L  | Erases the screen and redraws it
-      Ctl-N  | Moves forward one entry in the keyboard history.
-      Ctl-P  | Moves back one entry in the keyboard history.
-      Ctl-R  | Reloads the code for muddler if there are any changes
-      Ctl-U  | Clears the keyboard input
-      Ctl-W  | Delete the last word before the cursor
-      Down   | Switch to world with activity, or cycle down through worlds.
-      Esc-J  | Skip to the end of any "mored" output.
-      Esc-Q  | Show spell suggestions for last word. Cycle thru on next esc-q
-      Esc-W  | Go to the next active world, or the last world
-      Pgdn   | Moves forward in the history of the current world
-      Pgup   | Moves back into the history of the current world
-      Tab    | Moves forward a screen full when more is enabled/triggered.
-      Up     | Switch to world with activity, or cycle up through worlds.
+      Ctl-A      | Move the cursor to the begining of the line
+      Ctl-E      | Move the cursor to the end of the line
+      Ctl-L      | Erases the screen and redraws it
+      Ctl-N      | Moves forward one entry in the keyboard history.
+      Ctl-P      | Moves back one entry in the keyboard history.
+      Ctl-R      | Reloads the code for muddler if there are any changes
+      Ctl-U      | Clears the keyboard input
+      Ctl-W      | Delete the last word before the cursor
+      Down       | Switch to world with activity, or cycle down through connected worlds.
+      Esc-J      | Skip to the end of any "mored" output.
+      Esc-Q      | Show spell suggestions for last word. Cycle thru on next esc-q
+      Esc-W      | Go to the next active world, or the last world
+      Pgdn       | Moves forward in the history of the current world
+      Pgup       | Moves back into the history of the current world
+      Tab        | Moves forward a screen full when more is enabled/triggered.
+      Up         | Switch to world with activity, or cycle up through connected worlds.
+      Shift Up   | Cycle through all worlds (connected or disconnected)
+      Shift Down | Cycle through all worlds (connected or disconnected)
+
 
 ```
 # TinyFugue info/differences
