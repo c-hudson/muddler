@@ -465,7 +465,7 @@ sub ansi_init
    }
 
    my $data = { ch => [], code => [], state  => [], snap   => [] };
-   $$data{trace} = code();
+#   $$data{trace} = code();
 
    while($str =~ /\e\[([\d;]*)([a-zA-Z])/) {
       $str = $';
@@ -551,7 +551,7 @@ sub txt
    for my $i (0 .. $#data) {
       push(@out,dearray(@data[$i]));
    }
-   return @out;
+   return join('',@out);
 }
 
 
@@ -576,7 +576,7 @@ sub ansi_substr
    return undef if($start < 0);                         # no starting point
 
    my $new = { ch => [], code => [], state  => [], snap   => [] };
-   $$new{trace} = code();
+#   $$new{trace} = code();
 
    my $pos = 0;
    # copy each "character" w/attached ansi codes
@@ -1949,7 +1949,7 @@ sub console
 #
 sub in_hist
 {
-   my $w = shift;
+   my $w = world(shift);
 
    if(no_world() || !defined @socket{$w}) {
       return 0;
@@ -1976,7 +1976,7 @@ sub hist_pos
       delete @socket{$w}->{hist_offset};
    } elsif($action ne undef) {
       @socket{$w}->{hist_pos} = $action;
-      @socket{$w}->{hist_offset} += $offset;
+      @socket{$w}->{hist_offset} = $offset;
       if(@socket{$w}->{hist_offset} == 0) {
          delete @socket{$w}->{hist_offset};
          delete @socket{$w}->{hist_pos};
@@ -2128,36 +2128,19 @@ sub echo_old
 
 sub update_more
 {
-   my ($w,$value) = @_;
+   my ($w,$value,$place) = @_;
 
    return if(!defined @socket{$w});
-#   loggit("[%s-%s] update_more: '%s'\n",min_visible($w),in_more($w),code());
 
    # always update more_cnt when not in /more, update when not reseting to
    # zero when more is on.
    if($value == 0) {
       if(!defined @socket{$w}->{more} ||
          @socket{$w}->{more} < history_pos($w)) {
-#         loggit("%s-%s> reset : more_cnt: %s, more: %s, pend: %s, pos: %s\n",
-#                ts(),
-#                $w,
-#                @socket{$w}->{more_cnt},
-#                (defined @socket{$w}->{more}) ? @socket{$w}->{more} : "N/A",
-#                pending($w),
-#                history_pos($w)) if @state{debug};
          @socket{$w}->{more_cnt} = 0;
-      } else {
-#      loggit("%s-%s> reset-skip : more_cnt: %s, more: %s, pend: %s, pos: %s\n",
-#                ts(),
-                $w,
-#                @socket{$w}->{more_cnt},
-#                (defined @socket{$w}->{more}) ? @socket{$w}->{more} : "N/A",
-#                pending($w),
-#                history_pos($w)) if @state{debug};
       }
    } else {
       @socket{$w}->{more_cnt} = $value;
-#      loggit("    set more_cnt[%s]: $value\n",$w); 
    }
 
    # We have enough output to turn on more, but this is on non displayed
@@ -2168,9 +2151,7 @@ sub update_more
    #   @socket{$w}->{more_cnt});
    if(@socket{$w}->{more_cnt} >= min_visible($w) - overlap() && 
       (@socket{$w}->{more} == 0 || @socket{$w}->{more} eq undef)) {
-#      loggit("--------------------> more: cnt: %s,pos:%s,min=%s\n",@socket{$w}->{more_cnt},@socket{$w}->{more},min_visible($w)) if @state{debug};
       @socket{$w}->{more} = history_max($w);
-#      loggit("set_more[$w] = %s -> %s\n",history_max($w),code());
    }
 }
 
@@ -2182,8 +2163,21 @@ sub echo
 {
    my ($world,$fmt,@args) = @_;
 
-   update_more(world($world),0); # reset more when the user has sent output
+   # reset more when the user has sent output
+   update_more(world($world),0,1) if(!in_more($world));
    history($world,sprintf($fmt,@args));
+}
+
+sub e
+{
+   my ($conn,$fmt,@args) = @_;
+
+   my $len = length(sprintf($fmt,@args));
+   if(is_web($conn)) {
+      ws_echo($conn,"t",sprintf("%s",@args));
+   } else {
+      echo_console($fmt,@args);
+   }
 }
 
 #
@@ -2250,15 +2244,19 @@ sub in_more_old
   $world = @state{world} if($world eq undef);
 
   if(in_hist($world)) {         # in history buffer is just a version of more
+     loggit("in_more: 1x1");
      return 1;
   } elsif(!@state{p_more}) {
+     loggit("in_more: 0x1");
      return 0;
   } elsif(!defined @socket{$world}) {
+     loggit("in_more: 0x2");
      return 0;
   } elsif(history_pos($world) == -1 ||                 # no history, no /more
           !defined @socket{$world}->{more} ||
           @socket{$world}->{more} eq undef ||
           @socket{$world}->{more} == 0) {
+     loggit("in_more: 0x3");
      return 0;
 #  } elsif(@socket{$world}->{more} == 1) {
   } elsif( @socket{$world}->{more} <= history_pos($world)) {
@@ -2269,12 +2267,14 @@ sub in_more_old
 #     loggit("in_more: return 1 [%s,%s,%s]\n",
 #            @socket{$world}->{more},
 #            history_pos($world),@socket{$world}->{more_cnt});
+     loggit("in_more: 1x4");
      return 1;                                             # already enabled
 #  } elsif(@socket{$world}->{more_cnt} >= min_visible($world) - overlap()) {
 #     @socket{$world}->{more} = 1;                       # time to turn it on
 #     return 1;
   } else {
 #     loggit("in_more: return 0\n");
+     loggit("in_more: 0x5");
      return 0;
   }
 }
@@ -2594,7 +2594,6 @@ sub echo_world
    if(@state{world} eq $world) {
       echo_console("%s",$console);
    } 
-#   loggit("# '%s'\n",$console);
 
    my $hash = $ws_server->{conns};
 
@@ -2657,7 +2656,7 @@ sub min_visible
       if(ref(@ws{$key}) ne "HASH") {
          delete @ws{$key};
       } elsif(@ws{$key}->{world} eq $world && 
-              (@ws{$key}->{size_y} < $min || 
+              (@ws{$key}->{size_x} < $min || 
               $min eq 0)
              ) {
          $min = @ws{$key}->{size_x};
@@ -2671,6 +2670,30 @@ sub min_visible
       return $min;
    }
 }
+
+#
+# min_size
+#    return the smallest x,y size of a window for a world
+#
+sub min_size
+{
+   my $w = world(shift);
+
+   my ($x,$y) = (@state{size_x},@state{size_y});
+
+   for my $key (keys %ws) {                      # now try websocket clients
+      if(@ws{$key}->{world} eq $w) {
+         if(defined @ws{$key}->{size_x} && @ws{$key}->{size_x} < $x) {
+            $x = @ws{$key}->{size_x};
+         }
+         if(defined @ws{$key}->{size_y} && @ws{$key}->{size_y} < $y) {
+            $y = @ws{$key}->{size_y};
+         }
+      }
+   }
+   return $x,$y;
+}
+
 
 #
 # update_pending
@@ -2757,11 +2780,9 @@ sub get_next_line
 
 sub in_more
 {
-   my $world = shift;
+   my $conn = shift;
+   my $world = world($conn);
 
-   if(!defined @socket{$world}) {
-      loggit("in_more: %s [%s]\n",$world,code());
-   }
    if(in_hist($world)) {      # in history buffer is just a version of more
       return 1;
    } elsif(!defined @socket{$world}) {
@@ -2781,21 +2802,9 @@ sub in_more
 sub release_some_pending
 {
    my ($conn,$w) = @_;
-   my $start;
-   my (@out, @web);
+   my (@out, @web, $result, $start,$end, @orig);
 
-#   if($w eq "muddler") {
-#      if(defined @pending{muddler} && ref(@pending{muddler}) eq "ARRAY") {
-#         update_scroll_region("output");
-#         for my $i (0 .. $#{@pending{muddler}}) {
-#            printf("%s\n",@pending{muddler}->[$i]->{txt});
-#         }
-#      }
-#      delete @socket{muddler};
-#      delete @pending{muddler};
-#      return;
-#   }
-
+ #  release_the_kraken(@_);
    @pending{$w} = [] if !defined @pending{$w};
    if($#{@pending{$w}} == -1 || 
       in_more($w) || 
@@ -2804,17 +2813,27 @@ sub release_some_pending
        return 0;
    }
 
+   my $str = @pending{$w}->[0];
    while(!in_more($w) && $#{@pending{$w}} > -1) {
-#      $start = get_start_offset($w) if !defined $start;
       my $line = get_next_line($w);
+      $start = $line if(!defined $start);
       if(!defined $line) {
-#         ansi_substr(@pending{$w},$start);
          push(@{@history{$w}},shift(@{@pending{$w}}));
+         if($#orig == 0 && defined $start && $start != 0) {
+            push(@orig,txt(ansi_substr(@history{$w}->[-1]->{txt},$start)));
+         } else {
+            push(@orig,@history{$w}->[-1]->{txt});
+         }
+         $end = undef;
       } else {
-         push(@out,$line);
-#         loggit("more_cnt: '$w' -> '%s'\n",defined @socket{$w});
+         push(@out,txt($line));
          @socket{$w}->{more_cnt}++;
+         $end = $line->{end};
       }
+   }
+
+   if(defined $end) {
+      push(@orig,txt(ansi_substr(@pending{$w}->[0],0,$end)));
    }
 
    if($#{@pending{$w}} == -1) {            # no pending left, set it to zero
@@ -2822,10 +2841,46 @@ sub release_some_pending
       delete @state{activity}->{$w} if defined @state{activity}->{$w};
    }
 
-   my $txt = join("\n",txt(@out));
-   echo_world($w,$txt,$txt);
+   echo_world($w,join("\n",@out),join("\n",@orig));
    draw_bar();
    return $#out + 1;
+}
+
+sub release_the_kraken
+{
+   return;
+   my $conn = shift;
+   my $w = world($conn);
+   return if(!defined @pending{$w} || $#{@pending{$w}} == -1);
+   my ($pend,$wrap,@out) = (@pending{$w});
+
+   my ($x,$y) = min_size($w);
+   
+   while(!in_more($w) && $#$pend > -1) {
+      my $hash = $$pend[-1];
+
+      if($$hash{offset}) {
+         $wrap = ansi_wrap(substr($$hash{txt},$$hash{offset}),$y);
+      } else {
+         $wrap = ansi_wrap($$hash{txt},$y);
+      }
+
+      my $stat = @state{ansi_stat};
+
+      loggit("Wrap: '$wrap'\n");
+      for(my $i=0;$i <= $#$wrap && !in_more($w);$i++) {
+#         push(@out,txt($$wrap[$i]->{txt}));
+         
+         # update_more($w,@socket{$w}->{more_cnt} + 1);
+
+         if(in_more($w)) {
+            $$pend[-1]->{offset} = $$stat[$i]->{end};
+         }
+      }
+   }
+   for my $line (@out) {
+      loggit("#-# '%s'",$line);
+   }
 }
 
 
@@ -2863,7 +2918,7 @@ sub output_end
    my $w = shift;
 
    if(is_web($w)) {
-      return @ws{$w}->{size_y} + 5;
+      return @ws{$w}->{size_x} + 5;
    } else {
       return @state{size_x} - input_size() - 1;
    }
@@ -2960,25 +3015,35 @@ sub ansi_wrap
       if($$str{ch}->[$i] eq "\n") {
          push(@result,ansi_substr($str,$start,$i - $start));
          push(@stat,{start => $start, end => $i});
+         @result[-1]->{start} = $start;
+         @result[-1]->{end} = $i;
          ($break,$cbreak,$start) = (undef,undef,$i + 1);
       } elsif($i - $start >= $size_y - 1) {             # line too long, break
          if(defined $break && $i - $break < 30 && $$str{ch}->[$i] ne " ") {
             if($cbreak eq " ") {          # eat space when breaking on space
                push(@result,ansi_substr($str,$start,$break-$start-1));
                push(@stat,{ start => $start, end => $break - 1});
+               @result[-1]->{start} = $start;
+               @result[-1]->{end} = $break - 1;
                $start = $break;
             } else {                             # save the break character
                push(@result,ansi_substr($str,$start,$break-$start));
                push(@stat,{start=>$start, end => $break});
+               @result[-1]->{start} = $start;
+               @result[-1]->{end} = $break;
                $start = $break;
             }
          } elsif($$str{ch}->[$i] eq " ") {
             push(@result,ansi_substr($str,$start,$i-$start));
+            @result[-1]->{start} = $start;
+            @result[-1]->{end} = $i;
             push(@stat,{start => $start, end => $i});
             $start = $i + 1;
          } else {
             push(@result,ansi_substr($str,$start,$i-$start));
             push(@stat,{start => $start, end => $i});
+            @result[-1]->{start} = $start;
+            @result[-1]->{end} = $i;
             $start = $i + 1;
          }
          $break = undef;
@@ -2993,12 +3058,12 @@ sub ansi_wrap
    # add left overs
    if($start <= $#{@$str{ch}}) {
       push(@result,ansi_substr($str,$start));
-      push(@stat,{start => $start });
+      @result[-1]->{start} = $start;
+      @result[-1]->{end} = $#{@$str{ch}};
+      push(@stat,{start => $start, end => $#{@$str{ch}} });
    }
    @state{ansi_stat} = @stat;
-   if($#stat != $#result) {
-      loggit("### difference ######");
-   }
+#   loggit("%s",print_var(@result));
    return @result;
 }
 
@@ -3113,6 +3178,23 @@ sub overlap
    return @state{p_overlap};
 }
 
+sub history_location
+{
+   my $conn = shift;
+   my $w = world($conn);
+
+   if(in_hist($w)) {                              # determine starting point
+      return hist_pos($w), hist_pos_partial($w);
+   } 
+
+   my ($pos,$off) = (history_pos($w),history_pos_partial($w));
+
+   if($pos == -1 && defined @history{$w}) {
+      return $#{@history{$w}},undef;
+   }
+   return $pos,$off;
+}
+
 #
 # get_output
 #    Find an appropriate number of lines of text to show in the output
@@ -3198,18 +3280,75 @@ sub redraw_output
    my $conn = shift;
    my $w = current_world($conn);
 
-   redraw_output_world($conn,@_);
+   redraw_output_world_new($conn,@_);
 
-   for my $s (keys %ws) { 
-      redraw_output_world(@ws{$s}->{conn}) if(@ws{$s}->{world} eq $w);
-   }
+#   for my $s (keys %ws) { 
+#      redraw_output_world(@ws{$s}->{conn}) if(@ws{$s}->{world} eq $w);
+#   }
 }
+
+sub redraw_output_world_new
+{
+   my $conn = shift;
+   my $w = current_world($conn);
+   return if !defined @history{$w};
+   my ($x,$y,$h,$cnt,@out)=(output_end($conn),size_y($conn),@history{$w});
+   my ($off,$pos,$str);
+
+   if(in_hist($w)) {                               # history starting point
+      $pos = hist_pos($w);
+      $off = hist_pos_partial($w);
+#      loggit("offset: $off");
+   } else {                                            # or end of history
+      release_some_pending($conn,$w);
+      $pos = $#{@history{$w}};
+      $off = @history{$w}->[$pos]->{offset} if(defined $$h[$pos]);
+   }
+   my $start = $pos;
+
+   for(;$cnt <= $x && $pos >= 0;$pos--) {   # walk history
+      if(!$$h[$pos]->{gagged} && $$h[$pos]->{internal} != 1) {  # skip?
+         if($$h[$pos]->{txt} eq "") {                          # empty line hack
+            unshift(@out,"");
+            $cnt++;
+         } else {                            # cycle wrapped line
+            if($pos == $start && $off > 0) {               # handle offset
+               $str = txt(ansi_substr($$h[$pos]->{txt},0,$off));
+               $off = 0;
+#               loggit("   %s",$$h[$pos]->{txt});
+#               loggit("-------");
+#               loggit("   '%s'",$str);
+            } else {
+               $str = $$h[$pos]->{txt};
+            }
+            for my $line (reverse ansi_wrap($str,$y)) {
+               if($cnt > $x) {
+                  last;
+               } else {
+                  unshift(@out,txt($line));
+                  $cnt++;
+               }
+            }
+         }
+      }
+   }
+
+   while($cnt++ < $x) {                 # fill in blanks at top of screen
+      unshift(@out,"");
+   }
+   e($conn,"%s",join("\n",@out));
+   # loggit(join("\n",@out));
+}
+
 
 sub redraw_output_world
 {
    my $conn = shift;
    my $w = current_world($conn);
-   my ($hpos,$wpos,$cnt,@out,@web) = (undef,-1,0);
+   my ($hpos,$wpos,$cnt,@out) = (undef,-1,0);
+
+   loggit("########## redraw ############### '%s'",code());
+   return;
 
    if($w =~ /\(/) {
       delete @history{$w};
@@ -3218,11 +3357,6 @@ sub redraw_output_world
    } 
 
    @history{$w} = [] if !defined @history{$w};
-#   if(!defined @history{$w}) {
-#      $hpos = -1;
-#   } else {
-#      $hpos = $#{@history{$w}};
-#   }
 
    # show any partial pending output
    $cnt += release_some_pending($conn,$w);
@@ -3252,7 +3386,6 @@ sub redraw_output_world
             $wpos = $#{@history{$w}->[$hpos]->{wrapped}};
             if($wpos == -1) {                                # blank line fix
                unshift(@out,"");
-               unshift(@web,"");
                next;
             }
          }
@@ -3263,14 +3396,6 @@ sub redraw_output_world
             @history{$w}->[$hpos]->{internal} == 1) {           # skip string
             $wpos = -1;
          } else {
-#            unshift(@web,txt(get_original_txt($w,$hpos,$wpos)));
-            if(@history{$w}->[$hpos]->{size} != @state{size_y}) {
-                 my $str = get_original_txt($w,$hpos,$wpos);
-                 @history{$w}->[$hpos]->{wrapped} = 
-                     [ ansi_wrap(txt($str),@state{size_y}) ];
-                 @history{$w}->[$hpos]->{size} = @state{size_y};
-            }
-#            unshift(@web,txt(@history{$w}->[$hpos]->{wrapped}->[$wpos-1]));
             unshift(@out,txt(@history{$w}->[$hpos]->{wrapped}->[$wpos--]));
             $cnt++;
          }
@@ -3279,7 +3404,6 @@ sub redraw_output_world
 
    while($cnt < output_end($conn)) {
       unshift(@out,"");
-#      unshift(@web,"");
       $cnt++;
    }
 
@@ -3320,7 +3444,7 @@ sub redraw_output_old
          # show dashes before new output when switching to world
          if($$hash{pos} >= $last && $first eq undef) {
             echo_console("%s","=====* ". history_pos($conn));
-            update_more($w,0);
+            update_more($w,0,2);
             $first++;
          }
          echo_console("%s",$$hash{txt});
@@ -3401,41 +3525,45 @@ sub good
 sub scroll_history
 {
    my ($conn,$inc) = @_;
-   my ($pos,$sub,$cnt);
+   my ($pos,$sub,$cnt,$txt,$line,$start);
+   my $cnt = 0;
 
    my $w = world($conn);
-
-   # sanity checks / determine starting point
-   if(!defined @history{$w} || $#{@history{$w}} == -1) {
-      return 0;                               # do nothing, no history
-   } elsif(in_hist($w)) {                    # in history, start there
-      $pos = hist_pos($w);
-      $sub = hist_pos_partial($w);
-   } else {                                     # start at the very end
-      $pos = $#{@history{$w}};
-   }
-
-   my $max = min_visible($w);
+   my ($x,$y) = min_size($w);
+   my $max = min_visible($w) - overlap();
+   my ($pos,$off) = history_location($w);
 
    my $h = @history{$w};
    while(good($h,$pos)) {                         # loop through history
-      my $txt = $h->[$pos]->{wrapped};
-      $sub = $#$txt if (!defined $sub);
-
       if(displayable($h->[$pos])) {                 # loop through string
-         while(good($txt,$sub)) {
-            if(++$cnt >= $max) {              # output buffer full, done
+         if($off > 0 && $inc == -1) {
+            $txt = [ansi_wrap(txt(ansi_substr($$h[$pos]->{txt},0,$off)),$y)];
+         } elsif($off > 0) {
+            $txt = [ansi_wrap(txt(ansi_substr($$h[$pos]->{txt},$off)),$y)];
+            $start = $off;
+         } else {
+            $txt = [ansi_wrap($$h[$pos]->{txt},$y)];
+         }
+         $line = ($inc == -1) ? $#$txt : 0;
+
+         while(good($txt,$line)) {
+#            loggit("txt[$pos,$line]: '%s'\n",txt($txt->[$line]));
+            if(++$cnt >= $max + 1) {              # output buffer full, done
+               loggit("   # cnt = $cnt, max = $max: %s",$txt->[$line]->{end});
                hist_pos($w,$pos,$cnt * $inc);
-               hist_pos_partial($w,$sub);
+               # hist_pos_partial($w,$off);
+               hist_pos_partial($w,$start + $txt->[$line]->{end});
                redraw_output($w,1);
                draw_bar($w);
+               loggit("## DONE ## pos=%s, off=%s",$pos,$start + $txt->[$line]->{end});
                return 1;
             } else {
-               $sub += $inc;
+               $line += $inc;
             }
          }
       }
-      $sub = undef;
+      $off = undef;
+      $start = undef;
       $pos += $inc;
    }
 
@@ -3443,6 +3571,9 @@ sub scroll_history
       hist_pos($w,"delete");
       redraw_output($w,1);
       draw_bar($w);
+   } else {
+      hist_pos($w,$pos,$cnt * $inc);
+      hist_pos_partial($w,undef);
    }
    return 0;
 }
@@ -3524,6 +3655,7 @@ sub scan_history
    my $count = 0;
    my ($pos, $size);
 
+   loggit("scan_history: called\n");
    my $w = world($conn);
    loggit("scan_history: return undef\n") if $w eq undef || !defined @socket{$w};
    return if $w eq undef || !defined @socket{$w};
@@ -3547,7 +3679,7 @@ sub scan_history
    } else {
       $size = output_end() - overlap();
    }
-   loggit("Scan_history: start [%s]\n",$pos);
+   loggit("Scan_history: start [%s] move %s\n",$pos,$size);
 
 #   $size = $max if($max ne undef);
 
@@ -3585,12 +3717,12 @@ sub scan_history
 
 sub key_shift_up
 {
-  loggit("Key: shift up");
+  key_up(@_,1);
 }
 
 sub key_shift_down
 {
-  loggit("Key: shift down");
+  key_down(@_,1);
 }
 
 #
@@ -3845,6 +3977,7 @@ sub key_ctl_l
 #-# summary: Erases the screen and redraws it
    my ($conn,$txt) = @_;
 
+   # redraw_output_world_new($conn);
    # screen seems to have some sort of bug where it stop sending winch
    # signals after a month of use but yet GetTerminalSize is still returning
    # the correct size. So update the screen size when a control-l is done as
@@ -3973,6 +4106,12 @@ sub out
       my $sock = @socket{$world}->{sock};
       printf($sock "%s",$msg);
 
+      if(!defined @state{out_nomore}) {
+         update_more($world,0,1) if(!in_more($world));
+      } else {
+         delete @state{out_nomore};
+      }
+
       @socket{$world}->{connected} = 1 if ($msg =~ /^\s*connect/i);
 
       # keep track of last send time for sending keepalives
@@ -4003,7 +4142,7 @@ sub key_return
    my $array = @input[-1];
    my $input = join('',@$array);
 
-   update_more(world($conn),0);
+   update_more(world($conn),0,3) if(!in_more($conn));
    if(do_cmd(@state{world},$input,$conn)) {
       # do_cmd runs the command
    } elsif(no_world()) {
@@ -4463,7 +4602,7 @@ sub mstate
 sub key_up
 {
 #-# summary: Switch to world with activity, or cycle up through worlds.
-   my ($conn,$txt) = @_;
+   my ($conn,$txt,$force) = @_;
    my $w = world($conn);
    my ($tmp, $first);
 
@@ -4473,11 +4612,14 @@ sub key_up
       return switch_world($conn,$active);
    } else {
       for my $key (sort {$a cmp $b} keys %socket){      # next alphabetically
-         $first = $key if !defined $first;
-         if($key eq $w) {
-            $tmp = 1;
-         } elsif($tmp) {
-            return switch_world($conn,$key);
+         if(defined @socket{$key}->{sock} || $force ||
+            (defined @pending{$key} && $#{@pending{$key}} >= 0)) {
+            $first = $key if !defined $first;
+            if($key eq $w) {
+               $tmp = 1;
+            } elsif($tmp) {
+               return switch_world($conn,$key);
+            }
          }
       }
    }
@@ -4492,7 +4634,7 @@ sub key_up
 sub key_down
 {
 #-# summary: Switch to world with activity, or cycle up through worlds.
-   my ($conn,$txt) = @_;
+   my ($conn,$txt,$force) = @_;
    my $w = world($conn);
    my ($tmp, $first);
 
@@ -4502,11 +4644,14 @@ sub key_down
       return switch_world($conn,$active);
    } else {
       for my $key (reverse sort {$a cmp $b} keys %socket){      # next alpha
-         $first = $key if !defined $first;
-         if($key eq $w) {
-            $tmp = 1;
-         } elsif($tmp) {
-            return switch_world($conn,$key);
+         if(defined @socket{$key}->{sock} || $force ||
+            (defined @pending{$key} && $#{@pending{$key}} >= 0)) {
+            $first = $key if !defined $first;
+            if($key eq $w) {
+               $tmp = 1;
+            } elsif($tmp) {
+               return switch_world($conn,$key);
+            }
          }
       }
    }
@@ -4621,10 +4766,8 @@ sub key_esc_w
 
    if($new eq undef) {
       if(is_web($conn)) {
-         loggit("esc_w[1] '%s'\n",@ws{$conn}->{world_last});
          return switch_world($conn,@ws{$conn}->{world_last});
       } else {
-         loggit("esc_w[2] '%s'\n",@state{world_last});
          return switch_world($conn,@state{world_last});
       }
    }
@@ -4642,7 +4785,6 @@ sub key_esc_w
    # nothing found, do nothing.
    return if $new eq undef;
 
-         loggit("esc_w[3] '%s'\n",$new);
    switch_world($conn,$new);
 }
 
@@ -4774,6 +4916,7 @@ sub clear_screen
          }
       }
    } elsif(is_web($conn)) {
+      loggit("################################################ clear called: %s",code());
       ws_echo($conn,"d","clear");          # clear output websocket window
    }
 }
@@ -4937,7 +5080,7 @@ sub draw_bar
       @state{bar_pos} = hist_pos(@state{world});
       @state{bar_size} = @state{size_x}.@state{size_y};
       @state{bar_activity} = $cnt;
-#      loggit("draw_bar: update console %s [%s]\n",more_bar(@state{world}),@state{world});
+#      loggit("draw_bar: update console %s [%s] %s\n",more_bar(@state{world}),@state{world},code());
 #      loggit("          in_more: '%s', more: '%s', more_cnt: %s, pos: '%s'\n",
 #                 in_more(world(@state{world})),
 #                 @socket{@state{world}}->{more},
@@ -6497,7 +6640,8 @@ sub do_cmd
    my ($world,$input,$conn) = @_;
 
 
-   update_more($world,0) if($world ne "muddler");
+#   loggit("do_cmd: '%s'\n",$input);
+   # update_more($world,0,4) if($world ne "muddler");
    if(remote() && $input !~ /^\s*\/(window|quit|key_ctl_l)\s*/) {
 #      loggit("send: $input\n");
       return wc_out($input);
@@ -6505,7 +6649,7 @@ sub do_cmd
 
    if($input =~ /^\/([^ ]+)\s*/) {
       if(defined @command{lc($1)}) {
-         update_more($world,0) if($world ne "muddler");
+         # update_more($world,0,5) if($world ne "muddler");
          &{@command{lc($1)}}($conn,$');
          return 1;
       } else {
@@ -7477,8 +7621,10 @@ sub tick
          defined @socket{$w}->{connected} &&
          time()-@socket{$w}->{last_send} > 100) {
          if(defined @address{$w} && defined @address{$w}->{keepalive}) {
+            @state{out_nomore} = 1;
             out($w,@address{$w}->{keepalive} . "\n",ts());
          } else {
+            @state{out_nomore} = 1;
             out($w,"\@\@ idle\n");
          }
       }
@@ -7493,6 +7639,7 @@ sub tick
              if($$item{how} eq "echo" || $$item{how} eq 0) {
                 # impliment me, yes you.
              } elsif($$item{how} eq "send" || $$item{how} eq 1) {
+                @state{out_nomore} = 1;
                 out($w,"%s\n",$$item{what});
              } elsif($$item{how} eq "exec" || $$item{how} eq 2) {
                 # impliment me, yes you.
@@ -7505,6 +7652,7 @@ sub tick
       if(defined @socket{$w}->{ftsend} && @socket{$w}->{ftsend}->{approved}) {
 #         delete @socket{$w}->{ftsend};
          if($#{@socket{$w}->{ftsend}->{data}} >= 0) {
+            @state{out_nomore} = 1;
             out($w,"\@pemit *%s=#%s# %s\n",
                @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id},
@@ -7513,6 +7661,7 @@ sub tick
                    )
                );
          } else {
+            @state{out_nomore} = 1;
             out($w,"\@pemit *%s=#%s# request complete\n",
                @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id});
@@ -7830,7 +7979,9 @@ if(!module_enabled("Net::WebSocket::Server") || remote()) {
    $ws_server->{select_readable} = IO::Select->new();
 }
 
-eval { muddler_init(); };
+eval {
+   muddler_init();
+};
 if($@) {
    loggit($@);
    err("FATAL: $@");
@@ -7848,7 +7999,9 @@ if(defined @state{modules}) {
 }
 # keep the main loop small.
 while(1) {
-   eval { muddler(); };
+   eval {
+      muddler();
+   };
    loggit("Fatal: $@ -> %s\n",code()) if($@);
 }
 
