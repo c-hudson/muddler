@@ -8,6 +8,7 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 # Features
 ```
    o Console support - Mudding via your favorite terminal
+   o World editor for editing existing worlds or creating new ones.
    o websocket support - Think mudding via your browser
         dark / light theme / mobile interface supported
    o Tinyfugue like command support.
@@ -27,6 +28,7 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
        misspelled words (dependant upon browser).
    o Multiple Window Support - Fire up multiple browser windows or terminals
        as needed. Each window has its own focus independant of other windows.
+   o Muddler will work if any optional perl modules are not installed.
 
 ```
 # muddler goals
@@ -68,14 +70,14 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    
 ```
    Basic Commands:
-      /add [-s] <world> [<user> <password] <address> <port>
-         Define a world so that muddler can connect with it. If a user and
-         password are supplied, the user will be logged into at startup
-         Using the -s option will use an ssl connection
+      /editor <world>
+         Modify the a world's connection details via a "world editor" for a
+         new or existing one.
       /world <world>
-         Connect to an already defined world or switch to that world if
-         the world has already ben opened. This can be done with the up/down
-         arrow keys or escape-w.
+         Open a new connection to a defined world (in the world editor) or
+         switch to that world if the world connection has already been
+         established. Switching between connections can be done with
+         this command or using the up/down arrow keys or escape-w.
       /help [<command>]
          Lists all commands or provides help on an individual command.
       /quit
@@ -130,6 +132,7 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
       Esc-J      | Skip to the end of any "mored" output.
       Esc-Q      | Show spell suggestions for last word. Cycle thru on next esc-q
       Esc-W      | Go to the next active world, or the last world
+      Esc-Esc    | Quick exit out of the world editor
       Pgdn       | Moves forward in the history of the current world
       Pgup       | Moves back into the history of the current world
       Tab        | Moves forward a screen full when more is enabled/triggered.
