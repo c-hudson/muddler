@@ -96,6 +96,7 @@ my %mod = (
                                       pkg => "libtext-aspell-perl", 
                                       for => 'spell check' },
    'IO::Socket::SSL'             => { fatal => 0,
+                                      pkg => "libio-socket-ssl-perl",
                                       for => 'encrypted connections'
                                     },
    'IO::Select'                  => { fatal => 1,
