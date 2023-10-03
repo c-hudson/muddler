@@ -8,8 +8,10 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 # Features
 ```
    o Console support - Mudding via your favorite terminal
-   o World editor for editing existing worlds or creating new ones.
-   o websocket support - Think mudding via your browser
+   o World editor for editing existing worlds in a friendly
+        half screen editor instead of issueing instead of
+        issuing a long command on the console.
+   o Websocket support - Think mudding via your browser
         dark / light theme / mobile interface supported
    o Tinyfugue like command support.
    o SSL support when connect to worlds or via the browser
@@ -29,6 +31,9 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    o Multiple Window Support - Fire up multiple browser windows or terminals
        as needed. Each window has its own focus independant of other windows.
    o Muddler will work if any optional perl modules are not installed.
+   o Remote console support to allow flexability in connection options without
+     having to loose your connection(s).
+   o Autosaving of configuration and worlds.
 
 ```
 # muddler goals
@@ -73,9 +78,9 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    
 ```
    Basic Commands:
-      /editor <world>
-         Modify the a world's connection details via a "world editor" for a
-         new or existing one.
+      /editor [<world>]
+         Modify the current or a new/different world's connection details via a
+         "world editor".
       /world <world>
          Open a new connection to a defined world (in the world editor) or
          switch to that world if the world connection has already been
@@ -111,18 +116,17 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
    Command Line:
       ./muddler <options>
 
-          --noconsole     : disable the text based console and enable the
-                            web/websocket server.
-          --password      : specify the password for the websocket interface.
-          --port          : specify the port for the web server. The websocket
-                            server will be one port number higher.
-   Saving stuff:
-      muddler saves your data automatically. This is only pointed out because
-      programs like TinyFugue require you to issue a command.
+          --noconsole        : disable the text based console and enable the
+                               web/websocket server.
+          --password         : specify the password for the websocket interface.
+          --port             : specify the port for the web server. The websocket
+                               server will be one port number higher.
+          --remote=host:port : Connect to a remote muddler session.
+          --xy=x,y           : Set the screen size to x,y.
 
    Supported Keys:
 
-      Keys     DESCRIPTION
+      Keys         DESCRIPTION
       Ctl-A      | Move the cursor to the begining of the line
       Ctl-E      | Move the cursor to the end of the line
       Ctl-L      | Erases the screen and redraws it
