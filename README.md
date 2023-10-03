@@ -43,6 +43,9 @@ This screenshot shows the two interfaces of muddler. In the foreground is muddle
 ```
 # Installation
 ```
+   The below install steps are for a Linux system. Please see the specialized
+   instructions for specific environment included in the respository.
+
    a. download muddler script
    b. chmod u+x muddler
    c. Install required perl modules manually. Muddler will tell you wich
