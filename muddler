@@ -117,6 +117,9 @@ my %mod = (
    'MIME::Base64'                => { fatal => 0,
                                       for => 'file transfer',
                                     },
+   'Data::Dumper'                => { fatal => 0,
+                                      for => 'remote console'
+                                    },
 );
 #
 # define all keys/commands in a manor so that they can be reloaded
@@ -218,7 +221,7 @@ sub command_init
    @command{file}          = sub { return cmd_file(@_);                    };
    @command{accept}        = sub { return cmd_accept(@_);                  };
    @command{rewrap}        = sub { return cmd_rewrap(@_);                  };
-   @command{gui}           = sub { return cmd_gui(@_);                     };
+   @command{request_info}  = sub { return cmd_request_info(@_);            };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -246,7 +249,9 @@ sub command_init
 sub callback_init
 {
    delete @call{keys %call};
-   @call{addworld}         = sub { return call_addworld(@_) };
+   @call{editor_save}           = sub { return editor_save(@_) };
+   @call{dialog_cancel}         = sub { return dialog_cancel(@_) };
+   @call{editor_delete}         = sub { return editor_delete(@_) };
 }
 
 sub cbreak {
@@ -1034,6 +1039,15 @@ sub wc_out
    $client->write(sprintf("t$fmt",@args));
 }
 
+sub wc_responce
+{
+   my ($fmt,@args) = @_;
+
+   return if(!defined $client);
+#   loggit("SEND: 't$fmt'\n",@args);
+   $client->write(sprintf("r$fmt",@args));
+}
+
 sub wc_read
 {
    my ($client,$buf) = @_;
@@ -1057,6 +1071,10 @@ sub wc_read
       clear_screen();
    } elsif($buf =~ /^t\r\n/) {
       echo_console("%s",$');
+   } elsif($buf =~ /^r\r\n/) {
+      my ( $id,$hash ) = undump($');
+      @address{$id} = $hash;
+      cmd_editor(world(),$id,1);
    } elsif($buf =~ /^b\r\n/) {
       @state{remote_bar} = $';
       @state{remote_bar} =~ s/ /_/g;
@@ -1259,7 +1277,7 @@ sub server_hostname
 #    just information via another window. This should probably be two
 #    different tests?
 #
-sub remote
+sub is_remote
 {
    if((defined @state{remote} && @state{remote}) ||
       defined @state{window_value}) {
@@ -1288,7 +1306,7 @@ sub ws_init
    my $conn = "muddler";
   
    # no websocket interface when using remote console
-   return if remote();
+   return if is_remote();
 
    if(use_secure()) {
       $http_listen = IO::Socket::SSL->can_ipv6->new( LocalPort =>@state{p_port},
@@ -1586,7 +1604,7 @@ sub io
          my $connmeta = $ws_server->{conns}{$sock};
          $connmeta->{lastrecv} = time;
          $connmeta->{conn}->recv();
-      } elsif( remote() && $sock == $wc) {
+      } elsif(is_remote() && $sock == $wc) {
          if(sysread($sock,$buf,10240) <= 0) {
             err("%% Fatal : connection closed to remote muddler session");
          } else {
@@ -2783,11 +2801,7 @@ sub input_y
       if(dialog_type() eq "check") {         # handle fixed position checkbox
          return 8;
       } elsif(dialog_x() > dialog_lines()) { # handle fixed position "buttons"
-         if(dialog_on_cancel()) {
-            return 42;
-         } elsif(dialog_on_save()) {
-            return 53;
-         }
+         return @state{dialog}->{bpos}->[dialog_x()-dialog_lines()-1];
       }
    }
    return ((in_dialog()) ? dialog_max() + 8 : 0) + $pos;
@@ -3279,7 +3293,7 @@ sub draw_input
 
    return if(!console());
 
-   if(is_console($conn) || remote()) {
+   if(is_console($conn) || is_remote()) {
       update_scroll_region("input",1);
       xy(input_start(),1,1);
 
@@ -3404,7 +3418,7 @@ sub key_pgup
    my ($conn,$size) = @_;
    my $count = -1;
 
-   return wc_out("/key_pgup") if(remote());
+   return wc_out("/key_pgup") if(is_remote());
 
    scroll_history($conn,-1);
 }
@@ -3418,7 +3432,7 @@ sub key_pgdn
 #-# summary: Moves forward in the history of the current world
    my ($conn,$size) = @_;
 
-   return wc_out("/key_pgdn") if(remote());
+   return wc_out("/key_pgdn") if(is_remote());
 
    my $w = world($conn);
    if(in_hist($w)) {
@@ -3617,7 +3631,7 @@ sub key_ctl_r
    @state{ansi_wrap} = 0;
    reload_code($conn);
 
-   wc_out("/key_ctl_r\n") if(remote());
+   wc_out("/key_ctl_r\n") if(is_remote());
 }
 
 sub get_console_size
@@ -3645,7 +3659,7 @@ sub key_ctl_l
 
    get_console_size();
 
-   if(remote()) {
+   if(is_remote()) {
       wc_out("/web_size @state{size_x},@state{size_y}\n");
       draw_bar();
       draw_input($conn);
@@ -3669,26 +3683,23 @@ sub key_tab
 #-# summary: Moves forward a screen full when more is enabled/triggered.
    my ($conn,$txt,$shift_down) = @_;
 
-   return wc_out("/key_tab") if(remote());
-
    my $w = world($conn);
-   return if $w eq undef || !defined @socket{$w};
 
    if(in_dialog() && !$shift_down) {
-      if(dialog_lines() == dialog_x() - 2) {
+      if(dialog_lines() + dialog_buttons() -1 < dialog_x()) {
          dialog_x(1);
       } else {
          dialog_x(dialog_x() + 1);
       }
-
-      if(dialog_type() eq "check") {
-         xy(input_x(),8);
-      } else {
-         xy(input_x(),input_y());
-      }
+      xy(input_x(),input_y());
+   } elsif(is_remote()) {
+      return wc_out("/key_tab");
+   } elsif($w eq undef || !defined @socket{$w}) {
+      return;
    } elsif(in_hist($w)) {                      # same as key_pgdn, just call it
       key_pgdn(@_);
    } elsif(in_more($w)) {
+      key_pgdn(@_);
       reset_more($w,1);
       release_some_pending($conn,$w,1);
    }
@@ -3750,11 +3761,10 @@ sub key_ctl_w
 #
 sub key_escape
 {
-   @state{multikey} = [];
-
    if(defined @state{multikey} && in_dialog()) {
       dialog_cancel();
    }
+   @state{multikey} = [];
 }
 
 #
@@ -3787,7 +3797,7 @@ sub out
       my $msg = sprintf("$fmt",@args);
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
-#      loggit("$world> %s",$msg);
+#      loggit("$world> %s [%s]",$msg,code("smallest"));
 
       my $sock = @socket{$world}->{sock};
       printf($sock "%s",$msg);
@@ -3828,12 +3838,14 @@ sub key_return
 
    my $input = input();
    my $array = $$input[-1];
+   $array = [] if ref($array) ne "ARRAY";
 
    if(in_dialog()) {
-      if(dialog_on_save()) {
-         return dialog_save();
-      } elsif(dialog_on_cancel()) {
-         return dialog_cancel();
+      if(dialog_x() > dialog_lines()) {
+         my $b=@state{dialog}->{buttons}->[dialog_x()-dialog_lines()-1];
+         if(defined @call{(split(":",$b))[1]}) {
+            return &{@call{(split(":",$b))[1]}}();
+         }
       } else {
          return key_tab(@_);
       }
@@ -3847,7 +3859,7 @@ sub key_return
      # do nothing
    } elsif(defined @socket{@state{world}} && 
            defined @socket{@state{world}}->{sock}) {
-      out(@state{world},"%s\n",$txt);
+      out(@state{world},"%s\n",$txt) if(!in_dialog());
    }
    @state{input_pos} = -1;                    # reset keyboard history pos
    push(@$input,[]);
@@ -4273,7 +4285,7 @@ sub key_up
    my $w = world($conn);
    my ($tmp, $first);
 
-   return wc_out("/key_up") if(remote());
+   return wc_out("/key_up") if(is_remote());
 
    if((my $active = get_active($w))) {                      # try most active
       return switch_world($conn,$active);
@@ -4305,7 +4317,7 @@ sub key_down
    my $w = world($conn);
    my ($tmp, $first);
 
-   return wc_out("/key_up") if(remote());
+   return wc_out("/key_up") if(is_remote());
 
    if((my $active = get_active($w))) {                      # try most active
       return switch_world($conn,$active);
@@ -4427,7 +4439,7 @@ sub key_esc_w
 #-# summary: Go to the next active world, or the last world
    my ($conn,$txt) = @_;
 
-   return wc_out("/key_esc_w") if(remote());
+   return wc_out("/key_esc_w") if(is_remote());
 
    my $w = world($conn);
    my $new = get_active($conn);
@@ -4630,7 +4642,10 @@ sub world
 {
    my $conn = shift;
 
-   if(defined @socket{$conn}) {
+   if(is_remote() && defined @state{remote_bar} &&
+      @state{remote_bar} =~ /^_+(.+?)_+$/) {
+      return $1;
+   } elsif(defined @socket{$conn}) {
       return $conn;
    } elsif(defined @ws{$conn}) {
       return @ws{$conn}->{world};
@@ -4717,7 +4732,7 @@ sub draw_bar
    $hr = 12 if $hr == 0;
    my $cnt = activity_count();
 
-   if(remote()) {
+   if(is_remote()) {
       if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
          @state{remote_bar} ne @state{bar_remote} ||
          @state{bar_name} ne name(@state{world})) {
@@ -4919,6 +4934,7 @@ sub code
    my @stack;
 
    my $prev = @state{chksum};
+   $type = "shortest" if $type eq "smallest";
    if(!$type || $type eq "short" || $type eq "shortest") {
       for my $line (split(/\n/,Carp::shortmess)) {
          if($line =~ /at ([^ ]+) line (\d+)\s*$/) {
@@ -5068,7 +5084,7 @@ sub call_addworld
       return echo($conn,"A Port was not provived.");
    }
 
-   cmd_add($conn,
+   cmd_editor($conn,
            sprintf("%s %s %s %s %s %s",
                    ($$data{"Use SSL to connnect"} eq "x") ? "-s" : "",
                    $$data{"World Name"},
@@ -5122,7 +5138,7 @@ sub dialog_populate
 
 sub dialog_init
 {
-   my ($conn,$definition,$callback) = @_;
+   my ($conn,$definition,$buttons,$callback) = @_;
    my $count = 0;
    my $max;
 
@@ -5146,8 +5162,8 @@ sub dialog_init
 
    @state{dialog}->{max} = $max;
    @state{dialog}->{count} = $count;
-   @state{dialog}->{callback} = $callback;
    @state{dialog}->{conn} = $conn;
+   @state{dialog}->{buttons} = $buttons;
 }
 
 sub dialog_lines
@@ -5155,6 +5171,14 @@ sub dialog_lines
    if(defined @state{dialog} &&
       defined @state{dialog}->{count}) {
       return @state{dialog}->{count};
+   }
+}
+
+sub dialog_buttons
+{
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{buttons}) {
+      return $#{@state{dialog}->{buttons}} + 1;
    }
 }
 
@@ -5178,6 +5202,7 @@ sub rjust
 sub dialog_draw
 {
    my $ident = 0;
+   my @buttons;
 
    update_scroll_region("input",1);
    xy(input_start(),1,1);
@@ -5201,8 +5226,21 @@ sub dialog_draw
       }
       $ident = 1;
    }
-   printf("\n");
-   printf("                                       [ Cancel ] [ Save ]");
+
+   my $wsize = 8 + dialog_input_size() + dialog_max();
+   for my $but (@{@state{dialog}->{buttons}}) {
+      push(@buttons,sprintf("[ %s ]",(split(":",$but))[0]));
+   }
+
+   my $start = $wsize - length(join(' ',@buttons));
+   my $pos = $start + 1;
+   @state{dialog}->{bpos} = [];
+   for my $but (@{@state{dialog}->{buttons}}) {
+      push(@{@state{dialog}->{bpos}},$pos + 2);
+      $pos += length((split(':',$but))[0]) + 5;
+   }
+
+   printf("\n%s%s"," " x $start,join(' ',@buttons));
    printf("\n");
 
    xy(input_x(),input_y(),1);
@@ -5235,15 +5273,6 @@ sub dialog_x
    }
 }
 
-sub dialog_on_cancel
-{
-   return (dialog_x() - dialog_lines == 1) ? 1 : 0;
-}
-
-sub dialog_on_save
-{
-   return (dialog_x() - dialog_lines == 2) ? 1 : 0;
-}
 
 sub dialog_cancel
 {
@@ -5251,21 +5280,54 @@ sub dialog_cancel
    draw_screen(@state{world},1);
 }
 
-sub dialog_save
+sub editor_save
 {
+   loggit("editor_save: called");
    my $data = {};
-   loggit("save");
    for my $i (0 .. dialog_lines()) {
-      loggit("%s[%s] : %s",dialog_name($i),dialog_type($i),dialog_value($i));
       $$data{dialog_name($i)} = dialog_value($i);
    }
- 
-   if(defined @state{dialog} &&
-      defined @call{@state{dialog}->{callback}}) {
-      &{@call{@state{dialog}->{callback}}}(@state{dialog}->{conn},$data);
+   my $conn = @state{dialog}->{conn};
+
+   if(!defined $$data{"World Name"} ||
+      trim($$data{"World Name"}) eq "") {
+      return echo($conn,"A required World Name was not provided.");
+   }
+   if(!defined $$data{"Host"} ||
+      trim($$data{"Host"}) eq "") {
+      return echo($conn,"A required Host was not provided.");
+   }
+   if(!defined $$data{"Port"} ||
+      trim($$data{"Host"}) eq "") {
+      return echo($conn,"A Port was not provived.");
+   }
+
+   cmd_editor($conn,
+           sprintf("%s %s %s %s %s %s",
+                   ($$data{"Use SSL to connnect"} eq "x") ? "-s" : "",
+                   $$data{"World Name"},
+                   $$data{User},
+                   $$data{Password},
+                   $$data{Host},
+                   $$data{Port}
+                  )
+          );
+   dialog_cancel();
+}
+
+sub editor_delete
+{
+   my $conn = @state{dialog}->{conn};
+   if(defined @address{dialog_value(1)}) {
+      delete @address{dialog_value(1)};
+      echo($conn,"%% World %s has been deleted",dialog_value(1));
       dialog_cancel();
+      save($conn,dialog_value(1));
+   } else {
+      echo($conn,"%% Unable to find and delete world '%s'",dialog_value(1));
    }
 }
+
 
 sub dialog_input_size
 {
@@ -5330,23 +5392,66 @@ sub dialog_value
 }
 
 
+sub cmd_request_info
+{
+   my ($conn,$txt) = (shift,trim(shift));
+   my $out;
+
+   if(!module_enabled("Data::Dumper")) {
+      return echo($conn,"%% remote /editor disabled due to missing " .
+         "Data::Dumper module");
+   }
+   if(!module_enabled("MIME::Base64")) {
+      return echo($conn,"%% file transfers disabled due to missing " .
+         "MIME::Base64 module");
+   }
+   if(defined @address{$txt}) {
+      ws_echo($conn,"r",mydump($txt,@address{$txt}));
+   } else {
+      loggit("Invalid world.");
+   }
+}
+
+sub make_safe
+{
+   my $txt = encode_base64(shift);
+   $txt =~ s/\r|\n//g;
+   return $txt;
+}
+
+sub mydump
+{
+    my ($id,$hash) = @_;
+    my @out;
+
+    for my $key (keys %$hash) {
+       push(@out,make_safe($key) . ":" . make_safe($$hash{$key}));
+    }
+    return $id . ":" . join(',',@out);
+}
+
+sub undump
+{
+   my $txt = shift;
+   my ($id, %hash);
+
+   if($txt =~ /^([^:]+):/) {
+      $id = $1;
+     $txt = $';
+      while($txt =~ /^([^:,]+):([^:,]+),{0,1}/) {
+         $txt = $';
+         @hash{decode_base64($1)} = decode_base64($2);
+      }
+   }
+   return $id, \%hash;
+}
+
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  end dialog support                                                        #
 #                                                                            #
 #----------------------------------------------------------------------------#
 
-
-sub cmd_gui
-{
-   my ($conn,$txt) = @_;
-
-   dialog_init($conn,
-               "World Name_word,User_word,Password_word,Host_word," .
-                    "Port_word,Use SSL to connnect_check",
-               "addworld");
-   draw_screen($conn);
-}
 
 sub cmd_rewrap
 {
@@ -5499,7 +5604,7 @@ sub cmd_window
          created => time()
       };
       
-   } elsif((remote() || is_web($conn)) && length $txt) {
+   } elsif((is_remote() || is_web($conn)) && length $txt) {
       my $t = time();
       wc_out("/window value=%s %s\n",time(),$txt);
       if(length $txt) {
@@ -5507,7 +5612,7 @@ sub cmd_window
          system("@state{terminal_app} perl ./muddler --remote=" .
                 "@state{remote_address} --window=$t &");
       }
-   } elsif(!length $txt && remote()) {
+   } elsif(!length $txt && is_remote()) {
       wc_out("/window");
    } elsif(!length $txt) {
       if(!defined @state{window} || scalar keys %{@state{window}} == 0) {
@@ -5554,7 +5659,7 @@ sub cmd_window
          }
       }
    } else {
-      if(remote()) {
+      if(is_remote()) {
          echo($conn,"Usage: /window or /window <pattern>");
       } else {
          echo($conn,"Usage: /window");
@@ -6097,7 +6202,7 @@ sub cmd_editor
 #-#      Options:
 #-#         -s   Use ssl to connect to the world.
 #-# ------------------------------------------------------------------------
-   my ($conn,$txt) = @_;
+   my ($conn,$txt,$noremote) = @_;
    my $opt = {};
 
    my $txt = getopt("s",$txt,$opt);
@@ -6111,11 +6216,20 @@ sub cmd_editor
          @field[$i] = trim(@field[$i]);
       }
    }
-   if(is_console($conn) && ($#field == -1 || $#field == 0)) {  # use a dialog
+   if((is_console($conn) || is_remote()) && 
+      ($#field == -1 || $#field == 0)) {  # use a dialog
+      if($#field == -1 && (@state{world} ne "muddler" || is_remote())) {
+         @field[0] = world($conn);
+      }
+      if(is_remote() && @field[0] ne "" && !$noremote) {
+         return wc_out("/request_info @field[0]");
+      }
       dialog_init($conn,
                   "World Name_word,User_word,Password_word,Host_word," .
                        "Port_word,Use SSL to connnect_check",
-                  "addworld");
+                  ["Cancel:dialog_cancel",
+                   "Save:editor_save",
+                   "Delete:editor_delete"]);
       if($#field == 0) {
          dialog_populate(1,@field[0]);
          if(defined @address{@field[0]}) {
@@ -6140,6 +6254,7 @@ sub cmd_editor
       return draw_screen($conn);
    }
 
+   return wc_out("/editor $txt") if(is_remote());
    my $append = 0;
 
    $append = 1 if(!defined @address{trim(lc(@field[0]))});
@@ -6187,7 +6302,6 @@ sub save
    my $append = 0;
    my $file;
 
-   loggit("save: called '%s'",code());
    # redefining a world will cause a full dump of the file
 #   $append = 1 if(!defined @address{$item});
 
@@ -6205,10 +6319,13 @@ sub save
       }
    }
 
-   if($value eq undef) {
-      delete @state{$item};
-   } else {
-      @state{$item} = $value;
+
+   if($item ne undef) {
+      if($value eq undef) {
+         delete @state{$item};
+      } else {
+         @state{$item} = $value;
+      }
    }
 
    for my $key (keys %state) {
@@ -6228,7 +6345,6 @@ sub load
    my ($conn,$quiet) = @_;
    my ($file,$name,$data);
 
-   loggit("Load: called");
    if(!open($file,"@ENV{HOME}/.muddler")) {
       if(!$quiet) {
          echo($conn,"%% Unable to open @ENV{HOME}/.muddler for reading");
@@ -6271,6 +6387,7 @@ sub cmd_null
 #-# ------------------------------------------------------------------------
    # do nothing for now
 }
+
 
 #
 # connected:
@@ -6676,7 +6793,7 @@ sub do_cmd
 
 
 #   loggit("do_cmd: '%s'\n",$input);
-   if(remote() && $input !~ /^\s*\/(window|quit|key_ctl_l)\s*/) {
+   if(is_remote() && $input !~ /^\s*\/(window|quit|key_ctl_l|edit)\s*/) {
 #      loggit("send: $input\n");
       return wc_out($input);
    }
@@ -6770,7 +6887,7 @@ sub cmd_web
 #-# ------------------------------------------------------------------------
    my ($conn,$status) = @_;
 
-   if(remote()) {
+   if(is_remote()) {
       return echo($conn,
                   "%% Web/Websocket is disabled when --remote is enabled."
                  );
@@ -7254,7 +7371,6 @@ sub cmd_listsockets
 #-# ------------------------------------------------------------------------
    my $conn = shift;
 
-   loggit("# list_sockets: called\n");
    echo($conn,"%-16s %-26s %-5s %4s %-6s",
         "NAME","HOST","PORT","Secure","Pend");
    for my $key (keys %ws) {
@@ -7412,7 +7528,7 @@ sub read_tfworlds
    my ($conn,$fn,$quiet) = @_;
    my ($file, $bad);
 
-   return if remote();
+   return if is_remote();
 
    if(-e "@ENV{HOME}/.muddler" || !-e "@ENV{HOME}/.tfworlds") {
       return;
@@ -7451,7 +7567,7 @@ sub read_tfrc
    my $fn = shift;
    my ($file, $prev);
 
-   return if remote();
+   return if is_remote();
 
    open($file,$fn) || return;
 
@@ -7764,7 +7880,7 @@ sub read_file
 #
 sub muddler_init
 {
-   if(module_enabled("Net::WebSocket::Server") && !remote()) {
+   if(module_enabled("Net::WebSocket::Server") && !is_remote()) {
       $ws_server = Net::WebSocket::Server->new(
          tick_period => 1,
          on_connect => 
@@ -7801,7 +7917,7 @@ sub muddler_init
    loggit("### START ###");
 
    # initialize websocket client
-   wc_init() if remote();
+   wc_init() if is_remote();
 
    if(console()) {
       $| = 1;                                                  # unbuffer stdout
@@ -7812,7 +7928,7 @@ sub muddler_init
    command_init();
 
    draw_screen(@state{world},1);
-   show_banner(@state{world}) if !remote();
+   show_banner(@state{world}) if !is_remote();
 
    if(!-e "@ENV{HOME}/.muddler") {
       read_tfworlds(@state{world},"@ENV{HOME}/.tfworlds",1);
@@ -7912,7 +8028,7 @@ sub change_window_size
 {
    get_console_size();
 
-   if(remote()) {
+   if(is_remote()) {
       wc_out("/web_size %s,%s\n",@state{size_x},@state{size_y}+3);
       draw_input();
    } else {
@@ -8003,7 +8119,7 @@ for my $i (0 .. $#ARGV) {
 
 ws_init() if !console();
 
-if(!module_enabled("Net::WebSocket::Server") || remote()) {
+if(!module_enabled("Net::WebSocket::Server") || is_remote()) {
    $ws_server = {};
    $ws_server->{select_readable} = IO::Select->new();
 }
