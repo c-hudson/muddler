@@ -1,0 +1,24 @@
+This installation step guide is for using muddler on Windows 10/11 with the Windows subsystem for linux. There probably are other ways to install Muddler on windows but this is my perfered option. 
+
+   Install WSL [if needed]
+      open a powershell window
+      wsl --install
+      Wait for it to install and answer any prompts
+   Startup WSL (if it hasn't already done so)
+   Download Muddler:
+      git clone https://github.com/c-hudson/muddler.git
+      cd muddler
+      chmod u+x muddler
+
+Missing Module installation
+   At this point muddler is already working but some of the  modules it uses for spell checking, encrypted connections, and web browser support have not be installed. Follow the below steps to install them if you wish.
+
+   Install Build Essientals
+      sudo apt update
+      sudo apt install
+      sudo apt install build-essential
+   Install any missing perl modules
+      sudo ./muddler --install
+
+      Answer any prompts with yes or hit enter to use the default answers This will result in alot of output as it uses apt to install missing modules and cpan to download and compile the websocket modules.
+      
