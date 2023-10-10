@@ -1,5 +1,5 @@
 ![Screenshot](screenshot.jpg)
-This screenshot shows the two interfaces of muddler. In the foreground is muddler running in a terminal window. The background window is firefox connected to the same muddler session via websockets. Both are interactive and can show the same or different worlds.
+This screenshot three windows displaying a connection to 8bit and Parlor via Firefox, a remote session, and the original instance of muddler. The foremost window shows the world editor for 8bit. All three windows are interactive and can show the same or different worlds.
 
 # muddler
 
