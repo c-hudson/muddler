@@ -210,7 +210,7 @@ sub command_init
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
-   @command{set}           = sub { return cmd_set(@_);                     };
+   @command{setup}         = sub { return cmd_set(@_);                     };
    @command{log}           = sub { return cmd_log(@_);                     };
    @command{more}          = sub { return cmd_more(@_);                    };
    @command{common}        = sub { return cmd_common(@_);                  };
@@ -250,9 +250,11 @@ sub command_init
 sub callback_init
 {
    delete @call{keys %call};
-   @call{editor_save}           = sub { return editor_save(@_) };
    @call{dialog_cancel}         = sub { return dialog_cancel(@_) };
+   @call{editor_save}           = sub { return editor_save(@_) };
+   @call{editor_connect}        = sub { return editor_connect(@_) };
    @call{editor_delete}         = sub { return editor_delete(@_) };
+   @call{set_save}              = sub { return set_save(@_) };
 }
 
 sub cbreak {
@@ -1340,8 +1342,8 @@ sub ws_init
 
       $ctx = IO::Socket::SSL::SSL_Context->new(
           SSL_server => 1,
-          SSL_cert_file => 'cert.pem',
-          SSL_key_file  => 'key.pem',
+          SSL_cert_file => @state{p_cert},
+          SSL_key_file  => @state{p_key},
           SSL_verify_mode => 0x00,  # SSL_VERIFY_PEER | 
                                     # SSL_VERIFY_FAIL_IF_NO_PEER_CERT
           ) or die "cannot create context: $SSL_ERROR";
@@ -2174,6 +2176,7 @@ sub echo_console
    }
 
    printf("\n%s",$msg);
+#   loggit("%s [%s]",$msg,code("smallest"));
 #   printf("\n%s",encode_utf8($msg));
 
    if(@state{optimize_output} == 0) {
@@ -2453,7 +2456,6 @@ sub gagged
       $$txt{gagged} = 1;
       return 1;
    }
-   loggit("STR: '%s'\n",$str);
 
    $$txt{gagged} = 1;
    return 1;
@@ -2506,6 +2508,7 @@ sub history
    if($$str{gagged}) {
       push(@{@history{$world}},$str);
    } else {
+      loggit_world($world,$txt) if($$str{internal} == 0);
       push(@{@pending{$world}},$str);
       release_some_pending($conn,$world);
    }
@@ -2635,6 +2638,22 @@ sub update_pending
    my ($conn,$count,$txt) = @_;
    my $w = world($conn);
    @socket{$w}->{pending} += $count if(defined @socket{$w});
+}
+
+sub loggit_world
+{
+    my ($conn,$txt) = @_;
+    my $w = world($conn);
+    my $log;
+
+    return if !@address{$w}->{log};
+
+    if(!defined @state{"$w.log"}) {
+       open($log,">> $w.log") || return;
+    } else {
+       $log = @state{"$w.log"};
+    }
+    printf($log "[%s] %s\n",ts(),$txt);
 }
 
 
@@ -2800,12 +2819,14 @@ sub input_y
 
    if(in_dialog()) {
       if(dialog_type() eq "check") {         # handle fixed position checkbox
-         return 8;
+         return 5;
+      } elsif(dialog_type() =~ /^cycle\./) {
+         return dialog_max() + 8;
       } elsif(dialog_x() > dialog_lines()) { # handle fixed position "buttons"
          return @state{dialog}->{bpos}->[dialog_x()-dialog_lines()-1];
       }
    }
-   return ((in_dialog()) ? dialog_max() + 8 : 0) + $pos;
+   return ((in_dialog()) ? dialog_max() + 5 : 0) + $pos;
 }
 
 #
@@ -3160,14 +3181,13 @@ sub draw_output_world_new
    my ($off,$pos,$str);
 
    update_scroll_region("output") if(is_console($conn));
-   optimize_start();
 
    if(in_hist($w)) {                               # history starting point
       $pos = hist_pos($w);
       $off = hist_pos_partial($w);
 #      loggit("offset: $off");
    } else {                                            # or end of history
-      release_some_pending($conn,$w);
+      # release_some_pending($conn,$w);
       $pos = $#{@history{$w}};
       $off = @history{$w}->[$pos]->{offset} if(defined $$h[$pos]);
    }
@@ -3203,8 +3223,9 @@ sub draw_output_world_new
    while($cnt++ < $x) {                 # fill in blanks at top of screen
       unshift(@out,"");
    }
+   # optimize_start();
    e($conn,"%s",join("\n",@out));
-   optimize_end();
+   # optimize_end();
 }
 
 
@@ -3295,7 +3316,7 @@ sub draw_input
    return if(!console());
 
    if(is_console($conn) || is_remote()) {
-      update_scroll_region("input",1);
+      update_scroll_region("input");
       xy(input_start(),1,1);
 
       if(in_dialog()) {
@@ -3686,15 +3707,15 @@ sub key_tab
 
    my $w = world($conn);
 
-   if(in_dialog() && !$shift_down) {
+   if(is_remote() && !in_dialog()) {
+      return wc_out("/key_tab");
+   } elsif(in_dialog() && !$shift_down) {
       if(dialog_lines() + dialog_buttons() -1 < dialog_x()) {
          dialog_x(1);
       } else {
          dialog_x(dialog_x() + 1);
       }
       xy(input_x(),input_y());
-   } elsif(is_remote()) {
-      return wc_out("/key_tab");
    } elsif($w eq undef || !defined @socket{$w}) {
       return;
    } elsif(in_hist($w)) {                      # same as key_pgdn, just call it
@@ -3953,7 +3974,7 @@ sub key_delete
                xy(input_x(),input_y()-1);
                printf("\033[P");                 # delete ch before cursor
                if(in_dialog()) {
-                  xy(input_x(),dialog_max() + 9 + dialog_input_size());
+                  xy(input_x(),dialog_max() + 5 + dialog_input_size());
                   printf("_");
                   xy(input_x(),input_y());
                   last;
@@ -3978,7 +3999,7 @@ sub key_delete
       printf("\033[P");                       # delete character under cursor
 
       if(in_dialog()) {
-         xy(input_x(),dialog_max() + 8 + dialog_input_size());
+         xy(input_x(),dialog_max() + 5 + dialog_input_size());
          printf("_");
          xy(input_x(),input_y());
       }
@@ -4060,6 +4081,23 @@ sub input_onscreen
    }
 }
 
+sub cycle_next
+{
+   my $list = shift;
+   my ($first,$next);
+   my $current = dialog_value(dialog_x());
+
+   for my $item (split(/\./,$list)) {
+      $first = $item if($first eq undef);
+      if($item eq $current) {
+         $next = 1;
+      } elsif($next) {
+         return $item;
+      }
+   }
+   return $first;
+}
+
 sub key_default
 {
    my ($conn,$ch) = @_;
@@ -4090,10 +4128,22 @@ sub key_default
    if(in_dialog()) {
       if(dialog_type() eq "word" && $ch eq " ") {
          return;
-      } elsif(dialog_type() eq "check") {
-         @{$$input[-1]}[0]  = ($ch eq " ") ? " " : "x";
+      } elsif(dialog_type() eq "num" && $ch !~ /^[0-9]+$/) {
+         return;
+      } elsif(dialog_type() =~ /^cycle\./) {
+         dialog_populate(dialog_x(),cycle_next($'));
+         xy(input_x(),dialog_max() + 6);
+         printf("\033[K[ %s ]",dialog_value(dialog_x()));
          xy(input_x(),input_y());
-         printf("%s",($ch eq " ") ? " " : "x");
+         return;
+      } elsif(dialog_type() eq "check") {
+         if($ch ne "x") {
+            $ch = (dialog_value(dialog_x()) eq "x") ? " " : "x";
+         }
+         dialog_populate(dialog_x(),$ch);
+         xy(input_x(),input_y());
+         printf("%s",$ch);
+         xy(input_x(),input_y());
          return;
       } else {
          return if(line_pos() >= dialog_input_size());
@@ -4182,7 +4232,7 @@ sub key_ctl_e
 sub input_size
 {
    if(in_dialog()) {
-      return dialog_lines() + 4;
+      return dialog_lines() + 3;
    } else {
       return nvl(@state{p_input_size},2);
    }
@@ -4288,6 +4338,14 @@ sub key_up
 
    return wc_out("/key_up") if(is_remote());
 
+   if(in_dialog()) {
+      if(dialog_x() == 1) {
+         dialog_x(dialog_lines() + 2);
+      } else {
+         dialog_x(dialog_x()-1);
+      }
+      return xy(input_x(),input_y());
+   }
    if((my $active = get_active($w))) {                      # try most active
       return switch_world($conn,$active);
    } else {
@@ -4320,7 +4378,14 @@ sub key_down
 
    return wc_out("/key_up") if(is_remote());
 
-   if((my $active = get_active($w))) {                      # try most active
+   if(in_dialog()) {
+      if(dialog_lines() + 3 <= dialog_x() + 1) {
+         dialog_x(1);
+      } else {
+         dialog_x(dialog_x()+1);
+      }
+      return xy(input_x(),input_y());
+   } elsif((my $active = get_active($w))) {                # try most active
       return switch_world($conn,$active);
    } else {
       for my $key (reverse sort {$a cmp $b} keys %socket){      # next alpha
@@ -4399,6 +4464,8 @@ sub switch_world
       @state{world} = $world;
    }
 
+
+   # loggit("switch_world: %s",code("smallest"));
    if(TRUE(@state{p_sync})) {                     # world syncing turned on,
       draw_output($conn,0);                      # keep all worlds in sync
       for my $key (keys %ws) {
@@ -4407,6 +4474,11 @@ sub switch_world
    } else {
       draw_output($conn,0);
    }
+   release_some_pending($conn,$world);
+   update_scroll_region("input");
+#   if(in_dialog() && dialog_name(1) eq "World Name") {
+#      cmd_editor($conn,$world);
+#   }
 }
 
 #
@@ -4493,7 +4565,7 @@ sub update_scroll_region
       printf("\033[%s;%sr",$start,$stop);
       @state{region} = "$start,$stop";
       @state{r} = $region;
-#      loggit("scroll_region: $region %s",code("shortest"));
+      # loggit("scroll_region: $region [@state{region}-%s-$force] %s","$start,$stop",code("shortest"));
    }
 }
 
@@ -4611,6 +4683,7 @@ sub xy
 #   loggit("xy[@state{line_pos},$x,$y,@state{r}]: %s",code("shortest")) if @state{r} eq "input";
    return if !console();
    return if defined @state{monitor_value};
+#   loggit("xy[$x,$y] %s",code("shortest"));
    printf("\033[%s;%sH",$x,$y);
 }
 
@@ -4724,7 +4797,6 @@ sub activity_count
 #
 sub draw_bar
 {
-#   loggit("draw_bar: called : %s == %s\n",@state{bar_name},name(@state{world}));
    return if defined @state{window_value};
    my $force = shift;
    my $new = time();
@@ -4773,7 +4845,7 @@ sub draw_bar
 
       my $more = more_bar(@state{world});
       #---
-      xy(@state{size_x} - input_size(),0);
+      xy(input_start() - 1,0);
 
       printf("%s%s_%s%s_%s_%s_%s:%02d",
              "_" x (9 - ansi_length($more)),
@@ -4785,7 +4857,7 @@ sub draw_bar
              $hr,
              $min
             );
-      update_scroll_region("input");
+#      update_scroll_region("input");
       xy(input_x(),input_y());
    }
 
@@ -4864,7 +4936,8 @@ sub ws_all
 sub input_start
 {
    if(in_dialog()) {
-      return @state{size_x} - dialog_lines() + -3;
+#      loggit("Input_start: %s",dialog_lines());
+      return @state{size_x} - (dialog_lines() + 2);
    } else {
       return @state{size_x} - input_size() + 1;
    }
@@ -4949,7 +5022,11 @@ sub code
             }
          }
       }
-      return join(',',@stack);
+      if($type eq "shortest") {
+         return join(',',@stack[0 .. 5]);
+      } else {
+         return join(',',@stack);
+      }
    } else {
       return Carp::shortmess;
    }
@@ -5097,6 +5174,7 @@ sub call_addworld
           );
 }
 
+
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  dialog support                                                            #
@@ -5139,7 +5217,7 @@ sub dialog_populate
 
 sub dialog_init
 {
-   my ($conn,$definition,$buttons,$callback) = @_;
+   my ($conn,$definition,$buttons,$indent) = @_;
    my $count = 0;
    my $max;
 
@@ -5151,7 +5229,7 @@ sub dialog_init
 
    for my $i (split(/,/,$definition)) {                 # find max
       $count++;
-      my ($name,$type) = split(/_/,$i);
+      my ($name,$type) = split(/:/,$i);
       my $size = length($name);
       $max = $size if($max < $size && $type  ne "check");
       @state{dialog}->{$count} = {};
@@ -5200,9 +5278,23 @@ sub rjust
    return $val . ($ch x ($size - length($val)));
 }
 
+sub in
+{
+   my ($value,@list) = @_;
+
+   for my $i (0 .. $#list) {
+      return 1 if($value eq @list[$i]);
+   }
+   return 0;
+}
+
+sub cycle_first
+{
+   return (split(".",shift))[0];
+}
+
 sub dialog_draw
 {
-   my $ident = 0;
    my @buttons;
 
    update_scroll_region("input",1);
@@ -5210,22 +5302,28 @@ sub dialog_draw
    printf("\033[J\n");
 
    for my $i (1 .. dialog_lines()) {
-      if(dialog_type($i) eq "word") {
-         printf("%s   %-*s%s: %s\n",
-                (" " x ($ident * 3)),
+      if(in(dialog_type($i),"word","text","num")) {
+         printf("   %-*s: %s\n",
                 dialog_max(),
                 dialog_name($i),
-                (" " x ((!$ident) * 3)),
                 rjust(join('',@{@state{dialog}->{$i}->{input}->[-1]}),
                       dialog_input_size(),"_")
                );
+      } elsif(dialog_type($i) =~ /^cycle\./) {
+         if(dialog_value($i) eq "") {
+            dialog_populate($i,cycle_first($i));
+         }
+         printf("   %-*s: [ %s ]\n",
+                dialog_max(),
+                dialog_name($i),
+                dialog_value($i)
+               );
       } elsif(dialog_type($i) eq "check") {
-         printf("      [%s] %s\n",
-                " ",
+         printf("   [%1s] %s\n",
+                dialog_value($i),
                 dialog_name($i),
                );
       }
-      $ident = 1;
    }
 
    my $wsize = 8 + dialog_input_size() + dialog_max();
@@ -5242,7 +5340,6 @@ sub dialog_draw
    }
 
    printf("\n%s%s"," " x $start,join(' ',@buttons));
-   printf("\n");
 
    xy(input_x(),input_y(),1);
 }
@@ -5281,14 +5378,21 @@ sub dialog_cancel
    draw_screen(@state{world},1);
 }
 
+sub editor_connect
+{
+   my $name = dialog_value(1);
+   my $conn = @state{dialog}->{conn};
+   editor_save();
+   cmd_world($conn,$name);
+}
 sub editor_save
 {
-   loggit("editor_save: called");
    my $data = {};
    for my $i (0 .. dialog_lines()) {
       $$data{dialog_name($i)} = dialog_value($i);
    }
    my $conn = @state{dialog}->{conn};
+   my $w = world($conn);
 
    if(!defined $$data{"World Name"} ||
       trim($$data{"World Name"}) eq "") {
@@ -5299,13 +5403,19 @@ sub editor_save
       return echo($conn,"A required Host was not provided.");
    }
    if(!defined $$data{"Port"} ||
-      trim($$data{"Host"}) eq "") {
+      trim($$data{"Port"}) eq "") {
       return echo($conn,"A Port was not provived.");
    }
+   if(!defined $$data{"Encoding"} ||
+      trim($$data{"Encoding"}) eq "") {
+      return echo($conn,"An encoding type was not provived.");
+   }
 
+   dialog_cancel();
    cmd_editor($conn,
-           sprintf("%s %s %s %s %s %s",
+           sprintf("%s %s %s %s %s %s %s",
                    ($$data{"Use SSL to connnect"} eq "x") ? "-s" : "",
+                   ($$data{"Log output to $w.log"} eq "x") ? "-l" : "",
                    $$data{"World Name"},
                    $$data{User},
                    $$data{Password},
@@ -5313,7 +5423,8 @@ sub editor_save
                    $$data{Port}
                   )
           );
-   dialog_cancel();
+
+   cmd_set($conn,"encode=" . encoding_detranslate($$data{Encoding}));
 }
 
 sub editor_delete
@@ -5326,6 +5437,33 @@ sub editor_delete
       save($conn,dialog_value(1));
    } else {
       echo($conn,"%% Unable to find and delete world '%s'",dialog_value(1));
+   }
+}
+
+
+sub set_save
+{
+   my $conn = @state{dialog}->{conn};
+   my $count = 0;
+   my %lookup;
+
+   for my $key (keys %var) {
+      @lookup{@var{$key}->{name}} = $key if(defined @var{$key}->{name});
+   }
+
+   for my $i (1 .. dialog_lines()) {
+       if(@state{"p_" . @lookup{dialog_name($i)}} ne dialog_value($i)) {
+          save($conn,"p_" . @lookup{dialog_name($i)},dialog_value($i));
+          $count++;
+       }
+   }
+
+   dialog_cancel();
+
+   if($count == 0) {
+      echo($conn,"%% No changes made, nothing saved.");
+   } else {
+      echo($conn,"%% %s changes saved to ~/.muddler.",$count);
    }
 }
 
@@ -5395,7 +5533,7 @@ sub dialog_value
 
 sub cmd_request_info
 {
-   my ($conn,$txt) = (shift,trim(shift));
+   my ($conn,$txt) = (shift,lc(trim(shift)));
    my $out;
 
    if(!module_enabled("Data::Dumper")) {
@@ -5409,7 +5547,7 @@ sub cmd_request_info
    if(defined @address{$txt}) {
       ws_echo($conn,"r",mydump($txt,@address{$txt}));
    } else {
-      loggit("Invalid world.");
+      loggit("Invalid world. '$txt'");
    }
 }
 
@@ -5820,21 +5958,25 @@ sub var_init
 {
    delete @key{keys %var};
   
-   @var{cert}      = { null=>1,fn=>1,set=>1                                };
-   @var{key}       = { null=>1,fn=>1,set=>1                                };
-   @var{input_size}= { set=>1,pfun => sub { draw_screen(@_);}            };
-   @var{port}      = { set=>1                                              };
+   @var{cert}      = { name=>"SSL Cert File",type=>"text",null=>1,fn=>1,
+                       set=>1                                              };
+   @var{key}       = { name=>"SSL Key File",type=>"text",null=>1,fn=>1,
+                       set=>1                                              };
+   @var{input_size}= { name=>"Input Size",type=>"num",
+                       pfun=>sub { draw_screen(@_);}                       };
+   @var{port}      = { name=>"Web Port",type=>"num",set=>1                 };
    @var{encode}    = { fun => sub { vencode(@_); }                         };
    @var{debug}     = { set=>1                                              };
-   @var{password}  = { set=>1                                              };
-   @var{allow}     = { set=>1, null=>1                                     };
+   @var{password}  = { name=>"Web Password",type=>"word",set=>1            };
+   @var{allow}     = { name=>"Web Allow List",type=>"text",set=>1, null=>1 };
    @var{watchdog}  = { set=>1, chk => "on|off|0|1"                         };
-   @var{theme}     = { set=>1, chk => "light|dark", 
+   @var{theme}     = { name=>"Web Theme",type=>"word",set=>1, 
+                       chk => "light|dark", 
                        fun => sub { ws_all("d","theme " . @_[1]); }        };
    @var{keepalive} = { set=>1, fun => sub {  update_keepalive(@_) }        };
    @var{overlap}   = { set=>1, chk => "\\d+"                               },
    @var{sync}      = { set=>1,chk => "on|off|0|1",
-                       fun => sub { switch_world(@_,@state{world}); }       };
+                       fun => sub { switch_world(@_,@state{world}); }      };
    @var{delgag}    = { chk => "on|off|0|1", fun => sub { set_delgag(@_);}  };
 }
 
@@ -5891,6 +6033,29 @@ sub cmd_set
 my ($conn,$txt) = @_;
    my $enc;
 
+   if($txt eq "") {
+      my @fields;
+      for my $i (sort {@var{$a}->{name} cmp @var{$b}->{name}} keys %var) {
+         if(defined @var{$i}->{name}) {
+            if($i eq "theme") {
+               push(@fields,"@var{$i}->{name}:cycle.light.dark");
+            } else {
+               push(@fields,"@var{$i}->{name}:@var{$i}->{type}");
+            }
+         }
+      }
+      dialog_init($conn,
+                  join(",",@fields),
+                  ["Cancel:dialog_cancel","Save:set_save"],0);
+      my $pos = 1;
+      for my $i (sort {@var{$a}->{name} cmp @var{$b}->{name}} keys %var) {
+         if(defined @var{$i}->{name}) {
+            dialog_populate($pos,@state{"p_$i"});
+            $pos++;
+         }
+      }
+      return draw_screen($conn);
+   }
    if($txt =~ /^\s*([^=]+?)\s*=\s*/) {
       my ($name,$val) = ($1,$');
       if(defined @var{$name}) {
@@ -6179,6 +6344,50 @@ sub cmd_console
    }
 }
 
+sub encoding_init
+{
+   @state{encoding} = {};
+   @state{encoding}->{default} = "utf8";
+   @state{encoding}->{utf8} = "utf8";
+   @state{encoding}->{cp437} = "fansi";
+   @state{encoding}->{"iso-8859-1"} = "latin";
+}
+
+sub encoding_values
+{
+   my %list;
+
+   for my $key (keys %{@state{encoding}}) {
+      @list{@state{encoding}->{$key}} = 1;
+   }
+   return keys %list;
+}
+
+
+sub encoding_translate
+{
+   my $txt = shift;
+
+   if(defined @state{encoding}->{$txt}) {
+      return @state{encoding}->{$txt};
+   } else {
+      return $txt;
+   }
+}
+
+sub encoding_detranslate
+{
+   my $txt = shift;
+
+   for my $key (keys %{@state{encoding}}) {
+      if($txt eq @state{encoding}->{$key} && $key ne "default") {
+         return $key;
+      }
+   }
+
+   return @state{encoding}->{default};
+}
+
 sub cmd_editor
 {
 #-# summary: Edit/define a world that can be connected to.
@@ -6204,9 +6413,10 @@ sub cmd_editor
 #-#         -s   Use ssl to connect to the world.
 #-# ------------------------------------------------------------------------
    my ($conn,$txt,$noremote) = @_;
+   my $w = world($conn);
    my $opt = {};
 
-   my $txt = getopt("s",$txt,$opt);
+   my $txt = getopt("sl",trim($txt),$opt);
    my @field = split(" ",$txt);
 
    # trim all fields and lc the first field
@@ -6226,11 +6436,14 @@ sub cmd_editor
          return wc_out("/request_info @field[0]");
       }
       dialog_init($conn,
-                  "World Name_word,User_word,Password_word,Host_word," .
-                       "Port_word,Use SSL to connnect_check",
+                  "World Name:word,User:word,Password:word,Host:word," .
+                       "Port:word,KeepAlive CMD:text," .
+                       "Encoding:cycle." . join(".",encoding_values()) .",".
+                       "Use SSL to connnect:check,Log output to $w.log:check",
                   ["Cancel:dialog_cancel",
                    "Save:editor_save",
-                   "Delete:editor_delete"]);
+                   "Delete:editor_delete",
+                   "Connect:editor_connect"],1);
       if($#field == 0) {
          dialog_populate(1,@field[0]);
          if(defined @address{@field[0]}) {
@@ -6246,9 +6459,19 @@ sub cmd_editor
             if(defined @address{@field[0]}->{port}) {
                dialog_populate(5,@address{@field[0]}->{port});
             }
+            if(defined @address{@field[0]}->{keepalive}) {
+               dialog_populate(6,@address{@field[0]}->{keepalive});
+            }
+            if(defined @address{@field[0]}->{decode}) {
+               dialog_populate(7,@address{@field[0]}->{decode});
+            }
             if(defined @address{@field[0]}->{ssl} && 
                @address{@field[0]}->{ssl} == 1) {
-               dialog_populate(2,"x");
+               dialog_populate(8,"x");
+            }
+            if(defined @address{@field[0]}->{log} &&
+               @address{@field[0]}->{log} eq "1") {
+               dialog_populate(9,"x");
             }
          }
       }
@@ -6266,7 +6489,8 @@ sub cmd_editor
       @address{@field[0]} = { host => @field[1],
                               port => @field[2],
                               name => @field[0],           # preserve case
-                              ssl  => 0
+                              ssl  => 0,
+                              log  => 0
                             };
    } elsif($#field == 4) {
       @address{@field[0]} = { name => @field[0],           # preserve case
@@ -6274,7 +6498,8 @@ sub cmd_editor
                               pass => @field[2],
                               host => @field[3],
                               port => @field[4],
-                              ssl  => 0
+                              ssl  => 0,
+                              log  => 0
                             };
    } elsif($#field == 5) {                                         # has type
       @address{@field[0]} = { name => @field[0],              # preserve case
@@ -6282,13 +6507,15 @@ sub cmd_editor
                               pass => @field[3],
                               host => @field[4],
                               port => @field[5],
-                              ssl  => 0
+                              ssl  => 0,
+                              log  => 0
                             };
    } else {
       return cmd_help($conn,"add");
    }
 
    @address{@field[0]}->{ssl} = 1 if($$opt{s});
+   @address{@field[0]}->{log} = 1 if($$opt{l});
 
    save($conn,lc(@field[0]));
 }
@@ -6864,7 +7091,8 @@ sub use_secure
    # required for ssl so the socket doesn't hang too long on a non SSL connect
    if(!module_enabled("IO::Socket::Timeout")) {
       return 0;
-   } elsif(defined @state{p_key} && defined @state{p_cert}) {
+   } elsif(defined @state{p_key} && trim(@state{p_key}) ne "" &&
+           defined @state{p_cert} && trim(@state{p_key}) ne "") {
       return 1;
    } else {
       return 0;
@@ -7479,7 +7707,12 @@ sub center
 #
 sub optimize_start
 {
-   @state{optimize_output} = 1;
+   if(!@state{optimize_output}) {
+#      loggit("optimize_start: %s",code("smallest"));
+#      update_scroll_region("output");
+#      xy(output_end(),1);
+      @state{optimize_output} = 1;
+   }
 }
 
 #
@@ -7698,7 +7931,9 @@ sub reload_code
    http_data_init();
    telnet_ch_init();
    var_init();
+   encoding_init();
    load_modules() if(!$nomodules);
+   callback_init();
 
 
    if($count == 0) {
@@ -7735,7 +7970,7 @@ sub print_var
    my ($PL,$PR) = ('{','}');
    my $out;
 
-   if($depth > 5) {
+   if($depth > 6) {
        return (" " x ($depth * 2)) .  " -> TO_BIG\n";
    }
    $depth = 0 if $depth eq "";
@@ -7927,6 +8162,8 @@ sub muddler_init
 
    key_init();
    command_init();
+   encoding_init();
+   var_init();
 
    draw_screen(@state{world},1);
    show_banner(@state{world}) if !is_remote();
