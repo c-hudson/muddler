@@ -159,6 +159,8 @@ sub key_init
    @key{multi_91_49_59_50_65} = sub { return key_shift_up(@_);         };
    @key{multi_91_49_59_50_66} = sub { return key_shift_down(@_);       };
    @key{multi_91_90}          = sub { return key_shift_tab(@_);        };
+   @key{multi_91_49_126}      = sub { return key_home(@_);             };
+   @key{multi_91_52_126}      = sub { return key_end(@_);              };
 
    # populate the gaps so the code knows to traverse through all the
    # characters in the definition instead of just the last one.
@@ -480,16 +482,6 @@ sub ansi_init
    my $str = shift;
    my $digest;
 
-   if(module_enabled("Digest::MD5")) {
-      $digest = Digest::MD5::md5_hex(encode_utf8($str));
-      @state{init_cache} = {} if(!defined @state{init_cache});
-
-      if(defined @state{init_cache}->{$digest}) {
-          @state{init_cache_count}++;
-          return @state{init_cache}->{$digest};
-      }
-   }
-
    my $data = { ch => [], code => [], state  => [], snap   => [] };
 #   $$data{trace} = code();
 
@@ -499,10 +491,6 @@ sub ansi_init
       ansi_add($data,0,"\e[$1$2");
    }
    ansi_add($data,1,$str) if($str ne undef);
-
-   if(module_enabled("Digest::MD5")) {
-      @state{init_cache}->{$digest} = $data;
-   }
 
    return $data;
 }
@@ -2496,13 +2484,6 @@ sub history
 
    update_pending($world,$#{$$str{wrapped}} + 1,$txt);
 
-   if($$str{gagged} &&            # delete all gagged unless specified not to 
-      ((!defined @address{$world}->{delgagged}) ||
-      (defined @address{$world}->{delgagged} &&
-      @address{$world}->{delgagged}))) {
-      return;
-   }
-
    send_to_window($world,$str);                        # handle /window stuff
 
    if($$str{gagged}) {
@@ -2700,7 +2681,7 @@ sub in_more
 
    if(!defined @state{p_more} || !@state{p_more}) {
       return 0;
-   } elsif(in_hist($world)) {      # in history buffer is just a version of more
+   } elsif(in_hist($world)) {    # in history buffer is just a version of more
       return 1;
    } elsif(!defined @socket{$world}) {
       return 0;
@@ -3320,11 +3301,12 @@ sub draw_input
    if(is_console($conn) || is_remote()) {
       update_scroll_region("input");
       xy(input_start(),1,1);
+      printf("\033[J");
 
       if(in_dialog()) {
          dialog_draw();
       } else {
-         my $pos = dialog_x() + 1;
+         my $pos = @state{input_offset}+1;
          my $end = $pos + input_size() - 1;
          for my $i (input_start() .. input_end()) {
             if($pos <= $end) {                      # line $pos of typed input
@@ -3421,6 +3403,44 @@ sub scroll_history
 }
 
 
+sub key_home
+{
+   my ($conn,$size) = @_;
+
+   # reset input location to the begining
+   @state{input_offset} = 0;
+   line_pos_set(0);
+   draw_input($conn);
+}
+
+#
+# update_input_offset
+#    Update the line_pos and then call this function to set the input_offset
+#    to something appropriate
+#
+sub update_input_offset
+{
+   my $lines = sprintf("%d",@state{line_pos} / (@state{size_y}-1));
+   $lines++ if(@state{line_pos} % (@state{size_y}-1) >= 0);
+   $lines = 1 if $lines < 1;
+
+   if($lines > input_end() - input_start() + 1) {
+      @state{input_offset} = $lines - (input_end() - input_start() + 1);
+   } else {
+      delete @state{input_offset};
+   }
+}
+
+sub key_end
+{
+   my ($conn,$size) = @_;
+
+   my $input = input();
+   line_pos_set($#{$$input[-1]}+1);
+   update_input_offset() if(!in_dialog());
+   draw_input($conn);
+}
+
 sub key_shift_up
 {
   key_up(@_,1);
@@ -3495,9 +3515,6 @@ sub print_state
       console => 1,
       ctl_c => 1,
       help => 1,
-      init_cache => 1,
-      init_cache_count => 1,
-      init_cache_count => 1,
       key_last => 1,
       last_active => 1,
       pending =>1,
@@ -4108,7 +4125,7 @@ sub key_default
    my $ret;
 
    return if !console();
-   update_scroll_region("input");
+    update_scroll_region("input");
 
    my $input = input();
    # spell checker code
@@ -4348,7 +4365,15 @@ sub key_up
       }
       return xy(input_x(),input_y());
    }
-   if((my $active = get_active($w))) {                      # try most active
+   
+   if(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
+      if(@state{line_pos} > @state{size_y} - 1) {
+         @state{line_pos} -= @state{size_y} - 1;
+         update_input_offset();
+         draw_input($conn);
+      }
+      return;
+   } elsif((my $active = get_active($w))) {                 # try most active
       return switch_world($conn,$active);
    } else {
       for my $key (sort {$a cmp $b} keys %socket){      # next alphabetically
@@ -4387,6 +4412,16 @@ sub key_down
          dialog_x(dialog_x()+1);
       }
       return xy(input_x(),input_y());
+   } elsif(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
+      my $input = input();
+      if(@state{line_pos} + @state{size_y} - 1 > $#{$$input[-1]}) {
+         key_end(@_);
+      } else {
+         @state{line_pos} += @state{size_y} - 1;
+         update_input_offset();
+         draw_input($conn);
+      }
+      return;
    } elsif((my $active = get_active($w))) {                # try most active
       return switch_world($conn,$active);
    } else {
@@ -5237,8 +5272,12 @@ sub dialog_init
       @state{dialog}->{$count} = {};
       @state{dialog}->{$count}->{type} = $type;
       @state{dialog}->{$count}->{name} = $name;
-      @state{dialog}->{$count}->{input} = [[]];
       @state{dialog}->{$count}->{line_pos} = 0;
+      if($type =~ /^cycle\.([^\.]+)/) {
+         @state{dialog}->{$count}->{input} = [[ split(//,$1) ]];
+      } else {
+         @state{dialog}->{$count}->{input} = [[ ]];
+      }
    }
 
    @state{dialog}->{max} = $max;
@@ -5436,7 +5475,8 @@ sub editor_delete
       delete @address{dialog_value(1)};
       echo($conn,"%% World %s has been deleted",dialog_value(1));
       dialog_cancel();
-      save($conn,dialog_value(1));
+      delete @address{dialog_value(1)};
+      save_differential();
    } else {
       echo($conn,"%% Unable to find and delete world '%s'",dialog_value(1));
    }
@@ -5450,12 +5490,14 @@ sub set_save
    my %lookup;
 
    for my $key (keys %var) {
-      @lookup{@var{$key}->{name}} = $key if(defined @var{$key}->{name});
+      @lookup{@var{$key}->{setup}} = $key if(defined @var{$key}->{setup});
+      @lookup{@var{$key}->{web}} = $key if(defined @var{$key}->{web});
    }
 
    for my $i (1 .. dialog_lines()) {
        if(@state{"p_" . @lookup{dialog_name($i)}} ne dialog_value($i)) {
-          save($conn,"p_" . @lookup{dialog_name($i)},dialog_value($i));
+          @state{"p_" . @lookup{dialog_name($i)}} = dialog_value($i);
+          save_differential();
           $count++;
        }
    }
@@ -5947,7 +5989,7 @@ sub vencode
       return echo($conn,"%% Encoding '%s' not supported.",$value);
    } else {
       @address{world($conn)}->{decode} = $enc;
-      save($conn,world($conn));
+      save_differential();
    }
 }
 
@@ -5958,28 +6000,34 @@ sub vencode
 # pfun  = function to run to handle variable (run post setting)
 sub var_init
 {
-   delete @key{keys %var};
+   for my $key (keys %var) {
+      delete @var{$key};
+   }
   
-   @var{cert}      = { name=>"SSL Cert File",type=>"text",null=>1,fn=>1,
+   @var{cert}      = { web=>"SSL Cert File",type=>"text",null=>1,fn=>1,
                        set=>1                                              };
-   @var{key}       = { name=>"SSL Key File",type=>"text",null=>1,fn=>1,
+   @var{key}       = { web=>"SSL Key File",type=>"text",null=>1,fn=>1,
                        set=>1                                              };
-   @var{input_size}= { name=>"Input Size",type=>"num",
+   @var{input_size}= { setup=>"Input Size",type=>"num",
                        pfun=>sub { draw_screen(@_);}                       };
-   @var{port}      = { name=>"Web Port",type=>"num",set=>1                 };
+   @var{port}      = { web=>"Port",type=>"num",set=>1                      };
    @var{encode}    = { fun => sub { vencode(@_); }                         };
    @var{debug}     = { set=>1                                              };
-   @var{password}  = { name=>"Web Password",type=>"word",set=>1            };
-   @var{allow}     = { name=>"Web Allow List",type=>"text",set=>1, null=>1 };
-   @var{watchdog}  = { set=>1, chk => "on|off|0|1"                         };
-   @var{theme}     = { name=>"Web Theme",type=>"word",set=>1, 
+   @var{password}  = { web=>"Password",type=>"word",set=>1                 };
+   @var{allow}     = { web=>"Allow List",type=>"text",set=>1, null=>1      };
+   @var{watchdog}  = { setup=>"WatchDog Matching",type=>"check",set=>1,
+                       chk => "on|off|0|1"                                 };
+   @var{theme}     = { web=>"Theme",type=>"word",set=>1, 
                        chk => "light|dark", 
                        fun => sub { ws_all("d","theme " . @_[1]); }        };
    @var{keepalive} = { set=>1, fun => sub {  update_keepalive(@_) }        };
    @var{overlap}   = { set=>1, chk => "\\d+"                               },
-   @var{sync}      = { set=>1,chk => "on|off|0|1",
+   @var{sync}      = { setup=>"Sync Environments",type=>"check",set=>1,
+                       chk => "on|off|0|1",
                        fun => sub { switch_world(@_,@state{world}); }      };
-   @var{delgag}    = { chk => "on|off|0|1", fun => sub { set_delgag(@_);}  };
+   @var{updown}    = { setup=>"Up/Down Keys",
+                       type=>"cycle.Cycle Worlds.Cursor Movement",
+                       chk => "Cycle Worlds|Cursor Movement", set=>1        };
 }
 
 sub update_keepalive
@@ -5987,18 +6035,8 @@ sub update_keepalive
    my ($conn,$val) = @_;
 
    @address{world($conn)}->{keepalive} = $val;
-   save($conn,world($conn),1);
+   save_differential();
    echo($conn,"% Keepalive for %s set to: %s",world($conn),$val);
-}
-
-sub set_delgag
-{
-   my ($conn,$val) = @_;
-
-   @address{world($conn)}->{delgag} = TRUE($val);
-   save($conn,world($conn),1);
-   echo($conn,"%% Deleting of gagged text will now be %s.",
-      TRUE($val) ? "deleted" : "kept");
 }
 
 sub cmd_set
@@ -6036,23 +6074,29 @@ my ($conn,$txt) = @_;
    my $enc;
 
    if($txt eq "") {
-      my @fields;
-      for my $i (sort {@var{$a}->{name} cmp @var{$b}->{name}} keys %var) {
-         if(defined @var{$i}->{name}) {
-            if($i eq "theme") {
-               push(@fields,"@var{$i}->{name}:cycle.light.dark");
-            } else {
-               push(@fields,"@var{$i}->{name}:@var{$i}->{type}");
-            }
+      my (@fields,@values);
+      for my $i (sort {@var{$b}->{type}.@var{$b}->{setup} cmp
+                       @var{$a}->{type}.@var{$a}->{setup}} keys %var) {
+         if(defined @var{$i}->{setup}) {
+            push(@fields,"@var{$i}->{setup}:@var{$i}->{type}");
          }
       }
       dialog_init($conn,
                   join(",",@fields),
                   ["Cancel:dialog_cancel","Save:set_save"],0);
       my $pos = 1;
-      for my $i (sort {@var{$a}->{name} cmp @var{$b}->{name}} keys %var) {
-         if(defined @var{$i}->{name}) {
-            dialog_populate($pos,@state{"p_$i"});
+      for my $i (sort {@var{$b}->{type}.@var{$b}->{setup} cmp
+                       @var{$a}->{type}.@var{$a}->{setup}} keys %var) {
+         if(defined @var{$i}->{setup}) {
+            if(in($i,"watchdog","sync")) {
+               if(@state{"p_$1"} eq "on") {
+                  dialog_populate($pos,"x");
+               } else {
+                  dialog_populate($pos," ");
+               }
+            } elsif(defined @state{"p_$i"} && trim(@state{"p_$i"}) ne "") {
+               dialog_populate($pos,@state{"p_$i"});
+            }
             $pos++;
          }
       }
@@ -6089,7 +6133,8 @@ my ($conn,$txt) = @_;
          }
          
          if(defined @var{$name}->{set} && @var{$name}->{set} == 1) {
-            save($conn,"p_" . $name,trim($val));
+            @state{"p_$name"} = trim($val);
+            save_differential();
             if(length trim($val)) {
                if(@state{state} ne "init") {
                   echo($conn,
@@ -6154,7 +6199,8 @@ sub cmd_common
    } elsif($txt =~ /^\s*-\s*/) {
       if(defined @list{trim($')}) {
          delete @list{trim{$'}};
-         save($conn,"p_common",join(":",keys %list));
+         @state{p_common} = join(":",keys %list);
+         save_differential();
       } else {
          echo($conn,"%% Worlds '%s' not defined in /common",trim($'));
       }
@@ -6165,7 +6211,8 @@ sub cmd_common
          echo($conn,"%% World name may not contain \":\"");
       } else {
          @list{trim($txt)} = 1;
-         save($conn,"p_common",join(":",keys %list));
+         @state{p_common} =  join(":",keys %list);
+         save_differential();
       }
    }
 }
@@ -6306,9 +6353,17 @@ sub cmd_more
    my ($conn,$txt) = @_;
 
    if($txt =~ /^\s*(1|on)\s*$/) {
-      save($conn,"p_more",1);
+      if(@state{state} eq "init") {
+         echo($conn,"%% \"More\" paging enabled.  Use TAB to scroll.");
+      }
+      @state{p_more} = 1;
+      save_differential();
    } elsif($txt =~ /^\s*(0|off)\s*$/) {
-      save($conn,"p_more",0);
+      if(@state{state} eq "init") {
+         echo($conn,"%% \"More\" paging disabled.");
+      }
+      @state{p_more} = 0;
+      save_differential();
    } elsif($txt =~ /^\s*$/) {
       echo($conn,"%% more is %s",(@state{p_more} eq 1) ? "on" : "off");
    } else {
@@ -6519,55 +6574,107 @@ sub cmd_editor
    @address{@field[0]}->{ssl} = 1 if($$opt{s});
    @address{@field[0]}->{log} = 1 if($$opt{l});
 
-   save($conn,lc(@field[0]));
+   save_differential();
 }
 
-#
-# save
-#    Save muddlers address and settings to .muddler
-#
-sub save
+sub chksum
 {
-   my ($conn,$item,$value,$force) = @_;
-   my $append = 0;
-   my $file;
+   if(module_enabled("Digest::MD5")) {
+      my $chk = Digest::MD5->new;
+      $chk->add(shift);
+      return $chk->hexdigest;
+   } else {
+      return unpack("%32W*",shift) % 65535;
+   }
+}
 
-   # redefining a world will cause a full dump of the file
-#   $append = 1 if(!defined @address{$item});
+sub save_entry
+{
+   my ($fmt,@args) = @_;
+   my $fd;
 
-   open($file,($append ? ">>" : ">") . " @ENV{HOME}/.muddler") ||
-      return echo($conn,"%% Unable to open @ENV{HOME}/.muddler for writing.");
+   if(!@state{save_append}
+      || !defined @state{save_fd}
+      || ref(@state{save_fd}) ne "GLOB") {
+      open($fd,((@state{save_append}) ? ">" : "") . "> @ENV{HOME}/.muddler") ||
+         e("Unable to open .muddler for writing");
+      @state{save_fd} = $fd;
+   } else {
+      $fd = @state{save_fd};
+   }
+   @state{save_append} = 1 if @state{save_append} == 0;
 
+   # optionally add return at end of the line
+   my $txt = sprintf("$fmt",@args);
+   $txt .= "\n" if($txt !~ /\n$/);
+
+   printf($fd "%s",$txt);
+   loggit("save: %s",$txt);
+}
+
+sub save_differential
+{
+   my $first = 0;
+   my (%world_new, %state_new);
+
+   if(!defined @state{world_prev}) {
+      ($first,@state{world_prev},@state{state_prev}) = (1,{},{});
+   }
+
+   if(1 || time() - @state{save_differential_first_time} > 86400) {
+      loggit("Doing full dump");
+      @state{save_differential_first_time} = time();
+      @state{state_prev} = {};
+      @state{world_prev} = {};
+      @state{save_append} = 0;
+   } else {
+      loggit("Partial dump");
+      @state{save_append} = 1;
+   }
+ 
+   # save differences between world file
    for my $world (keys %address) {
-      if(!$append || ($append && $world eq $item)) {
-         printf($file "%s {\n",$world);
-         printf($file "   type:address\n",$world);
-         for my $key (keys %{@address{$world}}) {
-            printf($file "   %s:%s\n",$key,single(@address{$world}->{$key}));
+      my $data = "$world {\n   type:address\n";
+      for my $key (keys %{@address{$world}}) {
+         $data .= "   $key:" . single(@address{$world}->{$key}) . "\n";
+      }
+      $data .= "}\n";
+      my $chk = chksum($data);
+      if($chk ne @state{world_prev}->{$world}) {
+         save_entry($data) if(!$first);
+         @world_new{$world} = $chk;
+      }
+      @world_new{$world} = $chk;
+   }
+
+   # remove world entry if it was deleted
+   for my $world (keys %{@state{world_prev}}) {
+      if(!$first && !defined @address{$world}) {
+         save_entry("world_delete:$world");
+      }
+   }
+
+    
+   # save state differences
+   for my $key (grep {/^p_/} keys %state) {
+      my $chk = chksum(single(@state{$key}));
+      if($chk ne @state{state_prev}->{$key}) {
+         if(!$first) {
+            save_entry("state:%s:%s",$key,single(@state{$key}));
          }
-         printf($file "}\n");
+      }
+      @state_new{$key} = $chk;
+   }
+
+   # remove state entry as it was deleted
+   for my $key (keys %{@state{state_prev}}) {
+      if(!$first && !defined @state{$key}) {
+         save_entry("state_delete:%s",$key);
       }
    }
 
-
-   if($item ne undef) {
-      if($value eq undef) {
-         delete @state{$item};
-      } else {
-         @state{$item} = $value;
-      }
-   }
-
-   for my $key (keys %state) {
-      if(!$append && $key =~ /^p_/) {
-         printf($file "state:%s:%s\n",$key,@state{$key});
-      } elsif($append && $key eq $item) {
-         printf($file "state:%s:%s\n",$key,trim($value));
-      }
-   }
-   close($file);
-
-#   echo($conn,"%% %s worlds written to @ENV{HOME}/.muddler",scalar keys %address) if(!$append);
+   @state{state_prev} = \%state_new;                # store previous state
+   @state{world_prev} = \%world_new;                # store previous world
 }
 
 sub load
@@ -7125,12 +7232,30 @@ sub cmd_web
    } elsif(!module_enabled("Net::WebSocket::Server")) {
       return echo($conn,"%% Web/Websocket disabled due to missing " .
          "Net::WebSocket::Server module");
-   } elsif($status =~ /^\s*$/) {
-      echo($conn,"Web Interface: %s",@state{web} ? "on" : "off");
-      echo($conn,"   Protocol:      %s",use_secure() ? "https [secure]" :
-          "http [non-secure]");
-      echo($conn,"   Cert file:     %s",nvl(@state{p_cert},"Not defined"));
-      echo($conn,"   Key file:      %s",nvl(@state{p_key},"Not defined"));
+   } elsif($status eq "") {
+      my @fields;
+      for my $i (sort {@var{$a}->{web} cmp @var{$b}->{web}} keys %var) {
+         if(defined @var{$i}->{web}) {
+            push(@fields,"@var{$i}->{web}:@var{$i}->{type}");
+         }
+      }
+      dialog_init($conn,
+                  join(",",@fields),
+                  ["Cancel:dialog_cancel","Save:set_save"],0);
+      my $pos = 1;
+      for my $i (sort {@var{$a}->{web} cmp @var{$b}->{web}} keys %var) {
+         if(defined @var{$i}->{web}) {
+            dialog_populate($pos,@state{"p_$i"});
+            $pos++;
+         }
+      }
+      return draw_screen($conn);
+#   } elsif($status =~ /^\s*$/) {
+#      echo($conn,"Web Interface: %s",@state{web} ? "on" : "off");
+#      echo($conn,"   Protocol:      %s",use_secure() ? "https [secure]" :
+#          "http [non-secure]");
+#      echo($conn,"   Cert file:     %s",nvl(@state{p_cert},"Not defined"));
+#      echo($conn,"   Key file:      %s",nvl(@state{p_key},"Not defined"));
    } elsif($status =~ /^\s*(key|cert)\s*=(.*)$/i) {
       if(! length trim($2)) {
          echo($conn,"%% Certificate will no longer be used.");
@@ -7139,7 +7264,8 @@ sub cmd_web
       } else {
          echo($conn,"%% %s file is now: %s",lc($1),trim($2));
       }
-      save($conn,"p_" . lc($1),trim($2));
+      @state{"p_" . lc($1)} = trim($2);
+      save_differential();
    } elsif($status =~ /^\s*on\s*$/i) {
       if(@state{web} == 1) {
          echo($conn,
@@ -7827,8 +7953,6 @@ sub get_checksums
    my $ln = 1;
 #
 
-   return if(!module_enabled("Digest::MD5"));
-      
    open($file,$0) ||
      return echo(@state{world},
                  "%% Unable to read source file, /reload disabled"
@@ -7841,10 +7965,10 @@ sub get_checksums
          @state{version} .= $';
       } elsif($pos eq undef && $line =~ /^sub\s+([^ \n\r]+)\s*$/) {
          $pos = $1;
-         @data{$pos} = { chk => Digest::MD5->new };
-         @data{$pos}->{chk}->add($line);
-         @data{$pos}->{src} .= qq[#line 0 "$pos"\n] . $line;
-         @data{$pos}->{line} = $ln;
+         @data{$pos} = {
+            line => $ln,
+            src  => qq[#line 0 "$pos"\n] . $line,
+         };
          if($pos =~ /^(key|cmd)_/) {
             @state{help} = {} if not defined @state{help};
             @state{summary} = {} if not defined @state{summary};
@@ -7854,8 +7978,7 @@ sub get_checksums
          }
       } elsif($pos ne undef && $line =~ /^}\s*$/) {
          @data{$pos}->{src} .= $line;
-         @data{$pos}->{chk}->add($line);
-         @data{$pos}->{chk} = @data{$pos}->{chk}->hexdigest;
+         @data{$pos}->{chk} = chksum(@data{$pos}->{src});
          @data{$pos}->{done} = 1;
          if($pos =~ /cmd_/) {
             @state{help}->{$pos} =~ s/\n$//;
@@ -7874,7 +7997,6 @@ sub get_checksums
          }
 
          @data{$pos}->{src} .= $line;
-         @data{$pos}->{chk}->add($line);
       }
       $ln++;
    }
@@ -7904,12 +8026,6 @@ sub reload_code
    my $old = @state{chksum};
    $old = {} if $old eq undef;
 
-   if(!module_enabled("Digest::MD5")) {
-      return echo($conn,
-                  "%% Missing Digest::MD5 module, reloading code disabled"
-                 );
-   }
-
    for my $key (keys %$new) {
       if((@state{state} eq "init" || 
          (!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}))) {
@@ -7936,6 +8052,7 @@ sub reload_code
    encoding_init();
    load_modules() if(!$nomodules);
    callback_init();
+   save_differential();
 
 
    if($count == 0) {
@@ -8152,6 +8269,7 @@ sub muddler_init
 
    @state{chksum} = get_checksums();
    load(@state{world},1);
+   save_differential(); # prime the pump, won't actually save
    loggit("### START ###");
 
    # initialize websocket client
@@ -8336,7 +8454,8 @@ for my $i (0 .. $#ARGV) {
    } elsif(@ARGV[$i] =~ /^--port=(\d+)$/) {
       @state{port} = $1;
    } elsif(@ARGV[$i] =~ /^--(pass|password)=(.*)$/) {
-      save(@state{muddler},"p_password",$2);
+      @state{p_password} = $2;
+      save_differential();
    } elsif(@ARGV[$i] =~ /^--xy=(\d+),(\d+)$/) {
       (@state{size_x},@state{size_y}) = ($1,$2);
    } elsif(@ARGV[$i] =~ /^--window=/) {
