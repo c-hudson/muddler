@@ -6375,7 +6375,8 @@ sub cmd_editor
                dialog_populate(6,"@@ idle");
             }
             if(defined @address{@field[0]}->{decode}) {
-               dialog_populate(7,@address{@field[0]}->{decode});
+               dialog_populate(7,
+                   encoding_translate(@address{@field[0]}->{decode}));
             }
             if(defined @address{@field[0]}->{ssl} && 
                @address{@field[0]}->{ssl} == 1) {
