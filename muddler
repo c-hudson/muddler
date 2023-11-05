@@ -204,11 +204,12 @@ sub command_init
    @command{ps}            = sub { return cmd_ps(@_);                      };
    @command{kill}          = sub { return cmd_kill(@_);                    };
    @command{def}           = sub { return cmd_def(@_);                     };
+   @command{undef}         = sub { return cmd_undef(@_);                   };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
    @command{listworlds}    = sub { return cmd_listworlds(@_);              };
    @command{editor}        = sub { return cmd_editor(@_);                  };
    @command{add}           = "edit";
-   @command{addworld}      = sub { return cmd_edit(@_);                    };
+   @command{addworld}      = sub { return cmd_editor(@_);                  };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
@@ -668,84 +669,6 @@ sub ansi_remove
 
 #----------------------------------------------------------------------------#
 #                                                                            #
-#  pmc support                                                               #
-#                                                                            #
-#----------------------------------------------------------------------------#
-
-# sub TELQUAL_IS   { 0; }
-# sub TELQUAL_SEND { 1; }
-# sub TELOPT_MXP   { 91; }
-# sub TELOPT_MSP   { 90; }
-# 
-# sub negotiation {
-#     my ($conn, $option, $is_remote, $is_enabled, $was_enabled,
-#         $buf_position)= @_;
-#     $is_remote||=0;
-#     $is_enabled||=0;
-#     $was_enabled||=0;
-#     my ($noecho, $linemode);
-# 
-# #    debug("negotiation: $option rem:$is_remote is_en:$is_enabled ".
-# #          "was_en:$was_enabled");
-# 
-#     if ($option==TELOPT_TTYPE) {
-#         send_iac($conn,chr(TELNET_SB).
-#                  chr(TELOPT_TTYPE).
-#                  chr(TELQUAL_IS).
-#                  $ENV{TERM}.
-#                  chr(TELNET_IAC).
-#                  chr(TELNET_SE)
-#                 );
-#     } elsif($option == TELOPT_NAWS) {
-#         send_naws($conn,1);
-#     } elsif ($option==TELOPT_ECHO) {
-#         if ($is_enabled) {
-#             $noecho=1;
-#         } else {
-#             $noecho=0;
-#         }
-#         switch_echo();
-#     } elsif ($option==TELOPT_SGA) {
-#         if ($linemode && $is_enabled) {
-#             debug('char-mode');
-#             ReadMode(4);
-#         } elsif (!$is_enabled && !$linemode) {
-#             debug('line-mode');
-#             ReadMode(0);
-#         }
-#         $linemode= !$is_enabled;
-#     } elsif ($option==TELOPT_MXP || $option==TELOPT_MSP) {
-#     } else {
-#     }
-# }
-# 
-# sub send_iac {
-#     my ($conn,$neg) = @_;
-# 
-#     syswrite $conn, chr(TELNET_IAC).$neg, length($neg)+1, 0;
-# }
-# 
-# sub check_mcp_naws {
-#    return 0;
-# }
-# 
-# sub send_naws {
-#     my ($conn,$from_telopt)= @_;
-# 
-# #    my ($height,$width)= $term->get_screen_size();
-#     my ($height,$width) = (24,80);
-#     if (check_mcp_naws() && !$from_telopt) {
-#         mcp_send('dns-com-vmoo-client-screensize',
-#                 jols => $width, rows => $height);
-#     } else {
-#         send_iac($conn,chr(TELNET_SB).chr(TELOPT_NAWS).chr($width/256).
-#                  chr($width%256).chr($height/256).chr($height%256).
-#                  chr(TELNET_IAC).chr(TELNET_SE));
-#     }
-# }
-
-#----------------------------------------------------------------------------#
-#                                                                            #
 #  tcp code                                                                  #
 #                                                                            #
 #----------------------------------------------------------------------------#
@@ -770,59 +693,6 @@ sub ansi_remove
 #       require Errno;
 #       import  Errno qw(EWOULDBLOCK EINPROGRESS);
 #    }
-# }
-
-# sub socket_connect
-# {
-#    my ($world,$host,$port,$ssl) = ( lc(shift), @_ );
-# 
-#    if(defined @socket{$world} && @socket{$world}->{sock}) {
-#       return echo("%% Already connected to %s",$world);
-#    }
-# 
-#    @history{$world} = [];
-#    @pending{$world} = [] if !defined @pending{$world};
-#    @socket{$world} = { name      => $world,
-#                        host      => $host,
-#                        port      => $port,
-#                        more      => 0,
-#                        more_last => 0,
-#                        last_read => -1,
-#                      };
-#    @state{world} = $world;
-#    @socket{$world}->{pos} = scalar keys %socket;
-# 
-#    my $s = new Pmc::Telnet( $host, $port, $ssl, Timeout => 10);
-#    loggit("name=$world,host=$host,port=$port");
-# 
-#    if(!$s) {
-#       draw_bar();
-#       return echo("%% Connection Failed.");
-#    }
-# 
-#    $s->option_callback(\&negotiation);
-#    $s->option_accept( Do   => TELOPT_SGA,
-#                       Do   => TELOPT_TTYPE,
-#                       Do   => TELOPT_NAWS,
-#                       Do   => TELOPT_ECHO,
-#                       Dont => TELOPT_MXP,
-#                       Dont => TELOPT_MSP,
-#                       Wont => TELOPT_MXP,
-#                       Wont => TELOPT_MSP,
-#                       Will => TELOPT_SGA,
-#                       Will => TELOPT_TTYPE,
-#                       Will => TELOPT_NAWS,
-#                       Will => TELOPT_ECHO);
-#    @socket{$world}->{sock} = $s;
-#    echo("%% Connection to %s succeeded.",$world);
-#    if(defined @address{$world}->{user} && defined @address{$world}->{pass}) {
-#       out($world,
-#            "connect %s %s\n",
-#            @address{$world}->{user},
-#            @address{$world}->{pass}
-#           );
-#    }
-#    draw_bar();
 # }
 
 sub socket_connect
@@ -1018,7 +888,7 @@ sub wc_error
 {
    my ($client,$buf) = @_;
 
-   loggit("WC_ERROR: '%s'\n",$buf);
+   LOGGIT("WC_ERROR: '%s'\n",$buf);
 }
 
 sub wc_out
@@ -1026,7 +896,6 @@ sub wc_out
    my ($fmt,@args) = @_;
 
    return if(!defined $client);
-#   loggit("SEND: 't$fmt'\n",@args);
    $client->write(sprintf("t$fmt",@args));
 }
 
@@ -1035,7 +904,6 @@ sub wc_responce
    my ($fmt,@args) = @_;
 
    return if(!defined $client);
-#   loggit("SEND: 't$fmt'\n",@args);
    $client->write(sprintf("r$fmt",@args));
 }
 
@@ -1045,7 +913,6 @@ sub wc_read
 
    my $tmp=$buf;
    $tmp =~ s/\r|\n//g;
-#   loggit("#> %s\n",$tmp);
    if($buf =~ /^m\r\n/) {
       printf("%s\n",$');
    } elsif($buf =~ /^d\r\npassword$/) {
@@ -1071,7 +938,7 @@ sub wc_read
       @state{remote_bar} =~ s/ /_/g;
       draw_bar();
    } else {
-      loggit("Ignored: '%s'\n",$buf);
+      LOGGIT("Ignored: '%s'\n",$buf);
    }
 }
 
@@ -1123,36 +990,26 @@ sub telnet_ch_init
       sub {
          my ($world,$opt, $mode) = @_;
  
-#         loggit("telnet[$world]: %s %s",(@state{ord($mode)} || ord($mode)),
-#             ($options[ord($opt)] || ord($opt)));
          my $wopt = $options[ord($opt)] || ord($opt);
          if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
              ($options[ord($opt)] || ord($opt)))) {
             if ($mode eq @state{DO})   { 
-#                loggit("telnet_send: IAC WILL $wopt");
                 out_noret($world,@state{IAC}.@state{WILL}.$opt);
             } elsif ($mode eq @state{DONT}) {
-#                loggit("telnet_send: IAC WONT $wopt");
                 out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
-#                loggit("telnet_send: IAC DONT $wopt");
                 out_noret($world,@state{IAC}.@state{DONT}.$opt);
             } elsif ($mode eq @state{WILL}) {
-#                loggit("telnet_send: IAC DO $wopt");
                 out_noret($world,@state{IAC}.@state{DO}  .$opt);
             }
          } else {
             if ($mode eq @state{DONT}) {
-#                loggit("telnet_send: IAC WILL $wopt");
                out_noret($world,@state{IAC}.@state{WILL}.$opt);
             } elsif ($mode eq @state{DO}) {
-#                loggit("telnet_send: IAC WONT $wopt");
                out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WILL}) {
-#                loggit("telnet_send: IAC WILL $wopt");
                out_noret($world,@state{IAC}.@state{DONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
-#                loggit("telnet_send: IAC WONT $wopt");
                out_noret($world,@state{IAC}.@state{DO}  .$opt);
             }
          }
@@ -1224,9 +1081,18 @@ sub socket_disconnect
    my $s = shift;
 
    $ws_server->{select_readable}->remove( $s );
+
    if(defined @socket_lookup{$s}) {
        delete @socket{@socket_lookup{$s}}->{sock};
        delete @socket_lookup{$s};
+   } else {
+      for my $key (keys %socket) {
+         if(defined @socket{$key}->{sock} &&
+            @socket{$key}->{sock} eq $s) {
+            delete @socket{$key}->{sock};
+            delete @socket_lookup{$key}
+         }
+      }
    }
 }
 
@@ -1309,7 +1175,7 @@ sub ws_init
          echo($conn,"%% http server [Port:@state{p_port}] start failed: $!");
          return 0;
       }
-      $ws_listen = IO::Socket::SSL->new(Listen             => 5,
+      $ws_listen = IO::Socket::SSL->new(Listen             => 25,
                                         LocalPort          => @state{p_port}+1,
                                         Proto              => 'tcp',
                                         SSL_startHandshake => 0,
@@ -1376,9 +1242,6 @@ sub ws_disconnect
    my $conn = shift;
    my $sock;
 
-#   loggit("ws_disconnect: '%s' [%s] %s\n",$conn,small(@ws{$conn}),code());
-#   $conn->disconnect;
-#   loggit(" --- [ foo ] ---");
    eval {             # don't know how to test if $conn{sock} is valid
       $sock = $conn->{sock};
       $ws_server->{select_readable}->remove( $sock );
@@ -1437,8 +1300,6 @@ sub ws_echo
    # probably be removed once this is more stable. With that in mind,
    # currently crash will be treated as a disconnect.
 
-   #loggit("ws_echo: $type, $msg\n");
-
    if(defined @state{reverse_window} &&
       defined @state{reverse_window}->{$ws} &&
       $type ne "m") {
@@ -1446,12 +1307,10 @@ sub ws_echo
    }
    $msg =~ s/[\r\n]+$//;
    eval {
-#      $ws->send('',$type . encode_utf8($msg) . "\r\n");
-#      loggit("send[$type,$ws]: '%s' [%s]\n",$msg,code());
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
    if($@) {
-      loggit("FATALs: $@");
+      LOGGIT("FATALs: $@");
       ws_disconnect($ws);
    }
 }
@@ -1539,7 +1398,7 @@ sub io
                  SSL_server    => 1,
                  SSL_reuse_ctx => $ctx,
              ) or do {
-                loggit("ssl handshake failed: $!,$SSL_ERROR");
+                LOGGIT("ssl handshake failed: $!,$SSL_ERROR");
                 $s->close;
                 return;
              };
@@ -1577,7 +1436,7 @@ sub io
                  SSL_server    => 1,
                  SSL_reuse_ctx => $ctx,
              ) or do {
-                loggit("ssl handshake failed: $!,$SSL_ERROR");
+                LOGGIT("ssl handshake failed: $!,$SSL_ERROR");
                 $s->close;
                 return;
              };
@@ -1602,9 +1461,9 @@ sub io
             $client->read($buf);
          }
       } else {
-         loggit("filehandle $sock became readable, but no handler took " .
+         LOGGIT("filehandle $sock became readable, but no handler took " .
               "responsibility for it; removing it");
-         loggit("listener: $ws_listen");
+         LOGGIT("listener: $ws_listen");
          $ws_server->{select_readable}->remove( $sock );
       }
    }
@@ -1858,7 +1717,6 @@ sub ws_process
    $ssl = $ssl ? ',SSL' : '';
 
    my $input = substr($msg,1);
-#   loggit("%s[%s]> %s\n",$conn,(defined @ws{$conn}) ? 1 : 0,$msg);
    return if !defined @ws{$conn};
 
    # if unathorized check password before allowing any input. Websize
@@ -1879,7 +1737,6 @@ sub ws_process
          ws_disconnect($conn);
       }
    } elsif(do_cmd(world($conn),$input,$conn)) {
-#      loggit("do_cmd: '%s'\n",$input);
       # do_cmd runs the command.
    } elsif(no_world()) {
      # do nothing
@@ -2164,8 +2021,6 @@ sub echo_console
    }
 
    printf("\n%s",$msg);
-#   loggit("%s [%s]",$msg,code("smallest"));
-#   printf("\n%s",encode_utf8($msg));
 
    if(@state{optimize_output} == 0) {
       update_scroll_region("input");
@@ -2360,9 +2215,18 @@ sub gagged
 
             if($match) {
                $$txt{gagged} = 1;
+               if(defined @def{$key}->{hits}) {
+                  @def{$key}->{hits}--;
+                  delete @def{$key} if(@def{$key}->{hits} <= 0);
+               }
                return 1;
             }
          }
+      }
+      if($key =~ /^w_\d+_\d+$/ &&
+         (!defined @def{$key}->{created} ||
+         time() - @def{$key}->{created} > 300)) {
+         delete @def{$key};
       }
    }
 
@@ -2565,7 +2429,6 @@ sub min_visible
 
    # console is on world, start with that.
    $min = output_end() if($world eq @state{world}); 
-#   loggit(" #### MIN: $world -> %s == %s\n",@state{world},$min);
 
    for my $key (keys %ws) {                      # now try websocket clients
       if(ref(@ws{$key}) ne "HASH") {
@@ -2578,7 +2441,6 @@ sub min_visible
       }
    }
 
-#   loggit(" #### MIN: return: %s\n",(defined $min) ? $min : output_end());
    if($min < output_end() || $min eq undef) {
       return output_end();
    } else {
@@ -2702,11 +2564,12 @@ sub release_some_pending
    my ($conn,$w) = @_;
    my (@out, @web, $result, $start,$end, @orig);
 
-   @pending{$w} = [] if !defined @pending{$w};
-   if($#{@pending{$w}} == -1 || 
-      in_more($w) || 
-      in_hist($w) || 
-      !world_visible($w)) {
+   if(!defined @socket{$w}
+      || !defined @pending{$w}
+      || $#{@pending{$w}} == -1
+      || in_more($w) 
+      || in_hist($w) 
+      || !world_visible($w)) {
        return 0;
    }
 
@@ -2724,7 +2587,13 @@ sub release_some_pending
          $end = undef;
       } else {
          push(@out,txt($line));
-         @socket{$w}->{more_cnt}++;
+         if(defined @socket{$w}) {
+            if(defined @socket{$w}->{more_cnt}) {
+               @socket{$w}->{more_cnt}++;
+            } else {
+               @socket{$w}->{more_cnt} = 1;
+            }
+         }
          $end = $line->{end};
       }
    }
@@ -2738,10 +2607,12 @@ sub release_some_pending
       delete @state{activity}->{$w} if defined @state{activity}->{$w};
    }
 
-#   if($#orig != -1) {
-      echo_world($w,join("\n",@out),join("\n",@orig));
-      draw_bar();
-#   }
+   # no output generated and pending is empty. A call to release pending
+   # must have been called with a previously finished line in it. Nothing
+   # needs to be done.
+   return 0 if($#out == -1 && $#{@pending{$w}});
+
+   echo_world($w,join("\n",@out),join("\n",@orig));
    return $#out + 1;
 }
 
@@ -2836,7 +2707,6 @@ sub output_end
 sub wrap_garbage_collect
 {
    my $count = 0;
-#   loggit("wgc: called\n");
    @state{cache} = {} if !defined @state{cache};
    my $cache = @state{cache};
    delete $$cache{del}; 
@@ -2845,12 +2715,6 @@ sub wrap_garbage_collect
          for my $y (keys %{$$cache{$w}->{$id}}) {
             if(time() - $$cache{$w}->{$id}->{$y}->{ts} > 900) {
                delete @$cache{$w}->{$id}->{$y};
-#            } elsif($w eq "del") {
-#               if($count++ < 10) {
-#                  for my $line ($$cache{$w}->{$id}->{$y}->{txt}) {
-#                     loggit("$w: %s\n",join('',$line));
-#                  }
-#               }
             }
          }
          if(scalar keys %{$$cache{$w}->{$id}} == 0) {
@@ -2858,7 +2722,6 @@ sub wrap_garbage_collect
          }
       }
    }
-#   loggit("   wgc: end\n");
 }
 
 #
@@ -2928,7 +2791,6 @@ sub ansi_wrap
       push(@stat,{start => $start, end => $#{@$str{ch}} });
    }
    @state{ansi_stat} = @stat;
-#   loggit("%s",print_var(@result));
    return @result;
 }
 
@@ -3073,10 +2935,8 @@ sub get_output
 
    if(is_console($conn)) {
       ($x,$y) = (@state{size_x},@state{size_y});
-#      loggit("console[$conn]: $x,$y -> %s\n",code());
    } elsif(is_web($conn)) {
       ($x,$y) = (@ws{$conn}->{size_x},@ws{$conn}->{size_y});
-#      loggit("web[$conn]: $x,$y\n");
    }
 
    my $w = world($conn);                                  # save some typing
@@ -3168,7 +3028,6 @@ sub draw_output_world_new
    if(in_hist($w)) {                               # history starting point
       $pos = hist_pos($w);
       $off = hist_pos_partial($w);
-#      loggit("offset: $off");
    } else {                                            # or end of history
       # release_some_pending($conn,$w);
       $pos = $#{@history{$w}};
@@ -3185,9 +3044,6 @@ sub draw_output_world_new
             if($pos == $start && $off > 0) {               # handle offset
                $str = txt(ansi_substr($$h[$pos]->{txt},0,$off));
                $off = 0;
-#               loggit("   %s",$$h[$pos]->{txt});
-#               loggit("-------");
-#               loggit("   '%s'",$str);
             } else {
                $str = $$h[$pos]->{txt};
             }
@@ -3568,23 +3424,8 @@ sub key_dump
 
    my $input = input();
    for my $i (0 .. $#$input) {
-      loggit("$i : '%s'\n",join('',@{$$input[$i]}));
+      LOGGIT("$i : '%s'\n",join('',@{$$input[$i]}));
    }
-#   loggit("Dumping files");
-
-#    return loggit("%s\n",print_state(\%state));
-#   for my $key (keys %history) {
-#      open($file,"> history.$key.log") || return;
-#      binmode($file, ":utf8");
-#      eval {
-#      @address{$key}->{decode} = "utf8" if !defined @address{$key}->{decode};
-#      printf($file "%s\n",
-#             decode(@address{$key}->{decode},
-#             print_var(@history{$key}))
-#            );
-#      };
-#      close($file);
-#   }
 }
 
 
@@ -3837,8 +3678,6 @@ sub out
    if(defined @socket{$world} && defined @socket{$world}->{sock}) {
       my $msg = sprintf("$fmt",@args);
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
-
-#      loggit("$world> %s [%s]",$msg,code("smallest"));
 
       my $sock = @socket{$world}->{sock};
       printf($sock "%s",$msg);
@@ -4502,7 +4341,6 @@ sub switch_world
    }
 
 
-   # loggit("switch_world: %s",code("smallest"));
    if(TRUE(@state{p_sync})) {                     # world syncing turned on,
       draw_output($conn,0);                      # keep all worlds in sync
       for my $key (keys %ws) {
@@ -4602,7 +4440,6 @@ sub update_scroll_region
       printf("\033[%s;%sr",$start,$stop);
       @state{region} = "$start,$stop";
       @state{r} = $region;
-      # loggit("scroll_region: $region [@state{region}-%s-$force] %s","$start,$stop",code("shortest"));
    }
 }
 
@@ -4660,7 +4497,7 @@ sub key_process
 
    @state{key_last} = time();
    for my $ch (split(//,$input)) {
-#      loggit("ch: '%s' -> '%s'",ord($ch),$ch);
+#      LOGGIT("ch: '%s' -> '%s'",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
          &{@key{ord($ch)}}(@state{world},$ch);
       } elsif(defined @state{multikey}) {
@@ -4717,10 +4554,8 @@ sub xy
 {
    my ($x,$y,$use_the_force_luke) = @_;
 
-#   loggit("xy[@state{line_pos},$x,$y,@state{r}]: %s",code("shortest")) if @state{r} eq "input";
    return if !console();
    return if defined @state{monitor_value};
-#   loggit("xy[$x,$y] %s",code("shortest"));
    printf("\033[%s;%sH",$x,$y);
 }
 
@@ -4818,13 +4653,9 @@ sub activity_count
 
    # exclude currently viewed worlds in counts;
 
-#   loggit("-------- start");
-   for my $world (keys %pending) {
-#      loggit("$world\n%s",print_var(@pending{$world})) if($#{@pending{$world}} >= 0);
-      
+   for my $world (grep {!/muddler/} keys %pending) {
       $cnt++ if($#{@pending{$world}} >= 0 && !world_visible($world));
    }
-#   loggit("-------- end");
    return $cnt;
 }
 
@@ -4888,9 +4719,9 @@ sub draw_bar
              "_" x (9 - ansi_length($more)),
              $more,
              name(),
-             "_" x (10 - length(name())),
+             "_" x (12 - length(name())),
              $act,
-             "_" x (@state{size_y} - length("$act$hr")-26),
+             "_" x (@state{size_y} - length("$act$hr")-28),
              $hr,
              $min
             );
@@ -4973,7 +4804,6 @@ sub ws_all
 sub input_start
 {
    if(in_dialog()) {
-#      loggit("Input_start: %s",dialog_lines());
       return @state{size_x} - (dialog_lines() + 2);
    } else {
       return @state{size_x} - input_size() + 1;
@@ -5008,7 +4838,7 @@ sub revert_console
 
 
 #
-# log
+# loggit
 #    Write a to the muddler.log file if debugging is enabled. Output to
 #    the screen probably won't be readable.
 #
@@ -5031,6 +4861,16 @@ sub loggit
    binmode($file, ":utf8");
    printf($file "%s",$msg);
    close($file);
+}
+
+# LOGGIT
+#    Alias for loggit function. The idea is that LOGGIT calls are calls
+#    that are logging commands that should always be kept in muddler and
+#    that loggit() calls are more temporary.
+#
+sub LOGGIT
+{
+   loggit(@_);
 }
 
 #
@@ -5247,6 +5087,9 @@ sub dialog_populate
    my ($pos,$txt) = @_;
 
    if(in_dialog()) { 
+       if(dialog_type($pos) eq "check") {
+          $txt = "x" if($txt ne " " && $txt ne "");
+       }
        @state{dialog}->{$pos}->{input} = [[ split(//,$txt) ]];
        @state{dialog}->{$pos}->{line_pos} = length($txt);
    }
@@ -5465,6 +5308,7 @@ sub editor_save
                   )
           );
 
+   cmd_set($conn,"keepalive=" . $$data{"KeepAlive CMD"});
    cmd_set($conn,"encode=" . encoding_detranslate($$data{Encoding}));
 }
 
@@ -5591,7 +5435,7 @@ sub cmd_request_info
    if(defined @address{$txt}) {
       ws_echo($conn,"r",mydump($txt,@address{$txt}));
    } else {
-      loggit("Invalid world. '$txt'");
+      LOGGIT("Invalid world. '$txt'");
    }
 }
 
@@ -5884,15 +5728,24 @@ sub cmd_dc
 #-# summary: Disconnect from the current world.
 #-# ------------------------------------------------------------------------
 #-# /dc
+#-# /dc [<world>]
 #-#
-#-#      Disconnect from the current world.
+#-#      Disconnect from from the current world or from a named world.
 #-#
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
-   if(defined @socket{$conn} && defined @socket{$conn}->{sock}) {
+   if($txt eq "" && defined @socket{$conn} && defined @socket{$conn}->{sock}) {
       history(world($conn),"% Connection closed to $conn.");
       socket_disconnect(@socket{$conn}->{sock});
+   } elsif(defined @address{lc(trim($txt))} && 
+           defined @socket{lc(trim($txt))}) {
+      if(defined @socket{lc(trim($txt))}->{sock}) {
+         history(world($conn),"% Connection closed to $conn.");
+         socket_disconnect(@socket{lc(trim($txt))}->{sock});
+       } else {
+         history(world($conn),"% Connection already closed.");
+       }
    } else {
       history(world($conn),"% Connection already closed.");
    }
@@ -6020,14 +5873,16 @@ sub var_init
    @var{theme}     = { web=>"Theme",type=>"word",set=>1, 
                        chk => "light|dark", 
                        fun => sub { ws_all("d","theme " . @_[1]); }        };
-   @var{keepalive} = { set=>1, fun => sub {  update_keepalive(@_) }        };
+   @var{keepalive} = { set=>1, null=>1,fun => sub { update_keepalive(@_)}  };
    @var{overlap}   = { set=>1, chk => "\\d+"                               },
-   @var{sync}      = { setup=>"Sync Environments",type=>"check",set=>1,
-                       chk => "on|off|0|1",
+   @var{sync}      = { setup=>"All windows show same world",type=>"check",
+                       set=>1, chk => "on|off|0|1",
                        fun => sub { switch_world(@_,@state{world}); }      };
    @var{updown}    = { setup=>"Up/Down Keys",
                        type=>"cycle.Cycle Worlds.Cursor Movement",
-                       chk => "Cycle Worlds|Cursor Movement", set=>1        };
+                       chk => "Cycle Worlds|Cursor Movement", set=>1       };
+   @var{more}      = { setup=>"Pause for More",type=>"check",set=>1        };
+                       
 }
 
 sub update_keepalive
@@ -6142,10 +5997,8 @@ my ($conn,$txt) = @_;
                        $name,trim($val)
                       );
                }
-            } else {
-               if(@state{state} ne "init") {
-                  echo($conn,"%% Variable %s has been deleted",$name);
-               }
+            } elsif(@state{state} ne "init") {
+               echo($conn,"%% Variable %s has been deleted.",$name);
             }
          }
 
@@ -6228,7 +6081,7 @@ sub cmd_log
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
 
-   loggit("log: $txt");
+   LOGGIT("log: $txt");
 }
 
 sub cmd_showset
@@ -6518,6 +6371,8 @@ sub cmd_editor
             }
             if(defined @address{@field[0]}->{keepalive}) {
                dialog_populate(6,@address{@field[0]}->{keepalive});
+            } else {
+               dialog_populate(6,"@@ idle");
             }
             if(defined @address{@field[0]}->{decode}) {
                dialog_populate(7,@address{@field[0]}->{decode});
@@ -6609,7 +6464,6 @@ sub save_entry
    $txt .= "\n" if($txt !~ /\n$/);
 
    printf($fd "%s",$txt);
-   loggit("save: %s",$txt);
 }
 
 sub save_differential
@@ -6621,14 +6475,12 @@ sub save_differential
       ($first,@state{world_prev},@state{state_prev}) = (1,{},{});
    }
 
-   if(1 || time() - @state{save_differential_first_time} > 86400) {
-      loggit("Doing full dump");
+   if(time() - @state{save_differential_first_time} > 86400) {
       @state{save_differential_first_time} = time();
       @state{state_prev} = {};
       @state{world_prev} = {};
       @state{save_append} = 0;
    } else {
-      loggit("Partial dump");
       @state{save_append} = 1;
    }
  
@@ -6953,6 +6805,28 @@ sub cmd_def
                       world => $$opt{w},
                       regexp=> $reg,
                     };
+      @def{$name}->{hits} = 1 if $$opt{1};
+   }
+}
+
+sub cmd_undef
+{
+#-# summary: Delete a define/macro
+#-# ------------------------------------------------------------------------
+#-# /undef <name>
+#-#
+#-#      Removes the definition of the macro/define with that name.
+#-#
+#-# Also see: /def
+#-#
+#-# ------------------------------------------------------------------------
+   my ($conn,$str) = (shift,trim(shift));
+
+   if(defined @def{$str}) {
+      loggit("Deleting: $str");
+      delete @def{$str};
+   } else {
+      echo($conn,"%% UNDEF: Macro \"%s\" was not defined.",$str);
    }
 }
 
@@ -7129,9 +7003,7 @@ sub do_cmd
    my ($world,$input,$conn) = @_;
 
 
-#   loggit("do_cmd: '%s'\n",$input);
    if(is_remote() && $input !~ /^\s*\/(window|quit|key_ctl_l|edit)\s*/) {
-#      loggit("send: $input\n");
       return wc_out($input);
    }
 
@@ -7699,7 +7571,7 @@ sub cmd_recall
          }
       };
       if($@) {
-         loggit("ERROR: $@\n");
+         LOGGIT("ERROR: $@\n");
       }
    }
    for my $i (0 .. $#out) {
@@ -7783,8 +7655,13 @@ sub cmd_world
 
    if($txt =~ /^\s*([^ ]+)\s*(\d+)$/) {
       for my $i (1 .. 100) {
-         if(!defined @address{"(Unnamed_#" . $i . ")"}) {
-            cmd_edit($conn,"(Unnamed_#" . $i . ") $txt");
+         if(defined @address{lc("(Unnamed_#" . $i . ")")} &&
+            trim(@address{lc("(Unnamed_#" . $i . ")")}->{host}) eq trim($1) &&
+            trim(@address{lc("(Unnamed_#" . $i . ")")}->{port}) eq trim($2)) {
+            $txt = "(Unnamed_#" . $i . ")";
+            last;
+         } elsif(!defined @address{lc("(Unnamed_#" . $i . ")")}) {
+            cmd_editor($conn,"(Unnamed_#" . $i . ") $txt");
             $txt = "(Unnamed_#" . $i . ")";
             last;
          }
@@ -7792,17 +7669,17 @@ sub cmd_world
    }
 
 
-   if(!defined @address{$txt} && $txt ne "muddler") {
+   if(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
-   } elsif(defined @socket{$txt} && defined @socket{$txt}->{sock}) {
-      switch_world($conn,$txt);
+   } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
+      switch_world($conn,lc($txt));
    } else {
       socket_connect($conn,
-                     @address{$txt}->{name},
-                     @address{$txt}->{host},
-                     @address{$txt}->{port},
-                     (!defined @address{$txt}->{ssl} ||
-                      !@address{$txt}->{ssl}) ? 0 : 1,
+                     @address{lc($txt)}->{name},
+                     @address{lc($txt)}->{host},
+                     @address{lc($txt)}->{port},
+                     (!defined @address{lc($txt)}->{ssl} ||
+                      !@address{lc($txt)}->{ssl}) ? 0 : 1,
                      $opt
                     );
    }
@@ -7836,9 +7713,6 @@ sub center
 sub optimize_start
 {
    if(!@state{optimize_output}) {
-#      loggit("optimize_start: %s",code("smallest"));
-#      update_scroll_region("output");
-#      xy(output_end(),1);
       @state{optimize_output} = 1;
    }
 }
@@ -8030,13 +7904,13 @@ sub reload_code
       if((@state{state} eq "init" || 
          (!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}))) {
          
-         loggit("%% Reloading: %s",$key) if @state{state} ne "init";
+         LOGGIT("%% Reloading: %s",$key) if @state{state} ne "init";
 #         echo($conn,"%% Reloading: %s",$key) if @state{state} ne "init";
          eval($$new{$key}->{src});
          $count++;
          if($@) {
             echo($conn,"%% Error reloading $key");
-            loggit("%s\n",$@);
+            LOGGIT("%s\n",$@);
             $$new{$key}->{chk} = -1;
          } elsif(@state{state} ne "init") {
             echo($conn,"%% Reloading: %s [done]",$key);
@@ -8135,12 +8009,22 @@ sub tick
       if(defined @socket{$w}->{sock} && 
          defined @socket{$w}->{connected} &&
          time()-@socket{$w}->{last_send} > 100) {
-         if(defined @address{$w} && defined @address{$w}->{keepalive}) {
-            @state{out_nomore} = 1;
+
+         @state{out_nomore} = 1;
+         if(defined @address{$w} &&
+            defined @address{$w}->{keepalive} &&
+            trim(@address{$w}->{keepalive}) ne "") {
             out($w,@address{$w}->{keepalive} . "\n",ts());
          } else {
-            @state{out_nomore} = 1;
-            out($w,"\@\@ idle\n");
+            out($w,"help IDLING_TO_THE_END");
+            @def{sprintf("w_%s_%06s",time(),(scalar keys %def)+1)} = {
+                 atr    => "g",
+                 txt    => "*IDLING_TO_THE_END*",
+                 world  => $w,
+                 regexp=> "(?i)(IDLING_TO_THE_END|I can't help you)",
+                 hits   => 1,
+                 created => time()
+                };
          }
       }
 
@@ -8185,7 +8069,6 @@ sub tick
             delete @socket{$w}->{ftsend};
             last;
          }
-         loggit("send[$w]: %s\n",$#{@socket{$w}->{ftsend}->{data}});
       }
    }
 
@@ -8270,7 +8153,7 @@ sub muddler_init
    @state{chksum} = get_checksums();
    load(@state{world},1);
    save_differential(); # prime the pump, won't actually save
-   loggit("### START ###");
+   LOGGIT("### START ###");
 
    # initialize websocket client
    wc_init() if is_remote();
@@ -8327,14 +8210,14 @@ sub muddler
 {
    local $SIG{ALRM} = sub {
       delete @pid{keys %pid};
-      loggit("### Fatal ### Alarm timeout");
-      loggit(code("long"));
+      LOGGIT("### Fatal ### Alarm timeout");
+      LOGGIT(code("long"));
       die("alarm\n");
    };
    alarm(30);
 
    io();
-   loggit("Crash? $@") if($@);
+   LOGGIT("Crash? $@") if($@);
    draw_bar();
 
    if(time() - @state{tick_last} >= 1) {
@@ -8488,7 +8371,7 @@ eval {
 };
 
 if($@) {
-   loggit($@);
+   LOGGIT($@);
    err("FATAL: $@");
 }
 
@@ -8508,7 +8391,7 @@ while(1) {
    eval {
       muddler();
    };
-   loggit("Fatal: $@ -> %s\n",code()) if($@);
+   LOGGIT("Fatal: $@ -> %s\n",code()) if($@);
 }
 
 __DATA__
@@ -9965,7 +9848,7 @@ START: muddler_client.js
      Connection.onmessage = function (that, evt) {
        that.onMessage && that.onMessage(evt.data[0], evt.data.substring(1));
      };
-   
+
      Connection.prototype.reconnect = function () {
        var that = this;
        
@@ -9978,7 +9861,7 @@ START: muddler_client.js
        console.log('URL: ' + this.url);
        this.socket = new window.WebSocket(this.url);
        this.isOpen = false;
-   
+
        this.socket.onopen = function (evt) {
          Connection.onopen(that, evt);
        };
@@ -11152,8 +11035,8 @@ START: muddler_client.html
          }
        } else {
          // connection was broken, let's reconnect
-         conn.reconnect();
-         output.appendMessage('logMessage', '%% Reconnecting to server...');
+         // conn.reconnect();
+         output.appendMessage('logMessage', '%% Reconnecting to server...' + conn.socket.readyState);
        }
      }
   
