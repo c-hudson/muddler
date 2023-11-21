@@ -54,7 +54,7 @@ Installing muddler on Big Sur.
 6. Install the Websocket server package from cpan by typing in the below
    command. The default answers should be acceptable.
 
-   sudo perl -MCPAN -e "install Net::WebSocket::Server"
+   sudo env perl5.30 -MCPAN -e "install Net::WebSocket::Server"
 
 7. Edit the muddler perl script. Change the first line of the script from:
 
