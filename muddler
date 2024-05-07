@@ -305,6 +305,7 @@ sub module_enabled
 #
 sub load_modules
 {
+   my $flag = shift;
    @state{modules} = [];
    my $type;
 
@@ -331,7 +332,7 @@ sub load_modules
    
 #   if($#{@state{modules}} >= 0) {
       for my $i (0 .. $#{@state{modules}}) {
-         update_scroll_region("output");
+         update_scroll_region("output") if $flag;
          printf("%s",@state{modules}->[$i]);
       }
 #   }
@@ -348,7 +349,7 @@ sub load_modules
 sub install_modules
 {
    my (%pkg, %cpan);
-   load_modules();
+   load_modules(1);
 
    for my $key (keys %mod) {                             # look at all modules
       if(!module_enabled($key) && defined @mod{$key}->{pkg}) {
@@ -362,8 +363,13 @@ sub install_modules
    }
 
    if(scalar keys %pkg > 0) {                  # install the packages as root
-      printf("running: sudo apt install %s\n",join(" ",keys %pkg));
-      system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
+      if(@ENV{PATH} =~ /termux/i) {
+         printf("running: apt install %s\n",join(" ",keys %pkg));
+         system(sprintf("apt install %s\n",join(" ",keys %pkg)));
+      } else {
+         printf("running: sudo apt install %s\n",join(" ",keys %pkg));
+         system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
+      }
    }
 
 
@@ -695,6 +701,20 @@ sub ansi_remove
 #    }
 # }
 
+sub handle_login
+{
+   my $conn = shift;
+   my $world = world($conn);
+
+   if(defined @address{$world}->{user}
+      && defined @address{$world}->{pass}) {
+      out($world,"connect %s %s\n",
+          @address{$world}->{user},
+          @address{$world}->{pass}
+         );
+   }
+}
+
 sub socket_connect
 {
    my ($conn,$world,$host,$port,$ssl,$opt) =
@@ -723,6 +743,7 @@ sub socket_connect
                           last_read => -1,
                           history_pos => -1,
                           history_pos_partial => -1,
+                          do_login  => (defined $$opt{l}) ? 0 : 1,
                         };
    }
 
@@ -781,18 +802,8 @@ sub socket_connect
    if(defined @socket{$world}->{socket_pending} &&
       defined @socket{$world}->{socket_pending} == 1) {
       echo($conn,"%% Connection to %s started, connection is pending.",$world);
-   }
-
-   # no need to show success, world will switch automatically
-
-   if(!defined $$opt{l} && 
-      @address{$world}->{user} && 
-      defined @address{$world}->{pass}) {
-      out($world,
-           "connect %s %s\n",
-           @address{$world}->{user},
-           @address{$world}->{pass}
-          );
+   } else {
+      handle_login($world);
    }
 
    if(defined @socket{muddler}) {
@@ -1368,6 +1379,7 @@ sub io
          } else {
             if(defined @socket{$w}->{socket_pending}) {
                delete @socket{$w}->{socket_pending};
+               handle_login($w);
             }
             @socket{$w}->{last_recv} = time();
 
@@ -2480,6 +2492,12 @@ sub update_pending
 {
    my ($conn,$count,$txt) = @_;
    my $w = world($conn);
+
+#   my $act = calc_pending($w);
+#   if(@socket{$w}->{pending} + $count != $act) {
+#      loggit("More mismatch: %s + $count != $act: %s --> %s",
+#             @socket{$w}->{pending},$count,code("shortest"));
+#   }
    @socket{$w}->{pending} += $count if(defined @socket{$w});
 }
 
@@ -2570,6 +2588,7 @@ sub release_some_pending
       || in_more($w) 
       || in_hist($w) 
       || !world_visible($w)) {
+#       loggit("Skipping: $w [%s,%s,%s,%s]",$#{@pending{$w}},in_more($w),in_hist($w),world_visible($w));
        return 0;
    }
 
@@ -3580,6 +3599,7 @@ sub key_tab
       return;
    } elsif(in_hist($w)) {                      # same as key_pgdn, just call it
       key_pgdn(@_);
+      release_some_pending($conn,$w,1) if(!in_hist($w));
    } elsif(in_more($w)) {
       key_pgdn(@_);
       reset_more($w,1);
@@ -3673,15 +3693,17 @@ sub out
 {
    my ($world,$fmt,@args) = @_;
 
+   return if(defined @socket{socket_pending} && @socket{socket_pending} == 0);
    return if $world eq "muddler";
+
    $world = @state{world} if($world eq undef);
    if(defined @socket{$world} && defined @socket{$world}->{sock}) {
       my $msg = sprintf("$fmt",@args);
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
       my $sock = @socket{$world}->{sock};
+#      loggit("out[%s] %s",$world,$msg);
       printf($sock "%s",$msg);
-
       if(!defined @state{out_nomore}) {
          reset_more($world);
       } else {
@@ -3825,32 +3847,36 @@ sub key_delete
              input_x() - input_start());            # number of visible lines
 
          # loop from current line to end of screen horizontally
-         for my $i (0 .. (@state{size_x} - input_x())) {
-            my $nbol = $bol += @state{size_y} - 1;    # next begin of line
 
-            if($i == 0) {
-               xy(input_x(),input_y()-1);
-               printf("\033[P");                 # delete ch before cursor
-               if(in_dialog()) {
-                  xy(input_x(),dialog_max() + 5 + dialog_input_size());
-                  printf("_");
-                  xy(input_x(),input_y());
-                  last;
-               }
-            } else {
-               xy(input_x() + $i,0);     # delete char at begining of line
-               printf("\033[P");                  # for wrap around effect
+         xy(input_x(),input_y()-1);
+         printf("\033[P");                 # delete ch before cursor
+         for my $i (input_x(1) .. @state{size_x}) {
+            my $pos=((@state{input_offset} + $i - input_start() + 1)
+                    * (@state{size_y} - 1));
+#            loggit("Test1: '%s' != '%s'",$i,input_x(1));
+#            loggit("Test2: '%s' == '%s'",input_x(),input_x(1));
+#           loggit("Test3: '%s' >= '%s'",$#{$$input[-1]},$pos-@state{size_y}+1);
+            if($i != input_x(1) &&                     # not on cursor's line
+               input_x() == input_x(1) &&           # not when moving up line
+               $#{$$input[-1]} >= $pos - @state{size_y} + 1) {     # past EOL
+               loggit("# Deleting begining char [%s]",$i);
+               xy($i,0);
+               printf("\033[P");
             }
-            xy(input_x() + $i,79);               # add char at end of line
-            printf("%s",$$input[-1]->[$nbol]);
-        
-            $bol = $nbol;
+#            loggit("Test2: '%s' <= '%s'",$pos,$#{$$input[-1]});
+            if($pos <= $#{$$input[-1]}) {
+               loggit("# Adding char at end of line: '%s' -> '%s'",
+                  $i,$$input[-1]->[$pos]);
+               xy($i,@state{size_y} - 1);
+               printf("%s",$$input[-1]->[$pos]);
+            }
          }
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
          line_pos_set(line_pos() - 1);
          xy(input_x(),input_y());                            # return cursor
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
+      loggit("Delete: here 2");
       line_pos_set(line_pos() - 1);                # move cursor pos back one
       pop(@{$$input[-1]});                           # remove char from buffer
       xy(input_x(),input_y());             # move cursor back incase it moved
@@ -4228,6 +4254,7 @@ sub key_up
       }
    }
    # Try first on list if not current world
+   delete @socket{muddler} if($first ne "muddler");
    switch_world($conn,$first) if(defined $first && $first ne $w);
 }
 
@@ -4369,6 +4396,7 @@ sub get_active
    for my $world (keys %pending) {
       if($w ne $world &&
          defined @pending{$world} &&
+         defined @socket{$world} &&
          $#{@pending{$world}} > $max) {
          $name = $world;
          $max = @{@pending{$world}};
@@ -4654,7 +4682,10 @@ sub activity_count
    # exclude currently viewed worlds in counts;
 
    for my $world (grep {!/muddler/} keys %pending) {
-      $cnt++ if($#{@pending{$world}} >= 0 && !world_visible($world));
+      if($#{@pending{$world}} >= 0 && !world_visible($world)) {
+#         loggit("Acvity: '%s' %s",$world,$#{@pending{$world}});
+         $cnt++;
+      }
    }
    return $cnt;
 }
@@ -6465,6 +6496,7 @@ sub save_entry
    $txt .= "\n" if($txt !~ /\n$/);
 
    printf($fd "%s",$txt);
+   @state{save_last} = time();
 }
 
 sub save_differential
@@ -6476,7 +6508,7 @@ sub save_differential
       ($first,@state{world_prev},@state{state_prev}) = (1,{},{});
    }
 
-   if(time() - @state{save_differential_first_time} > 86400) {
+   if(time() - @state{save_differential_first_time} > 86400 || 1) {
       @state{save_differential_first_time} = time();
       @state{state_prev} = {};
       @state{world_prev} = {};
@@ -6486,7 +6518,7 @@ sub save_differential
    }
  
    # save differences between world file
-   for my $world (keys %address) {
+   for my $world (sort grep {!/^\(unnamed_/} keys %address) {
       my $data = "$world {\n   type:address\n";
       for my $key (keys %{@address{$world}}) {
          $data .= "   $key:" . single(@address{$world}->{$key}) . "\n";
@@ -6807,6 +6839,7 @@ sub cmd_def
                       regexp=> $reg,
                     };
       @def{$name}->{hits} = 1 if $$opt{1};
+      loggit("GOt to the end - $name");
    }
 }
 
@@ -7838,7 +7871,9 @@ sub get_checksums
    for my $line (<$file>) {
       if($pos eq undef && $line =~ /^#\-#  /) {
          @state{version} .= $';
-      } elsif($pos eq undef && $line =~ /^sub\s+([^ \n\r]+)\s*$/) {
+      } elsif($pos eq undef && 
+         ( $line =~ /^sub\s+([^ \n\r]+)\s*$/ ||
+          $line =~ /^sub\s+([^ \n\r]+)\s*\(@\)\s*$/)) {
          $pos = $1;
          @data{$pos} = {
             line => $ln,
@@ -7927,7 +7962,7 @@ sub reload_code
    encoding_init();
    load_modules() if(!$nomodules);
    callback_init();
-   save_differential();
+   # save_differential();
 
 
    if($count == 0) {
@@ -8002,8 +8037,29 @@ sub trim
    return $txt;
 }
 
+sub myshuffle (@)
+{
+    my $array = shift;
+    my $i;
+    for ($i = @$array; --$i; ) {
+        my $j = int rand ($i+1);
+        next if $i == $j;
+        @$array[$i,$j] = @$array[$j,$i];
+    }
+}
+
+
 sub tick
 {
+   if(defined @state{save_last} &&
+      defined @state{save_fd} &&
+      time() - @state{save_last} > 2) {
+      my $fd = @state{save_fd};
+      $fd->close();
+      delete @state{save_fd};
+      delete @state{save_last};
+      $fd = undef;
+   }
    # keep alive. Send something to a world to keep it alive if nothing has
    # bloggiteen sent / recieved.
    for my $w (keys %socket) {
@@ -8017,15 +8073,18 @@ sub tick
             trim(@address{$w}->{keepalive}) ne "") {
             out($w,@address{$w}->{keepalive} . "\n",ts());
          } else {
-            out($w,"help IDLING_TO_THE_END");
-            @def{sprintf("w_%s_%06s",time(),(scalar keys %def)+1)} = {
+            my @r = ( "IDLING","TO","THE","END",sprintf("%d",rand(1000)) ); 
+            myshuffle(\@r);
+            my $rand = join('_',@r);
+            out($w,"help $rand");
+            @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
                  atr    => "g",
-                 txt    => "*IDLING_TO_THE_END*",
+                 txt    => "*$rand*",
                  world  => $w,
-                 regexp=> "(?i)(IDLING_TO_THE_END|I can't help you)",
+                 regexp=> "(?i)($rand|I can't help you)",
                  hits   => 1,
                  created => time()
-                };
+               };
          }
       }
 
@@ -8287,6 +8346,36 @@ sub change_window_size
    }
 }
 
+
+
+sub calc_pending
+{
+   my $w = shift;
+   my ($cnt,$new,$start) = (0,0,0);
+
+   if(history_pos_partial($w) == -1) {    # last line shown was fully shown
+      $start = history_pos($w) + 1;                    # start on next line
+   } else {                                # last line only partially shown,
+      $start = history_pos($w);                       # start where left off
+   }
+
+   for(my $i = $start;$i <= history_max($w);$i++) {
+      if($i == $start && history_pos_partial($w) != -1) {
+         my $start = history_pos_partial($w);
+         $new = scalar ansi_wrap(ansi_substr(@history{$w}->[$i]->{txt},
+                                              $start
+                                             ),
+                                 @state{size_y}
+                                 );
+      } else {
+         $new = scalar ansi_wrap(@history{$w}->[$i]->{txt});
+      }
+      $cnt += ($new <= 0) ? 1 : $new;           # blank line fudge factor
+   }
+   return $cnt;
+}
+
+
 #
 # sig_winch
 #    The window size has changed. This may happen to frequently, so
@@ -8298,37 +8387,35 @@ sub sig_winch
    @state{winch} = time();
 }
 
-sub install_modules
-{
-   my (%pkg, %cpan);
-   load_modules();
-
-   for my $key (keys %mod) {
-      if(!module_enabled($key) && defined @mod{$key}->{pkg}) {
-         @pkg{@mod{$key}->{pkg}} = 1;
-      }
-      if(!module_enabled($key) && defined @mod{$key}->{cpan} && @mod{$key}->{cpan} eq "yes") {
-         @cpan{$key} = 1;
-      }
-   }
-
-   if(scalar keys %pkg > 0) {
-      printf("running: sudo apt install %s\n",join(" ",keys %pkg));
-      system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
-   }
-
-
-   if(scalar keys %cpan > 0) {
-      for my $key (keys %cpan) {
-         printf("running: perl -MCPAN -e \"install $key\"\n");
-         system("perl -MCPAN -e \"install $key\"");
-      }
-   }
-
-   exit();
-}
-
-load_modules();
+# sub install_modules
+# {
+#    my (%pkg, %cpan);
+#    load_modules();
+# 
+#    for my $key (keys %mod) {
+#       if(!module_enabled($key) && defined @mod{$key}->{pkg}) {
+#          @pkg{@mod{$key}->{pkg}} = 1;
+#       }
+#       if(!module_enabled($key) && defined @mod{$key}->{cpan} && @mod{$key}->{cpan} eq "yes") {
+#          @cpan{$key} = 1;
+#       }
+#    }
+# 
+#    if(scalar keys %pkg > 0) {
+#       printf("running: sudo apt install %s\n",join(" ",keys %pkg));
+#       system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
+#    }
+# 
+# 
+#    if(scalar keys %cpan > 0) {
+#       for my $key (keys %cpan) {
+#          printf("running: perl -MCPAN -e \"install $key\"\n");
+#          system("perl -MCPAN -e \"install $key\"");
+#       }
+#    }
+# 
+#    exit();
+# }
 
 for my $i (0 .. $#ARGV) {
    if(@ARGV[$i] eq "--noconsole") {
@@ -8359,6 +8446,7 @@ for my $i (0 .. $#ARGV) {
      die("Invalid Option: '@ARGV[$i]'");
    }
 }
+load_modules();
 
 ws_init() if !console();
 
