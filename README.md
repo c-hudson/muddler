@@ -78,20 +78,16 @@ This screenshot three windows displaying a connection to 8bit and Parlor via Fir
    
 ```
    Basic Commands:
-      /editor [<world>]
-         Modify the current or a new/different world's connection details via a
-         "world editor".
+      /world
+         Edit the current world's connection details.
       /world <world>
-         Open a new connection to a defined world (in the world editor) or
-         switch to that world if the world connection has already been
-         established. Switching between connections can be done with
-         this command or using the up/down arrow keys or escape-w.
+         Switch the current world to <world>. Muddler will open up a
+         new connection if needed. Switching between existing worlds
+         can also be done with the up/down arrows and escape-w.
       /help [<command>]
          Lists all commands or provides help on an individual command.
       /quit
          Had enough, quit muddler.
-      /set encode = fansi | utf8 | latin
-         Enable either fansi, utf8, or latin encoding for the current world.
 
    Web Commands:
       /web
