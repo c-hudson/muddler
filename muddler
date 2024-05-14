@@ -2067,7 +2067,7 @@ sub enabled
 {
    my $txt = shift;
 
-   if(defined @state{$txt} && @state{$txt} =~ /^\s*(0|1|true|on|x)\s*$/i) {
+   if(defined @state{$txt} && @state{$txt} =~ /^\s*(1|true|on|x)\s*$/i) {
       return 1;
    } else {
       return 0;
