@@ -207,8 +207,6 @@ sub command_init
    @command{undef}         = sub { return cmd_undef(@_);                   };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
    @command{listworlds}    = sub { return cmd_listworlds(@_);              };
-   @command{editor}        = sub { return cmd_editor(@_);                  };
-   @command{add}           = "edit";
    @command{addworld}      = sub { return cmd_editor(@_);                  };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    @command{update}        = sub { return cmd_update(@_);                  };
@@ -453,6 +451,7 @@ sub ansi_add
       $$code[$#$ch] = [];
       $$snap[$#$ch] = [];
    }
+   $txt =~ s/\a//g;
 
    if($type) {
      for my $c (split(//,$txt)) {                 # add multiple characters
@@ -2058,6 +2057,17 @@ sub paused
    } elsif(in_hist($w)) {
       return 1;
    } elsif(in_more($w) && @socket{$w}->{more_cnt} >= output_end()-overlap()) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
+sub enabled
+{
+   my $txt = shift;
+
+   if(defined @state{$txt} && @state{$txt} =~ /^\s*(0|1|true|on|x)\s*$/i) {
       return 1;
    } else {
       return 0;
@@ -3702,7 +3712,7 @@ sub out
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
       my $sock = @socket{$world}->{sock};
-#      loggit("out[%s] %s",$world,$msg);
+      # loggit("out[%s] %s [%s]",$world,$msg,code("short"));
       printf($sock "%s",$msg);
       if(!defined @state{out_nomore}) {
          reset_more($world);
@@ -3859,14 +3869,11 @@ sub key_delete
             if($i != input_x(1) &&                     # not on cursor's line
                input_x() == input_x(1) &&           # not when moving up line
                $#{$$input[-1]} >= $pos - @state{size_y} + 1) {     # past EOL
-               loggit("# Deleting begining char [%s]",$i);
                xy($i,0);
                printf("\033[P");
             }
 #            loggit("Test2: '%s' <= '%s'",$pos,$#{$$input[-1]});
             if($pos <= $#{$$input[-1]}) {
-               loggit("# Adding char at end of line: '%s' -> '%s'",
-                  $i,$$input[-1]->[$pos]);
                xy($i,@state{size_y} - 1);
                printf("%s",$$input[-1]->[$pos]);
             }
@@ -3876,7 +3883,6 @@ sub key_delete
          xy(input_x(),input_y());                            # return cursor
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
-      loggit("Delete: here 2");
       line_pos_set(line_pos() - 1);                # move cursor pos back one
       pop(@{$$input[-1]});                           # remove char from buffer
       xy(input_x(),input_y());             # move cursor back incase it moved
@@ -4878,9 +4884,9 @@ sub loggit
    my ($fmt,@args) = @_;
    my $file;
 
-   @state{p_debug} = 1;
+   # @state{p_debug} = 1;
    #   die("no debug - " . code()) if !@state{p_debug};
-   return if !@state{p_debug};
+   return if !defined @state{p_debug} || !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
    $msg .= "\n" if($msg !~ /\n/);
@@ -5119,7 +5125,7 @@ sub dialog_populate
 
    if(in_dialog()) { 
        if(dialog_type($pos) eq "check") {
-          $txt = "x" if($txt ne " " && $txt ne "");
+          $txt = "x" if($txt ne " " && $txt ne "" && $txt ne "0");
        }
        @state{dialog}->{$pos}->{input} = [[ split(//,$txt) ]];
        @state{dialog}->{$pos}->{line_pos} = length($txt);
@@ -5358,6 +5364,31 @@ sub editor_delete
 }
 
 
+sub dialog_fixed_value
+{
+   my $pos;
+   if( $#_ == -1 ){
+      $pos = @state{dialog_x};
+   } elsif($#_ == 0) {
+      $pos = shift;
+   } else {
+      die("dialog_fixsupports either 0 or 1 arguements");
+   }
+
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{$pos} &&
+      defined @state{dialog}->{$pos}->{input}) {
+
+      my $val = join('',@{@{@state{dialog}->{$pos}->{input}}[-1]});
+
+      if(@state{dialog}->{$pos}->{type} eq "check") {
+        return ($val eq "x") ? 1 : 0;
+      } else {
+        return $val;
+      }
+   }
+}
+
 sub set_save
 {
    my $conn = @state{dialog}->{conn};
@@ -5370,12 +5401,13 @@ sub set_save
    }
 
    for my $i (1 .. dialog_lines()) {
-       if(@state{"p_" . @lookup{dialog_name($i)}} ne dialog_value($i)) {
-          @state{"p_" . @lookup{dialog_name($i)}} = dialog_value($i);
-          save_differential();
+       my $val = dialog_fixed_value($i);
+       if(@state{"p_" . @lookup{dialog_name($i)}} ne $val) {
+          @state{"p_" . @lookup{dialog_name($i)}} = $val;
           $count++;
        }
    }
+   save_differential();
 
    dialog_cancel();
 
@@ -5439,12 +5471,13 @@ sub dialog_value
    } elsif($#_ == 0) {
       $pos = shift;
    } else {
-      die("dialog_type supports either no or one arguements");
+      die("dialog_type supports either 0 or 1 arguements");
    }
 
    if(defined @state{dialog} &&
       defined @state{dialog}->{$pos} &&
       defined @state{dialog}->{$pos}->{input}) {
+
       return join('',@{@{@state{dialog}->{$pos}->{input}}[-1]});
    }
 }
@@ -5913,7 +5946,8 @@ sub var_init
                        type=>"cycle.Cycle Worlds.Cursor Movement",
                        chk => "Cycle Worlds|Cursor Movement", set=>1       };
    @var{more}      = { setup=>"Pause for More",type=>"check",set=>1        };
-                       
+   @var{reconnect} = { setup=>"Auto re-connect",type=>"check",set=>1,
+                       chk=>"on|off|0|1"                                   };
 }
 
 sub update_keepalive
@@ -5954,6 +5988,7 @@ sub cmd_set
 #-#                left on the screen from the previous screen full.
 #-#   sync       : Keep /web & console in sync by showing the same world
 #-#                Default is to allow viewing of different worlds.
+#-#   reconnect  : Reconnect to this world if disconnected
 #-#   keepalive  : Sets the keepalive for the current world
 #-# ------------------------------------------------------------------------
 my ($conn,$txt) = @_;
@@ -5974,11 +6009,11 @@ my ($conn,$txt) = @_;
       for my $i (sort {@var{$b}->{type}.@var{$b}->{setup} cmp
                        @var{$a}->{type}.@var{$a}->{setup}} keys %var) {
          if(defined @var{$i}->{setup}) {
-            if(in($i,"watchdog","sync")) {
-               if(@state{"p_$1"} eq "on") {
-                  dialog_populate($pos,"x");
-               } else {
+            if(@var{$i}->{type} eq "check") {
+               if(@state{"p_$i"} eq " " || @state{"p_$i"} eq "0") {
                   dialog_populate($pos," ");
+               } else {
+                  dialog_populate($pos,"x");
                }
             } elsif(defined @state{"p_$i"} && trim(@state{"p_$i"}) ne "") {
                dialog_populate($pos,@state{"p_$i"});
@@ -6380,7 +6415,8 @@ sub cmd_editor
                   "World Name:word,User:word,Password:word,Host:word," .
                        "Port:word,KeepAlive CMD:text," .
                        "Encoding:cycle." . join(".",encoding_values()) .",".
-                       "Use SSL to connnect:check,Log output to $w.log:check",
+                       "Use SSL to connnect:check,Log output to $w.log:check,".
+                       "Auto Reconnect:check",
                   ["Cancel:dialog_cancel",
                    "Save:editor_save",
                    "Delete:editor_delete",
@@ -7050,6 +7086,7 @@ sub do_cmd
          defined @command{@command{lc($1)}} &&
          ref(@command{@command{lc($1)}}) eq "CODE") {          # handle alias
          &{@command{@command{lc($1)}}}($conn,$');
+         return 1;
       } else {
          echo($conn,"%% %s: no such command or macro",lc($1));
          return 1;
@@ -7086,6 +7123,8 @@ sub cmd_web_size
          @ws{$conn}->{size_y} = $1 - 3;
       }
    }
+
+   reconnect($conn);
    draw_output($conn,1);
    draw_bar($conn,1);
 }
@@ -7232,23 +7271,14 @@ sub cmd_help
 {
 #-# summary: internal
 #-# ------------------------------------------------------------------------
-#-# Basic Commands:
-#-#   /world <world>
-#-#     Connect if needed and switch to world. Up/down arrows switch worlds.
-#-#   /add [-s] <world> [<user> <pass>] <host> <port>
-#-#     defines a world for connecting. -s will use ssl.
-#-#   /list [-c]
-#-#     Shows all worlds defined by /add and /ssl. -c lists connections
-#-#   /quit - Quits Muddler
-#-# 
-#-# Help topics:
-#-#   /help commands  : Listing of all internal commands
-#-#   /help keys      : Keybindings and what they do.
-#-#
-#-# <text> are variables. [text] are optional.  Do not include <>[]
+#-# Commands:
+#-#   /dc              :  Forcefully disconnect from current world
+#-#   /help            :  Muddler's help system
+#-#   /list [-c]       :  Lists all saved worlds, -c list connections
+#-#   /world [<world>] :  Setup, connect or switch to a world
+#-#   /quit            :  Quit Muddler
 #-# ------------------------------------------------------------------------
    my ($conn,$cmd) = (shift, lc(trim(shift)));
-   
 
    $cmd =~ s/^\s*\/\s*//g;                          # remove / if provided
    $cmd = "help" if $cmd eq undef;
@@ -7661,6 +7691,19 @@ sub cmd_listsockets
    }
 }
 
+sub reconnect
+{
+   my ($conn) = shift;
+
+   if(enabled("p_reconnect")) {
+      for my $w (keys %socket) {
+         if(!defined @socket{$w}->{sock} && $w ne "muddler") {
+            cmd_world($conn,$w);
+         }
+      }
+   }
+}
+
 sub cmd_quit
 {
 #-# summary: exit out of muddler
@@ -7703,7 +7746,9 @@ sub cmd_world
    }
 
 
-   if(!defined @address{lc($txt)} || $txt eq "muddler") {
+   if($txt =~ /^\s*$/) {
+      cmd_editor($conn);
+   } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
       switch_world($conn,lc($txt));
@@ -7783,8 +7828,7 @@ sub show_banner
    }
    if(!$flag) {
       echo($conn);                           # this should be just one echo, 
-      echo($conn);                         # but i think ansi_wrap has a bug
-      echo($conn);
+      echo($conn);                        # but i think ansi_wrap has a bug
    }
    optimize_end();
 }
@@ -8230,6 +8274,7 @@ sub muddler_init
 
    draw_screen(@state{world},1);
    show_banner(@state{world}) if !is_remote();
+   cmd_help();
 
    if(!-e "@ENV{HOME}/.muddler") {
       read_tfworlds(@state{world},"@ENV{HOME}/.tfworlds",1);
@@ -9916,7 +9961,9 @@ START: muddler_client.js
      Connection.CHANNEL_DO     = 'd';
    
      Connection.reconnect = function (that) {
-       that.reconnect();
+       const now = +new Date();
+
+          that.reconnect();
      };
      
      Connection.onopen = function (that, evt) {
@@ -11115,6 +11162,7 @@ START: muddler_client.html
      var bartime = WSClient.output(document.getElementById('bartime'));
      var input = WSClient.input(document.getElementById('input'));
      var conn = WSClient.connect(serverUrl);
+     var last_conn = +new Date();
      // function to send a command string to the server
      function sendCommand(cmd) {
        if (conn.isConnected()) {
@@ -11124,7 +11172,11 @@ START: muddler_client.html
          }
        } else {
          // connection was broken, let's reconnect
-         // conn.reconnect();
+         const now = +new Date();
+         if(last_conn == undefined || now - last_conn > 2000) {
+            last_conn = now;
+            conn.reconnect();
+         }
          output.appendMessage('logMessage', '%% Reconnecting to server...' + conn.socket.readyState);
        }
      }
