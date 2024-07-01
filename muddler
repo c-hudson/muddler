@@ -129,6 +129,9 @@ my %mod = (
 sub key_init
 {
    delete @key{keys %key};
+   for my $key (keys %key) {
+      undef(@key{$key});
+   }
    @key{def}                  = sub { return key_default(@_);          };
    @key{1}                    = sub { return key_ctl_a(@_);            };
    @key{2}                    = sub { return key_left(@_);             };
@@ -222,7 +225,6 @@ sub command_init
    @command{gc}            = sub { wrap_garbage_collect();                 };
    @command{file}          = sub { return cmd_file(@_);                    };
    @command{accept}        = sub { return cmd_accept(@_);                  };
-   @command{rewrap}        = sub { return cmd_rewrap(@_);                  };
    @command{request_info}  = sub { return cmd_request_info(@_);            };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
@@ -491,6 +493,12 @@ sub ansi_init
    my $data = { ch => [], code => [], state  => [], snap   => [] };
 #   $$data{trace} = code();
 
+   if($str !~ /\e/) {                             # no ansi characters
+      $$data{ch} = [ split(//,$str) ];
+      return $data;
+   } else {
+      $$data{ch} = [];
+   }
    while($str =~ /\e\[([\d;]*)([a-zA-Z])/) {
       $str = $';
       ansi_add($data,1,$`) if $` ne undef;
@@ -500,47 +508,6 @@ sub ansi_init
 
    return $data;
 }
-
-#
-# ansi_clone
-#   Clone the ansi escape codes at a particular position to the new
-#   string.
-#
-sub ansi_clone
-{
-   my ($str,$pos,$txt) = @_;
-
-   if(ref($str) ne "HASH") {
-      $str = ansi_init($str);
-   }
-
-   my $snap = $$str{snap};
-
-   if($#$snap >= 0 && $#$snap > $pos) {
-      return join('',@{@$snap[$pos]}) . $txt . "\e[0m";
-   } else {
-      return $txt;
-   }
-}
-
-#
-# ansi_string
-#    Take ansi data structure and return
-#        type => 0 : everything but the escape codes
-#        type => 1 : original string [including escape codes]
-#
-sub ansi_string
-{
-   my ($data,$type) = @_;
-   my $buf;
-
-   for my $i (0 .. $#{$$data{ch}}) {
-      $buf .= join('', @{@{$$data{code}}[$i]}) if($type);
-      $buf .= @{$$data{ch}}[$i];
-   }
-   return $buf;
-}
-
 
 #
 # dearray
@@ -700,13 +667,22 @@ sub ansi_remove
 #    }
 # }
 
+#
+# handle_login
+#    Socket has finally? connected, determine if the user should be
+#    connected or not
+#
 sub handle_login
 {
    my $conn = shift;
    my $world = world($conn);
 
-   if(defined @address{$world}->{user}
-      && defined @address{$world}->{pass}) {
+   # do_login - was /world -l used when connecting
+   if(defined @socket{$world} &&
+      defined @socket{$world}->{do_login} &&
+      @socket{$world}->{do_login} &&
+      defined @address{$world}->{user} &&
+      defined @address{$world}->{pass}) {
       out($world,"connect %s %s\n",
           @address{$world}->{user},
           @address{$world}->{pass}
@@ -714,6 +690,10 @@ sub handle_login
    }
 }
 
+#
+# socket_connect
+#    handle a connection to a world.
+#
 sub socket_connect
 {
    my ($conn,$world,$host,$port,$ssl,$opt) =
@@ -723,15 +703,17 @@ sub socket_connect
 
    $opt = {} if $opt eq undef;
    if(defined @socket{$world} && @socket{$world}->{sock}) {
-      return echo($conn,"%% Already connected to %s",$world);
+      echo($conn,"%% Already connected to %s",$world);
+      return 0;
    }
 
    # initialize history buffer
    @history{$world} = [] if(!defined @history{$world});
  
-   if(defined @socket{$world}) { # address may have changed?
-      @socket{$world}->{host} = $host;
+   if(defined @socket{$world}) { # previous connection
+      @socket{$world}->{host} = $host;        # update possible changed items
       @socket{$world}->{port} = $port;
+      @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
    } else {
       # define connection with everything that is needed.
       @socket{$world} = { name      => $world,
@@ -755,16 +737,17 @@ sub socket_connect
 
    
    if($ssl && !module_enabled("IO::Socket::SSL")) {
-      return echo($conn,"%% module IO::Socket::SSL is required for SSL ". 
-                  "connections.");
-   } elsif($ssl) {
+      echo($conn,"%% module IO::Socket::SSL is required for SSL ". 
+                 "connections.");
+      return 0;
+   } elsif($ssl) {                                    # open ssl connection
       $s = IO::Socket::SSL->new( PeerAddr => $host,
                                  PeerPort => $port,
                                  Proto => 'tcp',
                                  SSL_use_cert => 0,
                                  SSL_verify_mode => 0,
                                 );
-   } else {
+   } else {                                             # non-ssl connection
       $s = IO::Socket::INET->new(Proto => 'tcp',
                                  Blocking => 0) ||
          return echo($conn,"%% Connect %s : Socket error : %s",$world,$!);
@@ -777,13 +760,15 @@ sub socket_connect
       my $ret = connect($s,$paddr);
 
       if(!$ret && ! $!{EINPROGRESS}) {
-         return echo($conn,"%% Connect %s : Unable to connect",$world);
+         echo($conn,"%% Connect %s : Unable to connect",$world);
+         return 0;
       }
    }
 
    if(!$s) {
       draw_bar();
-      return echo($conn,"%% Connection Failed.");
+      echo($conn,"%% Connection Failed.");
+      return 0;
    }
 
 
@@ -811,6 +796,7 @@ sub socket_connect
    }
 
    draw_bar();
+   return 1;
 }
 
 #
@@ -855,6 +841,23 @@ sub wc_init
 
    # connect to the server
    $client->connect;
+}
+
+sub test_worlds
+{
+   load("muddler");
+ 
+   for my $w (keys %address) {
+      delete @address{$w}->{user};
+      delete @address{$w}->{pass};
+      socket_connect($w,
+                     @address{$w}->{name},
+                     @address{$w}->{host},
+                     @address{$w}->{port},
+                     (!defined @address{$w}->{ssl} ||
+                      !@address{$w}->{ssl}) ? 0 : 1,
+                    );
+   }
 }
 
 #
@@ -1116,7 +1119,7 @@ sub socket_disconnect
 
 sub web
 {
-    return (@state{web} == 1) ? 1 : 0;
+    return (@state{p_web} == 1) ? 1 : 0;
 }
 
 #
@@ -1236,7 +1239,7 @@ sub ws_init
 #                                   );
 #                        },
 #      );
-   @state{web} = 1;
+   @state{p_web} = 1;
    $ws_server->{select_readable}->add($ws_listen);
    $ws_server->{select_readable}->add($http_listen);
    $ws_server->{conns} = {};
@@ -2040,29 +2043,6 @@ sub echo_console
 }
 
 
-
-#
-# paused
-#    More might be on but should new output be paused?
-#
-sub paused
-{
-   my $w = shift;
-   return in_more($w);
-   my $debug = shift;
-   $w = @state{world} if($w eq undef);
-
-   if(@state{p_more} == 0) {                       # more disabled by user
-      return 0;
-   } elsif(in_hist($w)) {
-      return 1;
-   } elsif(in_more($w) && @socket{$w}->{more_cnt} >= output_end()-overlap()) {
-      return 1;
-   } else {
-      return 0;
-   }
-}
-
 sub enabled
 {
    my $txt = shift;
@@ -2211,44 +2191,50 @@ sub gagged
                                     # match your dups via say & pub channel
          ($str =~ /says, "(.*)"$/ && $prev eq "You say, \"$1\"")) {
          $$txt{gagged} = 1;
+         delete @$txt{wrapped};
+         delete @$txt{stat};
+         delete @$txt{size};
          return 1;
       }
    }
     
    # handle /def defined gags
-   for my $key (keys %def) {
-      if(@def{$key}->{world} eq undef ||              # world not specified
-         lc(@def{$key}->{world}) eq lc($w)) {               # world matches
+   if(!$$txt{internal}) {                         # don't gag internal output
+      for my $key (keys %def) {
+         if(@def{$key}->{world} eq undef ||              # world not specified
+            lc(@def{$key}->{world}) eq lc($w)) {               # world matches
 
-         if($key =~ /^w_\d{6}$/ && defined @def{$key}->{txt}) { # watchdog match
-             if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
-                $$txt{gagged} = 1;
-                return 1;
-             }
-         } elsif(defined @def{$key}->{regexp} && 
-                 @def{$key}->{atr} =~ /g/ &&
-                 (!defined @def{$key}->{status} ||
-                 @def{$key}->{status} == 1)) {
-            @def{$key}->{badregexp} = 0;
-            eval {
-               $match = 1 if($str =~ /@def{$key}->{regexp}/);
-               @def{$key}->{badregexp} = 1;
-            };
+            if($key =~ /^w_\d{6}$/ && defined @def{$key}->{txt}) { # watchdog
+                if(TRUE(@state{p_watchdog}) && $str eq @def{$key}->{txt}) {
+                   $$txt{gagged} = 1;
+                   return 1;
+                }
+            } elsif(defined @def{$key}->{regexp} && 
+                    @def{$key}->{atr} =~ /g/ &&
+                    (!defined @def{$key}->{status} ||
+                    @def{$key}->{status} == 1)) {
+               @def{$key}->{badregexp} = 0;
+               eval {
+                  $match = 1 if($str =~ /@def{$key}->{regexp}/);
+                  @def{$key}->{badregexp} = 1;
+               };
 
-            if($match) {
-               $$txt{gagged} = 1;
-               if(defined @def{$key}->{hits}) {
-                  @def{$key}->{hits}--;
-                  delete @def{$key} if(@def{$key}->{hits} <= 0);
+               if($match) {
+                  $$txt{gagged} = 1;
+                  $$txt{keepalive} = 1 if defined @def{$key}->{keepalive};
+                  if(defined @def{$key}->{hits}) {
+                     @def{$key}->{hits}--;
+                     delete @def{$key} if(@def{$key}->{hits} <= 0);
+                  }
+                  return 1;
                }
-               return 1;
             }
          }
-      }
-      if($key =~ /^w_\d+_\d+$/ &&
-         (!defined @def{$key}->{created} ||
-         time() - @def{$key}->{created} > 300)) {
-         delete @def{$key};
+         if($key =~ /^w_\d+_\d+$/ &&
+            (!defined @def{$key}->{created} ||
+            time() - @def{$key}->{created} > 300)) {
+            delete @def{$key};
+         }
       }
    }
 
@@ -2365,22 +2351,25 @@ sub history
    remove_nospoof($str);
    gagged($world,$str);                                    # set gagged flag?
 
-   $$str{wrapped} = [ ansi_wrap($$str{txt},@state{size_y}) ];
-   $$str{stat} = [ @state{ansi_stat} ];
-
-   update_pending($world,$#{$$str{wrapped}} + 1,$txt);
-
-   send_to_window($world,$str);                        # handle /window stuff
-
    if($$str{gagged}) {
-      push(@{@history{$world}},$str);
+      if(defined $$str{keepalive} && $$str{keepalive}) { # do not store keep
+         undef($str);                                                # alive
+      } else {
+         push(@{@history{$world}},$str) && !$$str{keepalive};  # keep gagged
+      }                                                # for possible review
    } else {
+
+      $$str{wrapped} = [ ansi_wrap($$str{txt},@state{size_y}) ];
+      $$str{stat} = [ @state{ansi_stat} ];
+      update_pending($world,$#{$$str{wrapped}} + 1,$txt);
+
+      send_to_window($world,$str);                    # handle /window stuff
       loggit_world($world,$txt) if($$str{internal} == 0);
       push(@{@pending{$world}},$str);
       release_some_pending($conn,$world);
    }
 
-   draw_bar($conn,1) if(!world_visible($world));
+   draw_bar() if(!world_visible($world));
 }
 
 #
@@ -2509,6 +2498,7 @@ sub update_pending
 #             @socket{$w}->{pending},$count,code("shortest"));
 #   }
    @socket{$w}->{pending} += $count if(defined @socket{$w});
+#   loggit("update_pending: %s -> $count",@socket{$w}->{pending});
 }
 
 sub loggit_world
@@ -2527,6 +2517,21 @@ sub loggit_world
     printf($log "[%s] %s\n",ts(),$txt);
 }
 
+
+#
+# line_done
+#    is the output line done as far as get_next_line is concerned.
+#
+sub line_done
+{
+   my $str = shift;
+
+   if($$str{pos} > $#{$$str{wrapped}}) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
 
 sub get_next_line
 {
@@ -2566,22 +2571,47 @@ sub get_next_line
 #
 sub in_more
 {
-   my ($conn,$debug) = @_;
-   my $world = world($conn);
+   my ($conn,$debug,$add) = @_;
+   my $w = world($conn);
 
    if(!defined @state{p_more} || !@state{p_more}) {
       return 0;
-   } elsif(in_hist($world)) {    # in history buffer is just a version of more
+   } elsif(in_hist($w)) {    # in history buffer is just a version of more
+      loggit("in_more: 1");
       return 1;
-   } elsif(!defined @socket{$world}) {
+   } elsif(!defined @socket{$w}) {
       return 0;
-   } elsif(@socket{$world}->{more_cnt} >= min_visible($world) - overlap()) {
+   } elsif(@socket{$w}->{more_cnt} >= min_visible($w)-overlap() &&
+      $#{@pending{$w}} > -1) {
+#      loggit("In more1: %s > %s {%s}",
+#             @socket{$w}->{more_cnt}+$add,
+#             min_visible($w)-overlap(),
+#             $#{@pending{$w}});
+      # loggit("%s",print_var(@pending{$w}));
       return 1;
    } else {
       return 0;
    }
 }
 
+#
+# line_cleanup
+#
+sub line_finish
+{
+   my ($w,$str) = @_;
+
+   delete @pending{$w}->[0]->{wrapped};
+   delete @pending{$w}->[0]->{stat};
+   delete @pending{$w}->[0]->{size};
+   delete @pending{$w}->[0]->{pos};
+
+   if(not @pending{$w}->[0]->{internal}) {       # don't store internal msgs
+      push(@{@history{$w}},@pending{$w}->[0]);
+   }
+      
+   return shift(@{@pending{$w}});
+}
 
 #
 # release_some_pending
@@ -2603,17 +2633,18 @@ sub release_some_pending
    }
 
    my $str = @pending{$w}->[0];
-   while(!in_more($w) && $#{@pending{$w}} > -1) {
+   while(!in_more($w,0,1) && $#{@pending{$w}} > -1) {
       my $line = get_next_line($w);
       $start = $line if(!defined $start);
       if(!defined $line) {
-         push(@{@history{$w}},shift(@{@pending{$w}}));
          if($#orig == 0 && defined $start && $start != 0) {
-            push(@orig,txt(ansi_substr(@history{$w}->[-1]->{txt},$start)));
+            push(@orig,txt(ansi_substr(@pending{$w}->[0],$start)));
          } else {
-            push(@orig,@history{$w}->[-1]->{txt});
+            push(@orig,@pending{$w}->[0]->{txt});
          }
          $end = undef;
+
+         line_finish($w);
       } else {
          push(@out,txt($line));
          if(defined @socket{$w}) {
@@ -2626,6 +2657,11 @@ sub release_some_pending
          $end = $line->{end};
       }
    }
+
+   if($#{@pending{$w}} > -1 && line_done(@pending{$w}->[0])) {
+      line_finish($w);
+   }
+   # loggit("in_more_after: '%s'",in_more($w));
 
    if(defined $end && ansi_length(@pending{$w}->[0]) > $end) {
       push(@orig,txt(ansi_substr(@pending{$w}->[0],0,$end)));
@@ -2643,6 +2679,7 @@ sub release_some_pending
 
    echo_world($w,join("\n",@out),join("\n",@orig));
    return $#out + 1;
+   draw_bar();
 }
 
 
@@ -2885,45 +2922,6 @@ sub ansi_stat_wrap
 }
 
 
-
-
-#
-# ansi_cat
-#    Add string $add to the end of $str
-#
-sub ansi_cat
-{
-   my ($str,$add) = @_;
-
-   $str = ansi_init($str) if(ref($str) ne "HASH");
-   $add = ansi_init($add) if(ref($add) ne "HASH");
-
-   my $pos = $#{$$str{ch}} + 1;
-   for my $i (0 .. $#{$$add{ch}}) {
-      # add each escape code one at a time
-      $$str{code}->[$pos] = [];
-      for my $x (0 .. $#{$$add{code}->[$i]}) {
-         $$str{code}->[$pos]->[$x] = $$add{code}->[$i]->[$x];
-      }
-
-      for my $x (0 .. $#{$$add{snap}->[$i]}) {
-         $$str{snap}->[$pos]->[$x] = $$add{snap}->[$i]->[$x];
-      }
-      $$str{ch}->[$pos] = $$add{ch}->[$i];
-      # add the character that follows the escape code (if any)
-      $pos++;
-   }
-
-   if($#{$$str{snap}->[$pos-1]} != -1) {
-      $$str{ch}->[$pos] = "";
-      $$str{code}->[$pos] = [ chr(27) . "[0m" ];
-      $$str{snap }->[$pos] = [];
-   }
-   return $str;
-}
-
-
-
 #
 # overlap
 #    shortcut to show how many lines should be overlapped so the user
@@ -3094,81 +3092,6 @@ sub draw_output_world_new
    # optimize_start();
    e($conn,"%s",join("\n",@out));
    # optimize_end();
-}
-
-
-sub draw_output_world
-{
-   my $conn = shift;
-   my $w = current_world($conn);
-   my ($hpos,$wpos,$cnt,@out) = (undef,-1,0);
-
-   return;
-
-   if($w =~ /\(/) {
-      delete @history{$w};
-      delete @pending{$w};
-      return;
-   } 
-
-   @history{$w} = [] if !defined @history{$w};
-
-   # show any partial pending output
-   $cnt += release_some_pending($conn,$w);
-
-   if(!in_hist($w) && 
-      defined @pending{$w} &&
-      $#{@pending{$w}} >= 0 &&
-      defined @pending{$w}->[0]->{pos}) {
-      for(my $i=0;$cnt < output_end($conn)&&$i<@pending{$w}->[0]->{pos};$i++) {
-         push(@out,txt(@pending{$w}->[0]->{wrapped}->[$i]));
-      }
-   }
-
-#   return if $hpos == 0;                                 # no history, done
-
-   if(in_hist($w)) {                               # history starting point
-      $hpos = hist_pos($w);
-      $wpos = hist_pos_partial($w);
-   } else {                                            # or end of history
-      $hpos = $#{@history{$w}} + 1;
-   }
-
-   if(defined @history{$w} && $#{@history{$w}} >= 0) {
-      while($cnt < output_end($conn) && $hpos >= 0) {          # show history
-         if($wpos <= -1) {                             # point to next string
-            $hpos--;
-            $wpos = $#{@history{$w}->[$hpos]->{wrapped}};
-            if($wpos == -1) {                                # blank line fix
-               unshift(@out,"");
-               next;
-            }
-         }
-
-         if($hpos == -1) {
-            # done
-         } elsif(@history{$w}->[$hpos]->{gagged} || 
-            @history{$w}->[$hpos]->{internal} == 1) {           # skip string
-            $wpos = -1;
-         } else {
-            unshift(@out,txt(@history{$w}->[$hpos]->{wrapped}->[$wpos--]));
-            $cnt++;
-         }
-      }
-   }
-
-   while($cnt < output_end($conn)) {
-      unshift(@out,"");
-      $cnt++;
-   }
-
-
-   if(is_web($conn)) {
-      ws_echo($conn,"d","clear");          # clear output websocket window
-      ws_echo($conn,"t",join("\n",@out));
-   } else {
-      echo_console("%s",join("\n",@out));
-   }
 }
 
 #
@@ -3449,11 +3372,16 @@ sub print_state
 #
 sub key_dump
 {
-   my $file;
+   my ($conn,$txt,$force) = @_;
+   my $w = world($conn);
 
    my $input = input();
    for my $i (0 .. $#$input) {
       LOGGIT("$i : '%s'\n",join('',@{$$input[$i]}));
+   }
+
+   for my $i (0 .. $#{@history{$w}}) {
+      LOGGIT("$i : %s",print_var(@history{$w}->[$i]));
    }
 }
 
@@ -4689,7 +4617,7 @@ sub activity_count
 
    for my $world (grep {!/muddler/} keys %pending) {
       if($#{@pending{$world}} >= 0 && !world_visible($world)) {
-#         loggit("Acvity: '%s' %s",$world,$#{@pending{$world}});
+#         loggit("Acvity: '%s' %s",$world,print_var(@pending{$world}));
          $cnt++;
       }
    }
@@ -4712,8 +4640,8 @@ sub draw_bar
 
    if(is_remote()) {
       if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
-         @state{remote_bar} ne @state{bar_remote} ||
-         @state{bar_name} ne name(@state{world})) {
+         @state{remote_bar} ne @state{bar_prev} ||
+         @state{bar_time} ne "$hr$min") {
          @state{bar_time} = "$hr$min";
          @state{bar_size} = @state{size_x}.@state{size_y};
          @state{bar_prev} = "_" if(!defined @state{bar_prev});
@@ -4737,6 +4665,13 @@ sub draw_bar
       @state{bar_pos} ne hist_pos(@state{world}) ||
       @state{size_x}.@state{size_y} ne @state{bar_size})) {
       #---
+#      loggit("draw_bar: force=%s,act=%s/%s,name=%s/%s,more=%s/%s/%s,pos=%s/%s",
+#         $force,
+#         @state{bar_activity},$cnt,
+#         @state{bar_name},name(@state{world}),
+#         @state{bar_more},pending(@state{world}),in_more(@state{world}),
+#         @state{bar_pos},hist_pos(@state{world}));
+#      loggit("draw_bar: %s",code("shortest"));
       @state{bar_time} = "$hr$min";
       @state{bar_name} = name(@state{world});
       @state{bar_more} = pending(@state{world});
@@ -5125,7 +5060,11 @@ sub dialog_populate
 
    if(in_dialog()) { 
        if(dialog_type($pos) eq "check") {
-          $txt = "x" if($txt ne " " && $txt ne "" && $txt ne "0");
+          if($txt ne " " && $txt ne "" && $txt ne "0") {
+             $txt = "x";
+          } else {
+             $txt = " ";
+          }
        }
        @state{dialog}->{$pos}->{input} = [[ split(//,$txt) ]];
        @state{dialog}->{$pos}->{line_pos} = length($txt);
@@ -5394,6 +5333,7 @@ sub set_save
    my $conn = @state{dialog}->{conn};
    my $count = 0;
    my %lookup;
+   my $web;
 
    for my $key (keys %var) {
       @lookup{@var{$key}->{setup}} = $key if(defined @var{$key}->{setup});
@@ -5402,28 +5342,49 @@ sub set_save
 
    for my $i (1 .. dialog_lines()) {
        my $val = dialog_fixed_value($i);
+       loggit("val: '%s'\n",$val);
        if(@state{"p_" . @lookup{dialog_name($i)}} ne $val) {
-          @state{"p_" . @lookup{dialog_name($i)}} = $val;
-          $count++;
+          if(@lookup{dialog_name($i)} eq "web") {
+             $web = $val;
+             $count++;
+          } else {
+             @state{"p_" . @lookup{dialog_name($i)}} = $val;
+             $count++;
+          }
        }
    }
    save_differential();
 
    dialog_cancel();
 
+   if($web ne undef) { # run here or output will be lost
+      cmd_web($conn,($web) ?  "on" : "off");
+   }
+
    if($count == 0) {
       echo($conn,"%% No changes made, nothing saved.");
    } else {
       echo($conn,"%% %s changes saved to ~/.muddler.",$count);
    }
+
+   if($web ne undef) {    # run here or output will be lost by dialog_cancel
+      cmd_web($conn,($web) ?  "on" : "off");
+   }
 }
 
-
+#
+# dialog_input_size
+#   Return the size of the current dialog window
+#
 sub dialog_input_size
 {
    return size_y() - dialog_max() - 14;
 }
 
+#
+# dialog_type
+#   Return the type of the requested dialog item/line. i.e. text/check/etc.
+#
 sub dialog_type
 {
    my $pos;
@@ -5433,7 +5394,7 @@ sub dialog_type
    } elsif($#_ == 0) {
       $pos = shift;
    } else {
-      die("dialog_type supports either no or one arguements");
+      die("dialog_type supports either one or no arguements");
    }
 
    if(defined @state{dialog} &&
@@ -5443,6 +5404,10 @@ sub dialog_type
    }
 }
 
+#
+# dialog_name
+#    return the name of the requested dialog item/line as defined in @var
+#
 sub dialog_name
 {
    my $pos;
@@ -5462,6 +5427,10 @@ sub dialog_name
    }
 }
 
+#
+# dialog_value
+#    return the value of the requested dialog item/line
+#
 sub dialog_value
 {
    my $pos;
@@ -5483,6 +5452,12 @@ sub dialog_value
 }
 
 
+#
+# cmd_request_info
+#    The user on the remote interface just requested information that is
+#    stored on the "local" process. Send a message requesting this
+#    information.
+#
 sub cmd_request_info
 {
    my ($conn,$txt) = (shift,lc(trim(shift)));
@@ -5496,7 +5471,11 @@ sub cmd_request_info
       return echo($conn,"%% file transfers disabled due to missing " .
          "MIME::Base64 module");
    }
-   if(defined @address{$txt}) {
+
+   if(!is_remote()) {
+      return echo($conn,"%% request_info is an internal command and cannot " .
+                        "be used directly.");
+   } elsif(defined @address{$txt}) {
       ws_echo($conn,"r",mydump($txt,@address{$txt}));
    } else {
       LOGGIT("Invalid world. '$txt'");
@@ -5543,21 +5522,6 @@ sub undump
 #                                                                            #
 #----------------------------------------------------------------------------#
 
-
-sub cmd_rewrap
-{
-   my ($conn,$txt) = @_;
-
-   for my $w (keys %history) {
-      history($conn,"Rewrapping: $w [" . $#{@history{$w}} . "]",1);
-      for(my $i=0;$i <= $#{@history{$w}};$i++) {
-         my $str = @history{$w}->[$i];
-         $$str{wrapped} = [ ansi_wrap($$str{txt},@state{size_y}) ];
-         $$str{stat} = [ @state{ansi_stat} ];
-         $$str{size} = @state{size_y};
-      }
-   }
-}
 
 sub items
 {
@@ -5818,17 +5782,20 @@ sub cmd_dc
 sub cmd_stat
 {
    my ($conn,$txt) = @_;
-   my (%stat, %cache, $max,$sock);
+   my (%stat, %cache, $max,$sock, %lines);
 
+   loggit("%s",print_var(\%history));
 #   @history{dev} = [];
 #   delete @history{dev};
 #   @socket{dev}->{history_pos} = -1;
 #   @socket{dev}->{history_pos_partial} = -1;
 
+   loggit("%s",print_var(@history{"cavemush"}->[2]));
    for my $world (keys %history) {
       $max = length($world) if length($world) > $max;
       for my $i (0 .. $#{@history{$world}}) {
          @stat{$world} += length(@history{$world}->[$i]->{txt});
+         @lines{$world} += 1;
       }
 
       my $cache = @state{cache};
@@ -5845,7 +5812,7 @@ sub cmd_stat
          $sock = "N/A";
       }
       echo($conn,"%% %*s : %10s  %10s",
-           $max,$world,@stat{$world},@cache{$world});
+           $max,$world,@stat{$world},@lines{$world});
    }
 
    for my $world (keys %stat) {
@@ -5932,6 +5899,7 @@ sub var_init
    @var{debug}     = { set=>1                                              };
    @var{password}  = { web=>"Password",type=>"word",set=>1                 };
    @var{allow}     = { web=>"Allow List",type=>"text",set=>1, null=>1      };
+   @var{web}       = { web=>"Web Interface On",type=>"check",set=>1        };
    @var{watchdog}  = { setup=>"WatchDog Matching",type=>"check",set=>1,
                        chk => "on|off|0|1"                                 };
    @var{theme}     = { web=>"Theme",type=>"word",set=>1, 
@@ -6310,7 +6278,7 @@ sub cmd_console
       revert_console();
       clear_screen($conn);
       @state{console} = 0;
-      if(@state{web} == 0) {
+      if(@state{p_web} == 0) {
          cmd_web($conn,"on");
          printf("%% WeB enabled due to disabling console. Connect via:\n");
          printf("%%   http://localhost:@state{p_port}, Password: @state{p_password}");
@@ -6416,7 +6384,7 @@ sub cmd_editor
                        "Port:word,KeepAlive CMD:text," .
                        "Encoding:cycle." . join(".",encoding_values()) .",".
                        "Use SSL to connnect:check,Log output to $w.log:check,".
-                       "Auto Reconnect:check",
+                       "Auto Reconnect w/web interface:check",
                   ["Cancel:dialog_cancel",
                    "Save:editor_save",
                    "Delete:editor_delete",
@@ -6611,6 +6579,7 @@ sub load
    }
 
    while(<$file>) {
+      my $orig = $_;
       s/\r|\n//g;
       if(/^\s*state:([^:]+):/) {                    # state variable values
          @state{$1} = $';
@@ -6628,7 +6597,7 @@ sub load
          }
          $name = undef;
       } else {
-        echo($conn,"% Corrupted @ENV{HOME}/.muddler file found on line $.");
+        echo($conn,"% Corrupted @ENV{HOME}/.muddler file found on line $. - '%s'",$_);
         close($file);
         return 1;
       }
@@ -6728,13 +6697,18 @@ sub cmd_listdef
    $pat = glob2re(trim($str)) if($str !~ /^\s*$/);
    
    for my $key (sort keys %def) {
-      next if @def{$key}->{atr} !~ /g/;
       my $count = 0;
 
       if(($pat eq undef || $key =~ /^$pat$/i) &&
          (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
         for my $line (ansi_wrap(@def{$key}->{txt},49)) {
            if($count++ == 0) {
+               loggit("Line 1: %s - %s",world($conn),sprintf("%-15s %4s %-8s %s",
+                    $key,
+                    @def{$key}->{atr},
+                    @def{$key}->{world},
+                    txt($line)
+                   ));
                history(world($conn),sprintf("%-15s %4s %-8s %s",
                     $key,
                     @def{$key}->{atr},
@@ -6742,6 +6716,7 @@ sub cmd_listdef
                     txt($line)
                    ));
             } else {
+               loggit("Line 1+: print");
                history(world($conn),sprintf("%-15s %4s %-8s %s",
                     "",
                     "",
@@ -6875,7 +6850,6 @@ sub cmd_def
                       regexp=> $reg,
                     };
       @def{$name}->{hits} = 1 if $$opt{1};
-      loggit("GOt to the end - $name");
    }
 }
 
@@ -6891,12 +6865,28 @@ sub cmd_undef
 #-#
 #-# ------------------------------------------------------------------------
    my ($conn,$str) = (shift,trim(shift));
+   my $count = 0;
+   my $pat;
 
-   if(defined @def{$str}) {
-      loggit("Deleting: $str");
-      delete @def{$str};
+   if($str !~ /^\s*$/) {
+      $pat = glob2re(trim($str));
    } else {
-      echo($conn,"%% UNDEF: Macro \"%s\" was not defined.",$str);
+      return echo($conn,"%% UNDEF: No macro or pattern provided.");
+   }
+
+   for my $key (sort keys %def) {
+      eval {
+         if($key =~ /^$pat$/i) {
+            $count++;
+            delete @def{$key};
+         }
+      };
+   }
+
+   if($count) {
+      echo($conn,"%% UNDEF: $count macros undefined");
+   } else {
+      echo($conn,"%% UNDEF: no macros matched '%s'",$str);
    }
 }
 
@@ -7170,6 +7160,7 @@ sub cmd_web
 #-# ------------------------------------------------------------------------
    my ($conn,$status) = @_;
 
+   loggit("web called: '%s'",join(',',@_));
    if(is_remote()) {
       return echo($conn,
                   "%% Web/Websocket is disabled when --remote is enabled."
@@ -7196,7 +7187,7 @@ sub cmd_web
       }
       return draw_screen($conn);
 #   } elsif($status =~ /^\s*$/) {
-#      echo($conn,"Web Interface: %s",@state{web} ? "on" : "off");
+#      echo($conn,"Web Interface: %s",@state{p_web} ? "on" : "off");
 #      echo($conn,"   Protocol:      %s",use_secure() ? "https [secure]" :
 #          "http [non-secure]");
 #      echo($conn,"   Cert file:     %s",nvl(@state{p_cert},"Not defined"));
@@ -7212,7 +7203,8 @@ sub cmd_web
       @state{"p_" . lc($1)} = trim($2);
       save_differential();
    } elsif($status =~ /^\s*on\s*$/i) {
-      if(@state{web} == 1) {
+      loggit("# status: on");
+      if(@state{p_web} == 1) {
          echo($conn,
               "%% Web already enabled, Connect via: http%s://localhost:%s",
               use_secure() ? "s" : "",
@@ -7229,14 +7221,15 @@ sub cmd_web
          }
       }
    } elsif($status =~ /^\s*off\s*$/i) {
-      if(@state{web} == 0) {
+      loggit("# status: off");
+      if(@state{p_web} == 0) {
          echo($conn,"%% Web/Websocket server is already disabled.");
       } else {
          echo($conn,"%% Web/Websocket server has been disabled.");
          for my $key (keys %http) {
             @http{$key}->{sock}->close;
          }
-         @state{web} = 0;
+         @state{p_web} = 0;
          eval { # manually shutdown http/websock. Calling websock's
                 # way will shut everything down. This is good for their
                 # code but not ours.
@@ -7335,7 +7328,6 @@ sub cmd_version
 
    my ($conn,$txt) = @_;
    show_banner($conn,1);
-   echo($conn,"Cksum: '%s'\n",join(',',keys %{@state{chksum}}));
 }
 
 #
@@ -7977,15 +7969,14 @@ sub reload_code
    my $count = 0;
 
    my $new = get_checksums();
-   my $old = @state{chksum};
-   $old = {} if $old eq undef;
+   my $old = (defined @state{chksum}) ? @state{chksum} : {};
 
-   for my $key (keys %$new) {
+   for my $key (sort keys %$new) {
       if((@state{state} eq "init" || 
          (!defined $$old{$key} || $$old{$key}->{chk} ne $$new{$key}->{chk}))) {
          
          LOGGIT("%% Reloading: %s",$key) if @state{state} ne "init";
-#         echo($conn,"%% Reloading: %s",$key) if @state{state} ne "init";
+         echo($conn,"%% Reloading: %s",$key) if @state{state} ne "init";
          eval($$new{$key}->{src});
          $count++;
          if($@) {
@@ -8006,7 +7997,7 @@ sub reload_code
    encoding_init();
    load_modules() if(!$nomodules);
    callback_init();
-   # save_differential();
+   save_differential();
 
 
    if($count == 0) {
@@ -8109,26 +8100,28 @@ sub tick
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && 
          defined @socket{$w}->{connected} &&
-         time()-@socket{$w}->{last_send} > 100) {
+         time()-@socket{$w}->{last_send} > 300) {
 
          @state{out_nomore} = 1;
          if(defined @address{$w} &&
             defined @address{$w}->{keepalive} &&
             trim(@address{$w}->{keepalive}) ne "") {
-            out($w,@address{$w}->{keepalive} . "\n",ts());
+
+            if(@address{$w}->{keepalive} ne "off") {
+               out($w,@address{$w}->{keepalive} . "\n",ts());
+            }
          } else {
-            my @r = ( "IDLING","TO","THE","END",sprintf("%d",rand(1000)) ); 
-            myshuffle(\@r);
-            my $rand = join('_',@r);
-            out($w,"help $rand");
+            out($w,"help ### idling to the end 42 ###");
+            my $str = "### idling to the end \\d+ ###";
             @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
-                 atr    => "g",
-                 txt    => "*$rand*",
-                 world  => $w,
-                 regexp=> "(?i)($rand|I can't help you)",
-                 hits   => 1,
-                 created => time()
-               };
+                 atr       => "g",
+                 txt       => "*$str*",
+                 world     => $w,
+                 keepalive => 1,
+                 regexp    => "(?i)($str|I can't help you)",
+                 hits      => 1,
+                 created   => time()
+            };
          }
       }
 
@@ -8432,36 +8425,6 @@ sub sig_winch
    @state{winch} = time();
 }
 
-# sub install_modules
-# {
-#    my (%pkg, %cpan);
-#    load_modules();
-# 
-#    for my $key (keys %mod) {
-#       if(!module_enabled($key) && defined @mod{$key}->{pkg}) {
-#          @pkg{@mod{$key}->{pkg}} = 1;
-#       }
-#       if(!module_enabled($key) && defined @mod{$key}->{cpan} && @mod{$key}->{cpan} eq "yes") {
-#          @cpan{$key} = 1;
-#       }
-#    }
-# 
-#    if(scalar keys %pkg > 0) {
-#       printf("running: sudo apt install %s\n",join(" ",keys %pkg));
-#       system(sprintf("sudo apt install %s\n",join(" ",keys %pkg)));
-#    }
-# 
-# 
-#    if(scalar keys %cpan > 0) {
-#       for my $key (keys %cpan) {
-#          printf("running: perl -MCPAN -e \"install $key\"\n");
-#          system("perl -MCPAN -e \"install $key\"");
-#       }
-#    }
-# 
-#    exit();
-# }
-
 for my $i (0 .. $#ARGV) {
    if(@ARGV[$i] eq "--noconsole") {
       @state{console} = 0;
@@ -8487,10 +8450,13 @@ for my $i (0 .. $#ARGV) {
       }
    } elsif(@ARGV[$i] =~ /^--remote$/) {
       @state{remote} = 1;
+   } elsif(@ARGV[$i] =~ /^--test-worlds$/) {
+      exit test_worlds();
    } else {
      die("Invalid Option: '@ARGV[$i]'");
    }
 }
+
 load_modules();
 
 ws_init() if !console();
@@ -11173,11 +11139,11 @@ START: muddler_client.html
        } else {
          // connection was broken, let's reconnect
          const now = +new Date();
-         if(last_conn == undefined || now - last_conn > 2000) {
+         if(last_conn == undefined || now - last_conn > 5000) {
             last_conn = now;
             conn.reconnect();
+            output.appendMessage('logMessage', '%% Reconnecting to server...' + conn.socket.readyState);
          }
-         output.appendMessage('logMessage', '%% Reconnecting to server...' + conn.socket.readyState);
        }
      }
   
