@@ -1,53 +1,60 @@
 ![Screenshot](screenshot.jpg)
-This screenshot three windows displaying a connection to 8bit and Parlor via Firefox, a remote session, and the original instance of muddler. The foremost window shows the world editor for 8bit. All three windows are interactive and can show the same or different worlds.
+Three windows are displaying a connection to 8bit and Parlor via Firefox, a remote session, and the original instance of muddler. The foremost window shows the world editor for 8bit. All three windows are effectively using the same connections but may show different worlds.
 
 # muddler
 
-Muddler is a client for connecting with text based MUDs. A console and web interface provide a seperate panel for keyboard and world output to
-interact with one or many MUDs. Its primary purpose is to be an improved but visually similar clone of a Tinyfugue.
+Muddler is a client for connecting with text based MUDs. A console and web interface provide a seperate panels for keyboard and world output to
+interact with one or more MUDs. Its primary purpose is to be an improved but visually similar version of Tinyfugue.
 
-
-# Features
+# Key Improvements
 ```
-   o Console support - Mudding via your favorite terminal
-   o World editor for editing existing worlds in a friendly
-        half screen editor instead of issueing instead of
-        issuing a long command on the console.
-   o Websocket support - Think mudding via your browser
-        dark / light theme / mobile interface supported
-   o Tinyfugue like command support.
-   o SSL support when connect to worlds or via the browser
-   o 256 color, UTF8, fansi, latin encoding support 
-   o Connect to multiple worlds at the same time
-   o More / pausing output control by tab character
-   o History buffer via page up/down or /recall
-   o keep-a-live to prevent disconnects
-   o Activity notifications
-   o /update pulls the most current version of muddler from github
-     and loads it without restarting (usually).
-   o Spell checking
-       Mispelled words will be shown as bold in the terminal.
-       Suggestions can be listed and cycled through with Esc-Q.
-       The web interface will show a red squiggly underline for
-       misspelled words (dependant upon browser).
-   o Multiple Window Support - Fire up multiple browser windows or terminals
-       as needed. Each window has its own focus independant of other windows.
-   o Muddler will work if any optional perl modules are not installed.
-   o Remote console support to allow flexability in connection options without
-     having to loose your connection(s).
-   o Autosaving of configuration and worlds.
+   o Dialog editor for many key commands instead of complex commands
+   o Optional Web Interface for phone or browser use
+   o Integrated input spell check
+   o 256 Color, UTF8, Fansi, Latin Support
+   o Multiple Window support via multiple terminals and websockets
+   o Activitly developed
+
+# Similarties
+```
+   o Support of many Tinyfugue commands
+   o Connect to Multiple worlds at the same time
+   o Input and Output pane to keep your typing seperate from MUD output
+   o Visually the same interface as TinyFugue on console and via the web.
+     I.e. Input / output window panes for keyboard and MUD output
+   o Internal /help Command
+   o Pausable output to control output
+   o History buffer scrolling via PGUP/PGDOWN keys
+
+# Supported Platforms
+```
+   muddler runs on almost anything that supports Perl. The list of
+   supported platforms is due more to Perl then say good coding on my
+   part.
+
+   o Windows via WSL
+   o Android via Termux
+   o Drobo NAS
+   o More standard UNIX plantorms (Linux/NetBSD/etc)
+   o The Web interface can be viewed on any browser
+
 
 ```
 # muddler goals
 ```
-   o Go for Simplicity.
-   o Allow users to switch between computers with ease. The main muddler
-     process still needs to run a particular server but viewing can be
-     switched from computer to computer.
-   o Make a rich and full featured web interface
-   o Support a "language" either tinyfugue like or maybe mush?
-     (mush is just an easy answer since i've already written a mush in perl)
+   o Simplicity. A MUD client should be simple to use.
+   o Aid users in switching between computers/phones without loosing
+     connectivity.
+   o Waste time writing code few will use. We're not in 1990 any more.
+   o Simple installation  [its a goal, not a feature]
+   o Improvements - Find a bug or something you don't like, I'll make
+     it my challenge to fix it or improve upon the issue.
+
+# References
 ```
+   MUDs: https://en.wikipedia.org/wiki/Multi-user_dungeon
+   TinyFugue: https://tinyfugue.sourceforge.net/
+
 # Installation
 ```
    The below install steps are for a Linux system. Please see the specialized
@@ -90,22 +97,8 @@ interact with one or many MUDs. Its primary purpose is to be an improved but vis
          Lists all commands or provides help on an individual command.
       /quit
          Had enough, quit muddler.
-
-   Web Commands:
       /web
-         Show the status variables for the web server
-      /web [on|off]
-         Turn the web interace "on" or "off". Default is off.
-      /set cert = <file>
-         Specify your public certificate file for https.
-      /set key = <file>
-         Specify your private key file for https [non-self signed required]
-      /set password = <password>
-         Sets the password that must be entered when connecting vai the web.
-      /set port = <port>
-         This command sets the port that muddler will use when you connect
-         to muddler via your browser. Just type in http://localhost:<port>
-         to connect. The default port is port 9000.
+         Dialog to edit the web interface settings.
 
          Note: If you plan to connect outside your network to muddler, the
                program uses <port> for web traffic and <port> + 1 for web-
@@ -144,14 +137,3 @@ interact with one or many MUDs. Its primary purpose is to be an improved but vis
       Up         | Switch to world with activity, or cycle up through connected worlds.
       Shift Up   | Cycle through all worlds (connected or disconnected)
       Shift Down | Cycle through all worlds (connected or disconnected)
-
-
-```
-# TinyFugue info/differences
-```
-   If you wish to use your TinyFugue world file, just rename it to ~/.tfworlds.
-   This file will be read on startup as long as there is not a .muddler file
-   to read. The TinyFugue world file will not be modified by muddler.
-
-   Saving stuff? TinyFugue requires you to do a /saveworld as needed.
-   Muddler automatically saves data as needed to its .muddler file.
