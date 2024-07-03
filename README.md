@@ -3,7 +3,9 @@ This screenshot three windows displaying a connection to 8bit and Parlor via Fir
 
 # muddler
 
-   A perl based mudding reminiscent of TinyFugue with a few twists. 
+Muddler is a client for connecting with text based MUDs. A console and web interface provide a seperate panel for keyboard and world output to
+interact with one or many MUDs. Its primary purpose is to be an improved but visually similar clone of a Tinyfugue.
+
 
 # Features
 ```
