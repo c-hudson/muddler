@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #-#         ( A 90dies mud client written today ) 
-#-#       o               v1.0a                   
+#-#       o               v1.1                   
 #-#      o _____                __  __ _          
 #-#    _||_| u |    _ _  _ _ __| /_| /| |  __ ____
 #-#   (        |== / v \| | |  _ | _ || |/ -_) __/
@@ -505,6 +505,11 @@ sub ansi_init
       ansi_add($data,0,"\e[$1$2");
    }
    ansi_add($data,1,$str) if($str ne undef);
+
+   # reset state at end of line
+   if($#{$$data{snap}->[$#{$$data{snap}}]} >= 0) {
+      ansi_add($data,0,"\e[0m");
+   }
 
    return $data;
 }
@@ -1873,11 +1878,13 @@ sub hist_pos
       delete @socket{$w}->{hist_pos};
       delete @socket{$w}->{hist_offset};
    } elsif($action ne undef) {
-      @socket{$w}->{hist_pos} = $action;
-      @socket{$w}->{hist_offset} += $offset;
-      if(@socket{$w}->{hist_offset} == 0) {
-         delete @socket{$w}->{hist_offset};
-         delete @socket{$w}->{hist_pos};
+      if($action > 0) {                # don't rollpast begining of history
+         @socket{$w}->{hist_pos} = $action;
+         @socket{$w}->{hist_offset} += $offset;
+         if(@socket{$w}->{hist_offset} == 0) {
+            delete @socket{$w}->{hist_offset};
+            delete @socket{$w}->{hist_pos};
+         }
       }
    } elsif(defined @socket{$w}) {
       return @socket{$w}->{hist_pos};
@@ -2514,7 +2521,12 @@ sub loggit_world
     } else {
        $log = @state{"$w.log"};
     }
-    printf($log "[%s] %s\n",ts(),$txt);
+
+    if($txt =~ /\e/) {
+       printf($log "[%s] %s\n",ts(),txt(ansi_init($txt)));
+    } else {
+       printf($log "[%s] %s\n",ts(),$txt);
+    }
 }
 
 
@@ -2577,7 +2589,6 @@ sub in_more
    if(!defined @state{p_more} || !@state{p_more}) {
       return 0;
    } elsif(in_hist($w)) {    # in history buffer is just a version of more
-      loggit("in_more: 1");
       return 1;
    } elsif(!defined @socket{$w}) {
       return 0;
@@ -3641,6 +3652,7 @@ sub out
 
       my $sock = @socket{$world}->{sock};
       # loggit("out[%s] %s [%s]",$world,$msg,code("short"));
+      # loggit("out[%s] %s",$world,$msg);
       printf($sock "%s",$msg);
       if(!defined @state{out_nomore}) {
          reset_more($world);
@@ -7647,6 +7659,21 @@ sub small
    }
 }
 
+sub shorten_time
+{
+   my $secs = shift;
+
+   if($secs > 86400) {
+      return sprintf("%ds",$secs / 86400);
+   } elsif($secs > 3600) {
+      return sprintf("%dh",$secs / 3600);
+   } elsif($secs > 60) {
+      return sprintf("%dm",$secs / 60);
+   } else {
+      return $secs. "s";
+   }
+}
+
 sub cmd_listsockets
 {
 #-# summary: internal
@@ -7656,29 +7683,33 @@ sub cmd_listsockets
 #-# ------------------------------------------------------------------------
    my $conn = shift;
 
-   echo($conn,"%-16s %-26s %-5s %4s %-6s",
-        "NAME","HOST","PORT","Secure","Pend");
+   echo($conn,"%-16s %-26s %-5s %6s %-4s %-6s %-6s",
+        "NAME","HOST","PORT","Secure","Pend","Ping", "Idle");
    for my $key (keys %ws) {
        echo($conn,
-            "%-16s %-26s %-5s %-6s %-4s %s",
-            @ws{$key}->{auth} ? "Web [auth]" : "Web",
+            "%-16s %-26s %-5s %-6s %-4s %-6s %-6s %s",
+            @ws{$key}->{auth} ? "Web [ath]" : "Web",
             @ws{$key}->{ip},
             @ws{$key}->{port},
             @state{secure} ? "Yes" : "No",
             "",
+            "","",
             " [". @ws{$key}->{world} . "]"
            );
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && $w ne "muddler") {
          echo($conn,
-              "%-16s %-26s %-5s %-6s %-4s",
+              "%-16s %-26s %-5s %-6s %-4s %-6s %-6s",
               @address{$w}->{name},
               @address{$w}->{host},
               @address{$w}->{port},
               @address{$w}->{ssl} ? "Yes" : "No",
               ((defined @pending{$w} && $#{@pending{$w}} > -1) ?
-                 ($#{@pending{$w}}+1) : ""));
+                 ($#{@pending{$w}}+1) : ""),
+              shorten_time((@socket{$w}->{next_check} + 180) - 
+                 (time() - @socket{$w}->{last_send})),
+              shorten_time(time() - @socket{$w}->{last_send}));
       }
    }
 }
@@ -8100,8 +8131,9 @@ sub tick
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && 
          defined @socket{$w}->{connected} &&
-         time()-@socket{$w}->{last_send} > 300) {
+         time()-@socket{$w}->{last_send} > @socket{$w}->{next_check}) {
 
+         @socket{$w}->{next_check} = 180 + sprintf("%d",rand(60 * 5));
          @state{out_nomore} = 1;
          if(defined @address{$w} &&
             defined @address{$w}->{keepalive} &&
@@ -8111,8 +8143,8 @@ sub tick
                out($w,@address{$w}->{keepalive} . "\n",ts());
             }
          } else {
-            out($w,"help ### idling to the end 42 ###");
-            my $str = "### idling to the end \\d+ ###";
+            out($w,"help commands %d ###",rand(1000));
+            my $str = "commands \\d+ ###";
             @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
                  atr       => "g",
                  txt       => "*$str*",
