@@ -3662,8 +3662,8 @@ sub out
 
       if(module_enabled("Encode")) {
          my $enc;
-         if(defined @address{$world} && @address{$world}->{decode}) {
-             $enc = @address{world($conn)}->{decode};
+         if(defined @address{$world} && defined @address{$world}->{decode}) {
+             $enc = @address{$world}->{decode};
          } else {
             $enc = "UTF-8";
          }
@@ -7199,9 +7199,8 @@ sub cmd_web
 #-#       A non-self signed cert/key is required for https to work. Without
 #-#       one your browser will fail to connect.
 #-# ------------------------------------------------------------------------
-   my ($conn,$status) = @_;
+   my ($conn,$status,$startup) = @_;
 
-   loggit("web called: '%s'",join(',',@_));
    if(is_remote()) {
       return echo($conn,
                   "%% Web/Websocket is disabled when --remote is enabled."
@@ -7244,8 +7243,7 @@ sub cmd_web
       @state{"p_" . lc($1)} = trim($2);
       save_differential();
    } elsif($status =~ /^\s*on\s*$/i) {
-      loggit("# status: on");
-      if(@state{p_web} == 1) {
+      if(@state{p_web} == 1 && !$startup) {
          echo($conn,
               "%% Web already enabled, Connect via: http%s://localhost:%s",
               use_secure() ? "s" : "",
@@ -7262,7 +7260,6 @@ sub cmd_web
          }
       }
    } elsif($status =~ /^\s*off\s*$/i) {
-      loggit("# status: off");
       if(@state{p_web} == 0) {
          echo($conn,"%% Web/Websocket server is already disabled.");
       } else {
@@ -8361,6 +8358,8 @@ sub muddler_init
    @state{253} = 'DO';
    @state{254} = 'DONT';
    telnet_ch_init();
+
+   cmd_web("muddler","on",1) if(@state{p_web} == 1);
 }
 
 #
