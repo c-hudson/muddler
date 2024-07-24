@@ -707,6 +707,23 @@ sub handle_login
    }
 }
 
+sub world_encode
+{
+   my $w = world(shift);
+ 
+   if(!defined @address{$w} || !defined @address{$w}->{decode}) {
+      return "UTF-8";
+   } elsif(@address{$w}->{decode} =~ /^\s*utf8\s*$/) {
+      return "UTF-8";
+   } elsif(@address{$w}->{decode} =~ /^\s*fansi\s*$/) {
+      return "cp437";
+   } elsif(@address{$w}->{decode} =~ /^\s*latin\s*$/) {
+      return "iso-8859-1";
+   } else {
+     @address{$w}->{decode};
+  }
+}
+
 #
 # socket_connect
 #    handle a connection to a world.
@@ -1412,10 +1429,7 @@ sub io
             @socket{$w}->{last_recv} = time();
 
             if(module_enabled("Encode")) {
-               if(!defined @address{$w}->{decode}) {
-                  @address{$w}->{decode} = "utf8";
-               }
-               @socket{$w}->{buf} .= decode(@address{$w}->{decode},
+               @socket{$w}->{buf} .= decode(world_encode($w),
                                             _parse($w,$buf)
                                            );
             } else {
@@ -2538,7 +2552,11 @@ sub loggit_world
     return if !@address{$w}->{log};
 
     if(!defined @state{"$w.log"}) {
-       open($log,">> $w.log") || return;
+       if(defined @address{$w}->{decode}) {
+          open($log,">>:". world_encode($w), "$w.log") || return;
+       } else {
+          open($log,">> $w.log") || return;
+       }
     } else {
        $log = @state{"$w.log"};
     }
@@ -3676,13 +3694,7 @@ sub out
       # loggit("out[%s] %s",$world,$msg);
 
       if(module_enabled("Encode")) {
-         my $enc;
-         if(defined @address{$world} && defined @address{$world}->{decode}) {
-             $enc = @address{$world}->{decode};
-         } else {
-            $enc = "UTF-8";
-         }
-         printf($sock "%s",encode($enc,$msg));
+         printf($sock "%s",encode(world_encode($world),$msg));
       } else {
          printf($sock "%s",$msg);
       }
@@ -4501,7 +4513,6 @@ sub key_process
    my $input;
 
    if(module_enabled("Encode")) {
-      # $input = decode("UTF-8",shift,Encode::FB_CROAK);
       $input = decode("UTF-8",shift);
    } else {
       $input = shift;
@@ -8184,13 +8195,14 @@ sub tick
          } else {
             out($w,"help commands %d ###",rand(1000));
             my $str = "commands \\d+ ###";
-            @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
+            # @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
+            @def{sprintf("i_%s")} = {
                  atr       => "g",
                  txt       => "*$str*",
                  world     => $w,
                  keepalive => 1,
                  regexp    => "(?i)($str|I can't help you)",
-                 hits      => 1,
+                 # hits      => 1,
                  created   => time()
             };
          }
