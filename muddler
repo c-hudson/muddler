@@ -583,16 +583,23 @@ sub ansi_substr
       $$new{code}->[$pos] = [];
 
       if(!$noansi) {
-         for my $x (0 .. $#{$$data{code}->[$i]}) {
-            $$new{code}->[$pos]->[$x] = $$data{code}->[$i]->[$x];
+         if($i == $start) {
+            # start of new str, snap codes need to be copied to "activated"
+            for my $x (0 .. $#{$$data{snap}->[$i]}) {
+               $$new{code}->[$pos]->[$x] = $$data{snap}->[$i]->[$x];
+            }
+         }
+         for my $x (0 .. $#{$$data{code}->[$i]}) {            # active codes
+            $$new{code}->[$pos]->[$#{$$new{code}->[$pos]}+1]
+               = $$data{code}->[$i]->[$x];
          }
 
-         for my $x (0 .. $#{$$data{snap}->[$i]}) {
+         for my $x (0 .. $#{$$data{snap}->[$i]}) {               # all codes
             $$new{snap}->[$pos]->[$x] = $$data{snap}->[$i]->[$x];
          }
       }
-      $$new{ch}->[$pos] = $$data{ch}->[$i];
       # add the character that follows the escape code (if any)
+      $$new{ch}->[$pos] = $$data{ch}->[$i];               # copy character
       $pos++;
    }
 
@@ -601,9 +608,8 @@ sub ansi_substr
    if($i >= 1 && $#{$$data{snap}->[$i-1]} != -1) {
       $$new{ch}->[$pos] = "";
       $$new{code}->[$pos] = [ chr(27) . "[0m" ];
-      $$new{snap }->[$pos] = [];
+      $$new{snap}->[$pos] = [];
    }
-
 
 #   ansi_add($new,0,chr(27) . "[0m") if($#{$$data{snap}->[$i-1]} != -1);
 
@@ -1207,6 +1213,7 @@ sub ws_init
                                         SSL_key_file       => @state{p_key},
                                        );
       if(!defined $ws_listen) {
+          $http_listen = undef;
           echo($conn,"%% websocket server [Port:@state{p_port}] start " .
                "failed: $!");
           return 0;
@@ -1230,13 +1237,21 @@ sub ws_init
       $http_listen = IO::Socket::INET->new( LocalPort => @state{p_port},
                                             Listen    => 1,
                                             Reuse     => 1,
-                                          )
-      or die "failed to set up httpd listener: $!";
+                                          );
+      if(!defined $http_listen) {
+         echo($conn,"%% http server [Port:@state{p_port}] start failed: $!");
+         return 0;
+      };
       $ws_listen = IO::Socket::INET->new( LocalPort => @state{p_port} + 1,
                                           Listen    => 1,
                                           Reuse     => 1,
-                                        )
-       or die "failed to set up websocket listener: $!";
+                                        );
+      if(!defined $ws_listen) {
+          $http_listen = undef;
+          echo($conn,"%% websocket server [Port:@state{p_port}] start " .
+               "failed: $!");
+          return 0;
+      };
       @state{secure} = 0;
    }
 
@@ -5821,13 +5836,11 @@ sub cmd_stat
    my ($conn,$txt) = @_;
    my (%stat, %cache, $max,$sock, %lines);
 
-   loggit("%s",print_var(\%history));
 #   @history{dev} = [];
 #   delete @history{dev};
 #   @socket{dev}->{history_pos} = -1;
 #   @socket{dev}->{history_pos_partial} = -1;
 
-   loggit("%s",print_var(@history{"cavemush"}->[2]));
    for my $world (keys %history) {
       $max = length($world) if length($world) > $max;
       for my $i (0 .. $#{@history{$world}}) {
