@@ -700,7 +700,7 @@ sub handle_login
       @socket{$world}->{do_login} &&
       defined @address{$world}->{user} &&
       defined @address{$world}->{pass}) {
-      out($world,"connect %s %s\n",
+      out($world,"connect %s %s",
           @address{$world}->{user},
           @address{$world}->{pass}
          );
@@ -1796,7 +1796,7 @@ sub ws_process
      # do nothing
    } elsif(defined @socket{world($conn)} && 
            defined @socket{world($conn)}->{sock}) {
-      out(world($conn),"%s\n",$input);
+      out(world($conn),"%s",$input);
    }
 #   unshift(@input,@state{line});                        # store keyboard history
 }
@@ -1951,6 +1951,7 @@ sub history_pos
    my ($w,$value) = @_;
 
    if($value ne undef) {
+      #loggit("history_pos: set $w -> $value %s",code("shortest"));
       @socket{$w} = {} if not defined @socket{$w};
       @socket{$w}->{history_pos} = $value;
       @socket{$w}->{history_pos_partial} = -1;
@@ -1958,6 +1959,7 @@ sub history_pos
       $w = @state{world} if($w eq undef);
 
       if(defined @socket{$w} && defined @socket{$w}->{history_pos}) {
+         #loggit("history_pos: here");
          return @socket{$w}->{history_pos};
       }
    }
@@ -2193,7 +2195,7 @@ sub displayable
 #
 sub gagged
 {
-   my ($w,$txt) = (shift,shift);
+   my ($w,$txt,$conn) = (shift,shift,shift);
    my ($match, $i,$count,$hit);
 
    # no defines, no need to search
@@ -2252,7 +2254,6 @@ sub gagged
                    return 1;
                 }
             } elsif(defined @def{$key}->{regexp} && 
-                    @def{$key}->{atr} =~ /g/ &&
                     (!defined @def{$key}->{status} ||
                     @def{$key}->{status} == 1)) {
                @def{$key}->{badregexp} = 0;
@@ -2262,13 +2263,22 @@ sub gagged
                };
 
                if($match) {
-                  $$txt{gagged} = 1;
-                  $$txt{keepalive} = 1 if defined @def{$key}->{keepalive};
-                  if(defined @def{$key}->{hits}) {
-                     @def{$key}->{hits}--;
-                     delete @def{$key} if(@def{$key}->{hits} <= 0);
+                  if(@def{$key}->{atr} =~ /g/) {
+                      $$txt{gagged} = 1;
+                      $$txt{keepalive} = 1 if defined @def{$key}->{keepalive};
+                      if(defined @def{$key}->{hits}) {
+                         @def{$key}->{hits}--;
+                         delete @def{$key} if(@def{$key}->{hits} <= 0);
+                      }
                   }
-                  return 1;
+                  if(defined @def{$key}->{cmd}) {
+                    do_cmd($w,@def{$key}->{cmd},$conn);
+                  }
+                  if(defined $$txt{gagged} && $$txt{gagged} == 1) {
+                     return 1;
+                  } else {
+                     return 0;
+                  }
                }
             }
          }
@@ -2391,7 +2401,7 @@ sub history
              };
 
    remove_nospoof($str);
-   gagged($world,$str);                                    # set gagged flag?
+   gagged($world,$str,$conn);                              # set gagged flag?
 
    if($$str{gagged}) {
       if(defined $$str{keepalive} && $$str{keepalive}) { # do not store keep
@@ -2996,6 +3006,7 @@ sub history_location
    if($pos == -1 && defined @history{$w}) {
       return $#{@history{$w}},undef;
    }
+
    return $pos,$off;
 }
 
@@ -3217,6 +3228,11 @@ sub scroll_history
    my ($x,$y) = min_size($w);
    my $max = min_visible($w) - overlap();
    my ($pos,$off) = history_location($w);
+   my $pos = hist_pos($w);
+   my $off = hist_pos_partial($w);                    # start in history
+
+   $pos = $#{@history{$w}} if(!defined $pos);
+   
 
    my $h = @history{$w};
    while(good($h,$pos)) {                         # loop through history
@@ -3232,6 +3248,7 @@ sub scroll_history
          $line = ($inc == -1) ? $#$txt : 0;
 
          while(good($txt,$line)) {
+            # loggit("# %s",txt($$txt[$line]));
             if(++$cnt >= $max + 1) {              # output buffer full, done
                hist_pos($w,$pos,$cnt * $inc);
                # hist_pos_partial($w,$off);
@@ -3666,10 +3683,17 @@ sub key_esc_j
 {
 #-# summary: Skip to the end of any "mored" output.
    my ($conn,$txt) = @_;
+   my $w = world($conn);
 
    delete @socket{world($conn)}->{hist_pos};
    history_pos($conn,$#{@history{$conn}});
    update_pending(world($conn),@socket{world($conn)}->{pending} * -1);
+
+   # populate @history with @pending data.
+   while($#{@pending{$w}} > -1) {
+      line_finish($w);
+   }
+
    draw_screen($conn,1);
 }
 
@@ -3755,7 +3779,7 @@ sub key_return
      # do nothing
    } elsif(defined @socket{@state{world}} && 
            defined @socket{@state{world}}->{sock}) {
-      out(@state{world},"%s\n",$txt) if(!in_dialog());
+      out(@state{world},"%s",$txt) if(!in_dialog());
    }
    @state{input_pos} = -1;                    # reset keyboard history pos
    push(@$input,[]);
@@ -5656,7 +5680,7 @@ sub cmd_file
 
       @socket{$conn}->{ftsend}->{size} =
           length(join('',@{@socket{$conn}->{ftsend}->{data}}));
-      out($conn,"\@pemit %s=#%s# Request from %%n(%%#): fn=%s, sz=%d\n",
+      out($conn,"\@pemit %s=#%s# Request from %%n(%%#): fn=%s, sz=%d",
           "*" . $name,
           @socket{$conn}->{ftsend}->{id},
           $file,
@@ -6445,11 +6469,15 @@ sub cmd_editor
          return wc_out("/request_info @field[0]");
       }
       dialog_init($conn,
-                  "World Name:word,User:word,Password:word,Host:word," .
-                       "Port:word,KeepAlive CMD:text," .
-                       "Encoding:cycle." . join(".",encoding_values()) .",".
-                       "Use SSL to connnect:check,Log output to $w.log:check,".
-                       "Auto Reconnect w/web interface:check",
+                  "World Name:word," .
+                  "User:word," .
+                  "Password:word,Host:word," .
+                  "Port:word," .
+                  "KeepAlive CMD:text," .
+                  "Log File:text,".
+                  "Encoding:cycle." . join(".",encoding_values()) .",".
+                  "Use SSL to connnect:check," .
+                  "Auto Reconnect w/web interface:check",
                   ["Cancel:dialog_cancel",
                    "Save:editor_save",
                    "Delete:editor_delete",
@@ -6475,17 +6503,17 @@ sub cmd_editor
                dialog_populate(6,"@@ idle");
             }
             if(defined @address{@field[0]}->{decode}) {
-               dialog_populate(7,
+               dialog_populate(8,
                    encoding_translate(@address{@field[0]}->{decode}));
             }
             if(defined @address{@field[0]}->{ssl} && 
                @address{@field[0]}->{ssl} == 1) {
-               dialog_populate(8,"x");
-            }
-            if(defined @address{@field[0]}->{log} &&
-               @address{@field[0]}->{log} eq "1") {
                dialog_populate(9,"x");
             }
+            # if(defined @address{@field[0]}->{log} &&
+            #    @address{@field[0]}->{log} eq "1") {
+            #    dialog_populate(9,"x");
+            # }
          }
       }
       return draw_screen($conn);
@@ -6730,7 +6758,7 @@ sub cmd_send
       if((defined $$opt{W} || (defined $$opt{w} && lc($$opt{w}) eq $key)) &&
          connected($key)) {
          $hit++;
-         out($key,"%s\n",$str);
+         out($key,"%s",$str);
       }
    }
 
@@ -6768,26 +6796,24 @@ sub cmd_listdef
          (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
         for my $line (ansi_wrap(@def{$key}->{txt},49)) {
            if($count++ == 0) {
-               loggit("Line 1: %s - %s",world($conn),sprintf("%-15s %4s %-8s %s",
-                    $key,
-                    @def{$key}->{atr},
-                    @def{$key}->{world},
-                    txt($line)
-                   ));
                history(world($conn),sprintf("%-15s %4s %-8s %s",
                     $key,
                     @def{$key}->{atr},
                     @def{$key}->{world},
                     txt($line)
-                   ));
+                   ),0);
             } else {
-               loggit("Line 1+: print");
                history(world($conn),sprintf("%-15s %4s %-8s %s",
                     "",
                     "",
                     "",
                     txt($line)
-                   ));
+                   ),0);
+            }
+         }
+         if(defined @def{$key}->{cmd}) {
+            for my $line (ansi_wrap(@def{$key}->{cmd},70)) {
+               history(world($conn),"   cmd: " . txt($line),0);
             }
          }
       }
@@ -6829,18 +6855,28 @@ sub cmd_listworlds
    my ($conn,$txt) = (shift,trim(@_));
 
    my $w = world($conn);
-   my $pat;
+   my ($maxh, $maxn,$pat) = (5,5,undef);
 #   my $opt = {};
 
 #   my $str = getopt("sSm:t:b:B:E:T:h:a:P:iI");
 
-   history($w,sprintf("%-15s %33s %6s %s","NAME","HOST","PORT","CHARACTER"));
-
    $pat = glob2re($txt) if($txt ne undef);
    for my $key (keys %address) {
       if($txt eq undef || $key =~ /$pat/) {
-         history($w,sprintf("%-15s %33s %6s %s",
+         $maxn = length($key) if length($key) > $maxn;
+         if(length(@address{$key}->{host}) > $maxh) {
+            $maxh = length(@address{$key}->{host});
+         }
+      }
+   }
+   history($w,sprintf("%-*s %-*s %6s %s",$maxn,"NAME",$maxh,"HOST",
+       "PORT","CHARACTER"),);
+   for my $key (keys %address) {
+      if($txt eq undef || $key =~ /$pat/) {
+         history($w,sprintf("%-*s %-*s %6s %s",
+                            $maxn,
                             $key,
+                            $maxh,
                             @address{$key}->{host},
                             @address{$key}->{port},
                             @address{$key}->{user},
@@ -6914,6 +6950,7 @@ sub cmd_def
                       world => $$opt{w},
                       regexp=> $reg,
                     };
+      @def{$name}->{cmd} = trim($value) if(trim($value) ne undef);
       @def{$name}->{hits} = 1 if $$opt{1};
    }
 }
@@ -7732,13 +7769,31 @@ sub cmd_listsockets
 #-#      Shows all open connections and some minimal data about them.
 #-# ------------------------------------------------------------------------
    my $conn = shift;
+   my ($maxh, $maxn) = (5,5);
 
-   echo($conn,"%-16s %-26s %-5s %6s %-4s %-6s %-6s",
-        "NAME","HOST","PORT","Secure","Pend","Ping", "Idle");
+   for my $key (keys %ws) {
+      if(length(@ws{$key}->{auth} ? "Web [ath]" : "Web") > $maxn) {
+         $maxn = length(@ws{$key}->{auth} ? "Web [ath]" : "Web");
+      }
+      $maxn = length(@ws{$key}->{ip}) if length(@ws{$key}->{ip}) > $maxn;
+   }
+   for my $w (keys %socket) {
+      if(defined @socket{$w}->{sock} && $w ne "muddler") {
+         $maxn = length($w) if (length($w) > $maxn);
+         if(length(@address{$w}->{host}) > $maxh) {
+            $maxh = length(@address{$w}->{host})
+         }
+      }
+   }
+
+   echo($conn,"%-*s %-*s %-5s %6s %-4s %-4s %-6s",
+        $maxn,"NAME",$maxh,"HOST","PORT","Secure","Ping", "Idle","Pend");
    for my $key (keys %ws) {
        echo($conn,
-            "%-16s %-26s %-5s %-6s %-4s %-6s %-6s %s",
+            "%-*s %-*s %-5s %-6s %-4s %-4s %s",
+            $maxn,
             @ws{$key}->{auth} ? "Web [ath]" : "Web",
+            $maxh,
             @ws{$key}->{ip},
             @ws{$key}->{port},
             @state{secure} ? "Yes" : "No",
@@ -7750,16 +7805,18 @@ sub cmd_listsockets
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && $w ne "muddler") {
          echo($conn,
-              "%-16s %-26s %-5s %-6s %-4s %-6s %-6s",
+              "%-*s %-*s %-5s %-6s %-4s %-4s %s",
+              $maxn,
               @address{$w}->{name},
+              $maxh,
               @address{$w}->{host},
               @address{$w}->{port},
               @address{$w}->{ssl} ? "Yes" : "No",
+              shorten_time(@socket{$w}->{next_check} - 
+                           (time() - @socket{$w}->{last_send})),
+              shorten_time(time() - @socket{$w}->{last_send}),
               ((defined @pending{$w} && $#{@pending{$w}} > -1) ?
-                 ($#{@pending{$w}}+1) : ""),
-              shorten_time((@socket{$w}->{next_check} + 180) - 
-                 (time() - @socket{$w}->{last_send})),
-              shorten_time(time() - @socket{$w}->{last_send}));
+                 ($#{@pending{$w}}+1) : ""));
       }
    }
 }
@@ -7824,8 +7881,10 @@ sub cmd_world
    } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
+      # loggit("# switch");
       switch_world($conn,lc($txt));
    } else {
+      # loggit("# connect");
       socket_connect($conn,
                      @address{lc($txt)}->{name},
                      @address{lc($txt)}->{host},
@@ -8182,21 +8241,20 @@ sub tick
       if(defined @socket{$w}->{sock} && 
          defined @socket{$w}->{connected} &&
          time()-@socket{$w}->{last_send} > @socket{$w}->{next_check}) {
-
-         @socket{$w}->{next_check} = 180 + sprintf("%d",rand(60 * 5));
-         @state{out_nomore} = 1;
          if(defined @address{$w} &&
             defined @address{$w}->{keepalive} &&
             trim(@address{$w}->{keepalive}) ne "") {
 
-            if(@address{$w}->{keepalive} ne "off") {
-               out($w,@address{$w}->{keepalive} . "\n",ts());
+            if(@address{$w}->{keepalive} !~ /^\s(off|none)\s*$/i) {
+               @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
+               @state{out_nomore} = 1;
+               out($w,@address{$w}->{keepalive});
             }
          } else {
             out($w,"help commands %d ###",rand(1000));
             my $str = "commands \\d+ ###";
             # @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
-            @def{sprintf("i_%s")} = {
+            @def{sprintf("i_%s",$w)} = {
                  atr       => "g",
                  txt       => "*$str*",
                  world     => $w,
@@ -8219,7 +8277,7 @@ sub tick
                 # impliment me, yes you.
              } elsif($$item{how} eq "send" || $$item{how} eq 1) {
                 @state{out_nomore} = 1;
-                out($w,"%s\n",$$item{what});
+                out($w,"%s",$$item{what});
              } elsif($$item{how} eq "exec" || $$item{how} eq 2) {
                 # impliment me, yes you.
              }
@@ -8232,7 +8290,7 @@ sub tick
 #         delete @socket{$w}->{ftsend};
          if($#{@socket{$w}->{ftsend}->{data}} >= 0) {
             @state{out_nomore} = 1;
-            out($w,"\@pemit *%s=#%s# %s\n",
+            out($w,"\@pemit *%s=#%s# %s",
                @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id},
                join('%r#' . @socket{$w}->{ftsend}->{id}."# ",
@@ -8241,7 +8299,7 @@ sub tick
                );
          } else {
             @state{out_nomore} = 1;
-            out($w,"\@pemit *%s=#%s# request complete\n",
+            out($w,"\@pemit *%s=#%s# request complete",
                @socket{$w}->{ftsend}->{name},
                @socket{$w}->{ftsend}->{id});
             echo($w,"%% File transfer to %s completed.",
