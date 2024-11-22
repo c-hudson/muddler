@@ -4008,7 +4008,8 @@ sub key_default
 
    my $input = input();
    # spell checker code
-   if($ch eq " " && module_enabled("Text::Aspell")) {
+   if($ch eq " " && module_enabled("Text::Aspell") &&
+     (!defined @state{p_spell} || TRUE(@state{p_spell}))) {
       if(substr(join('',@{$$input[-1]}),0,line_pos()) =~ 
             /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
@@ -5421,6 +5422,7 @@ sub set_save
    my $count = 0;
    my %lookup;
    my $web;
+   my $theme;
 
    for my $key (keys %var) {
       @lookup{@var{$key}->{setup}} = $key if(defined @var{$key}->{setup});
@@ -5434,6 +5436,9 @@ sub set_save
           if(@lookup{dialog_name($i)} eq "web") {
              $web = $val;
              $count++;
+          } elsif(@lookup{dialog_name($i)} eq "theme") {
+             $theme = $val;
+             $count++;
           } else {
              @state{"p_" . @lookup{dialog_name($i)}} = $val;
              $count++;
@@ -5443,6 +5448,8 @@ sub set_save
    save_differential();
 
    dialog_cancel();
+
+   cmd_set($conn,"theme=$theme") if($theme ne undef);
 
    if($web ne undef) { # run here or output will be lost
       cmd_web($conn,($web) ?  "on" : "off");
@@ -5991,7 +5998,7 @@ sub var_init
    @var{web}       = { web=>"Web Interface On",type=>"check",set=>1        };
    @var{watchdog}  = { setup=>"WatchDog Matching",type=>"check",set=>1,
                        chk => "on|off|0|1"                                 };
-   @var{theme}     = { web=>"Theme",type=>"word",set=>1, 
+   @var{theme}     = { web=>"Theme",type=>"cycle.light.dark",set=>1, 
                        chk => "light|dark", 
                        fun => sub { ws_all("d","theme " . @_[1]); }        };
    @var{keepalive} = { set=>1, null=>1,fun => sub { update_keepalive(@_)}  };
@@ -6004,6 +6011,8 @@ sub var_init
                        chk => "Cycle Worlds|Cursor Movement", set=>1       };
    @var{more}      = { setup=>"Pause for More",type=>"check",set=>1        };
    @var{reconnect} = { setup=>"Auto re-connect",type=>"check",set=>1,
+                       chk=>"on|off|0|1"                                   };
+   @var{spell}     = { setup=>"Enable Spell Check",type=>"check",set=>1,
                        chk=>"on|off|0|1"                                   };
 }
 
@@ -7365,7 +7374,8 @@ sub cmd_help
 #-# ------------------------------------------------------------------------
 #-# Commands:
 #-#   /dc              :  Forcefully disconnect from current world
-#-#   /help            :  Muddler's help system
+#-#   /help commands   :  Lists all of muddlers internal commands
+#-#   /help <topic>    :  Lists the help entry for a topic
 #-#   /list [-c]       :  Lists all saved worlds, -c list connections
 #-#   /world [<world>] :  Setup, connect or switch to a world
 #-#   /quit            :  Quit Muddler
