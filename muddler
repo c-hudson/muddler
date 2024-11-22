@@ -5346,6 +5346,11 @@ sub editor_save
       trim($$data{"World Name"}) eq "") {
       return echo($conn,"A required World Name was not provided.");
    }
+
+   if($$data{"World Name"} =~ /^\s*new\s*$/i) {
+      return echo($conn,"The world name may not be 'new'.");
+   }
+  
    if(!defined $$data{"Host"} ||
       trim($$data{"Host"}) eq "") {
       return echo($conn,"A required Host was not provided.");
@@ -5431,7 +5436,7 @@ sub set_save
 
    for my $i (1 .. dialog_lines()) {
        my $val = dialog_fixed_value($i);
-       loggit("val: '%s'\n",$val);
+       # loggit("val: '%s'\n",$val);
        if(@state{"p_" . @lookup{dialog_name($i)}} ne $val) {
           if(@lookup{dialog_name($i)} eq "web") {
              $web = $val;
@@ -6781,6 +6786,7 @@ sub cmd_send
 
 sub cmd_listdef
 {
+#-# summary: Lists all defined triggers or user defined commands
 #-# ------------------------------------------------------------------------
 #-# /listdef <pattern>
 #-#
@@ -7372,13 +7378,15 @@ sub cmd_help
 {
 #-# summary: internal
 #-# ------------------------------------------------------------------------
-#-# Commands:
+#-# Common Commands:
 #-#   /dc              :  Forcefully disconnect from current world
-#-#   /help commands   :  Lists all of muddlers internal commands
-#-#   /help <topic>    :  Lists the help entry for a topic
 #-#   /list [-c]       :  Lists all saved worlds, -c list connections
-#-#   /world [<world>] :  Setup, connect or switch to a world
+#-#   /world new       :  Setup a connection to a new world
+#-#   /world [<world>] :  Connect or switch to an existing world
 #-#   /quit            :  Quit Muddler
+#-# All Commands Help: 
+#-#   /help commands   :  Lists all of muddlers internal commands
+#-#   /help <command>  :  Help entry for a command
 #-# ------------------------------------------------------------------------
    my ($conn,$cmd) = (shift, lc(trim(shift)));
 
@@ -7415,8 +7423,8 @@ sub cmd_help
                    );
          }
       }
-   } elsif(defined @state{help}->{"cmd_$cmd"}) {           # non-aliased cmd
-      echo($conn,"%s",@state{help}->{"cmd_$cmd"});
+   } elsif(defined @state{help}->{"cmd_$cmd"} && defined @command{$cmd}) {
+      echo($conn,"%s",@state{help}->{"cmd_$cmd"});         # non-aliased cmd
    } elsif(defined @command{$cmd} && ref(@command{$cmd}) eq "" &&
            defined @state{help}->{"cmd_@command{$cmd}"}) {
       echo($conn,"This command is an alias for @command{$cmd}\n");
@@ -7859,9 +7867,14 @@ sub cmd_world
 {
 #-# summary: Connect if needed and switch to world.
 #-# ------------------------------------------------------------------------
+#-# /world
+#-#      Allows you to edit the current connection in a world editor
+#-# /world new
+#-#      Prompts for a new world's connection details in a world editor
 #-# /world <world>
 #-#      Connects to the specified world if not connected or switches over
-#-#      to that world if it is connected.
+#-#      to that world if it is connected. You may also use the arrow
+#-#      keys to cycle through worlds.
 #-#
 #-# Ex: /world puggy
 #-# ------------------------------------------------------------------------
@@ -7888,6 +7901,8 @@ sub cmd_world
 
    if($txt =~ /^\s*$/) {
       cmd_editor($conn);
+   } elsif($txt =~ /^\s*new\s*$/i) {
+      cmd_editor($conn,"new");
    } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
