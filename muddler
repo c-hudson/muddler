@@ -227,6 +227,7 @@ sub command_init
    @command{file}          = sub { return cmd_file(@_);                    };
    @command{accept}        = sub { return cmd_accept(@_);                  };
    @command{request_info}  = sub { return cmd_request_info(@_);            };
+   @command{request_info}  = sub { return cmd_request_info(@_);            };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -773,15 +774,15 @@ sub socket_connect
       @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
    } else {
       # define connection with everything that is needed.
-      @socket{$world} = { name      => $world,
-                          host      => $host,
-                          port      => $port,
-#                          more      => 0,
-                          more_count=> 0,
-                          last_read => -1,
-                          history_pos => -1,
+      @socket{$world} = { name                => $world,
+                          host                => $host,
+                          port                => $port,
+                          more_count          => 0,
+                          last_read           => -1,
+                          history_pos         => -1,
                           history_pos_partial => -1,
-                          do_login  => (defined $$opt{l}) ? 0 : 1,
+                          created             => time(),
+                          do_login            => (defined $$opt{l}) ? 0 : 1,
                         };
    }
 
@@ -6104,38 +6105,37 @@ sub cmd_set
 {
 #-# summary: Set internal variables to customize muddler
 #-# ------------------------------------------------------------------------
-#-# /set
-#-#   Shows all variables that have been set.
+#-# /set [list]
+#-#   Use an settings editor to modify Muddler's preferences or list all
+#-#   variables.
 #-#
 #-# /set <variable> = <value>
-#-#   Sets the variable to value.
+#-#   Sets the variable to a value.
 #-#
 #-# Variables:
 #-#   cert       : Full path & filename to certificate file for /web
 #-#   key        : Full path & filename to key file for /web
 #-#   input_size : Input window size in rows when using the console
 #-#   port       : Port used for incoming connections for /web
-#-#   encode     : Sets the encoding style for the current world.
-#-#                You may use fansi, utf8, or latin.
+#-#   encode     : Set encoding style to either fansi, utf8, or latin.
 #-#   debug      : Turns debugging on for logging to muddler.log file.
 #-#   password   : Password required to log for /web
-#-#   allow      : Hostname(s) in csv format do not need to supply a
-#-#                password within /web. Not recommended.
-#-#   watchdog   : Used to supress spam. If 2 of 5 lines of output are
-#-#                duplicates, then never display these lines again
-#-#                until muddler is restarted.
+#-#   allow      : Allow hostname(s) via web interface without a password
+#-#   watchdog   : Supress spam when 2-5 duplicate lines are found
 #-#   theme      : Select either a dark or light theme for /web
-#-#   overlap    : When showing a pagefull of text, how many lines are
-#-#                left on the screen from the previous screen full.
-#-#   sync       : Keep /web & console in sync by showing the same world
-#-#                Default is to allow viewing of different worlds.
-#-#   reconnect  : Reconnect to this world if disconnected
+#-#   overlap    : number of lines kept on the screen from the previous
+#-#                "page" of text to give context.
+#-#   sync       : Keep the viewed world in the same on console/web
+#-#   reconnect  : Reconnect to world upon a connect to the web interface
 #-#   keepalive  : Sets the keepalive for the current world
 #-# ------------------------------------------------------------------------
 my ($conn,$txt) = @_;
    my $enc;
 
    if($txt eq "") {
+      return echo($conn,"%% Sorry, the settings editor is only " .
+         "compatible with the console.") if(is_web($conn));
+
       my (@fields,@values);
       for my $i (sort {@var{$b}->{type}.@var{$b}->{setup} cmp
                        @var{$a}->{type}.@var{$a}->{setup}} keys %var) {
@@ -6163,8 +6163,7 @@ my ($conn,$txt) = @_;
          }
       }
       return draw_screen($conn);
-   }
-   if($txt =~ /^\s*([^=]+?)\s*=\s*/) {
+   } elsif($txt =~ /^\s*([^=]+?)\s*=\s*/) {
       my ($name,$val) = ($1,$');
       if(defined @var{$name}) {
          if(defined @var{$name}->{chk}) { 
@@ -6217,7 +6216,7 @@ my ($conn,$txt) = @_;
          echo($conn,"%% Valid variables are: ");
          echo($conn,"%%    %s\n",join(', ',keys %var));
       }
-   } elsif($txt =~ /^\s*$/) {
+   } elsif($txt =~ /^\s*list\s*$/) {
       cmd_showset(@_);
    } else {
       echo($conn,"%% All variables require a value: /set varible=value");
@@ -6533,6 +6532,9 @@ sub cmd_editor
    my $w = world($conn);
    my $opt = {};
 
+   return echo($conn,"%% Sorry, the world settings editor is only " .
+      "compatible with the console.") if(is_web($conn));
+
    my $txt = getopt("sl",trim($txt),$opt);
    my @field = split(" ",$txt);
 
@@ -6808,6 +6810,28 @@ sub connected
    } else {
       return 0;
    }
+}
+
+#
+# is_loggedin
+#    Determine if your character is logged in yet or at least should
+#    have been logged in. You have 360 seconds to log in, you have been
+#    warned but only if you read the code.
+#
+sub is_loggedin
+{
+   my ($conn) = @_;
+   my $w = world($conn);
+
+   if(defined @socket{$w}->{sock}) {
+      @socket{$w}->{created} = time() if !defined @socket{$w}->{created};
+
+      if((@socket{$w}->{do_login} && @socket{$w}->{connected}) ||
+         time() - @socket{$w}->{created} > 360) {
+         return 1;
+      }
+   }
+   return 0;
 }
 
 sub cmd_send
@@ -7332,7 +7356,7 @@ sub use_secure
 
 sub cmd_web
 {
-#-# summary: Enable/Disable the web/websocket: client.
+#-# summary: Configure muddler's web interface
 #-# ------------------------------------------------------------------------
 #-# /web                : Shows the current status of the web interface
 #-# /web [on|off]       : Enables / Disables the web interface
@@ -7352,9 +7376,12 @@ sub cmd_web
                   "%% Web/Websocket is disabled when --remote is enabled."
                  );
    } elsif(!module_enabled("Net::WebSocket::Server")) {
-      return echo($conn,"%% Web/Websocket disabled due to missing " .
+      return echo($conn,"%% Web interface disabled due to missing " .
          "Net::WebSocket::Server module");
    } elsif($status eq "") {
+      return echo($conn,"%% Sorry, the web settings editor is only " .
+         "compatible with the console.") if(is_web($conn));
+
       my @fields;
       for my $i (sort {@var{$a}->{web} cmp @var{$b}->{web}} keys %var) {
          if(defined @var{$i}->{web}) {
@@ -8335,8 +8362,7 @@ sub tick
    # keep alive. Send something to a world to keep it alive if nothing has
    # bloggiteen sent / recieved.
    for my $w (keys %socket) {
-      if(defined @socket{$w}->{sock} && 
-         defined @socket{$w}->{connected} &&
+      if(is_loggedin($w) &&
          time()-@socket{$w}->{last_send} > @socket{$w}->{next_check}) {
          if(defined @address{$w} &&
             defined @address{$w}->{keepalive} &&
@@ -8345,11 +8371,13 @@ sub tick
             if(@address{$w}->{keepalive} !~ /^\s(off|none)\s*$/i) {
                @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
                @state{out_nomore} = 1;
+               # loggit("#ka1{$w} %s",@address{$w}->{keepalive});
                out($w,@address{$w}->{keepalive});
             }
          } else {
-            out($w,"help commands %d ###",rand(1000));
             my $str = "commands \\d+ ###";
+            # loggit("#ka1{$w} %s",$str,time());
+            out($w,"help commands %d ###",rand(1000));
             # @def{sprintf("i_%s_%s_%06s",$w,time(),(scalar keys %def)+1)} = {
             @def{sprintf("i_%s",$w)} = {
                  atr       => "g",
@@ -8360,6 +8388,7 @@ sub tick
                  # hits      => 1,
                  created   => time()
             };
+            @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
          }
       }
 
