@@ -227,7 +227,7 @@ sub command_init
    @command{file}          = sub { return cmd_file(@_);                    };
    @command{accept}        = sub { return cmd_accept(@_);                  };
    @command{request_info}  = sub { return cmd_request_info(@_);            };
-   @command{request_info}  = sub { return cmd_request_info(@_);            };
+   @command{handle_login}  = sub { return handle_login(@_);                };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -709,28 +709,11 @@ sub handle_login
 }
 
 #
-# fansi_decode
-#    cp437 doesn't seem to follow cp437 as far as perl is concerned.
-#    This function uses the table in fansi_init() to convert the
-#    text into unicode character by character. I'm not sure if this
-#    is actually right but it seems to be how 8bit's web interface
-#    works.
+# world_encode
+#    Return the encoding type for a specifed world. This is only needed
+#    because encode() expects different encoding types then what the
+#    standard user is expecting. Maybe this should just be a hash table.
 #
-sub fansi_decode
-{
-    my ($w,$txt) = @_;
-    my $out;
-
-   for my $i (0 .. length($txt)) {
-      if(is_in(ord(substr($txt,$i,1)),0,7,10,13,27)) {
-         $out .= substr($txt,$i,1);
-      } else {
-         $out .= chr(@{@state{cp437}}[ord(substr($txt,$i,1))]);
-      }
-   }
-   return $out;
-}
-
 sub world_encode
 {
    my $w = world(shift);
@@ -845,7 +828,11 @@ sub socket_connect
       defined @socket{$world}->{socket_pending} == 1) {
       echo($conn,"%% Connection to %s started, connection is pending.",$world);
    } else {
-      handle_login($world);
+      if(world_encode($world) eq "cp437") {
+         fansi_detect_client($world);
+      } else {
+         handle_login($world);
+      }
    }
 
    if(defined @socket{muddler}) {
@@ -1026,6 +1013,17 @@ sub is_enabled
     }
 }
 
+#----------------------------------------------------------------------------#
+#                                                                            #
+#  fansi support                                                             # 
+#     8bit uses something similar to the code page cp437 to display text     #
+#     based graphcis. Below are the functions that support those and         #
+#     a special login handling.                                              #
+#                                                                            #
+#----------------------------------------------------------------------------#
+
+
+
 #
 # fansi_init
 #    Load the cp437 table with a list of cp437 to unicode. This works
@@ -1068,6 +1066,58 @@ sub fansi_init
        0x00b0, 0x2219, 0x00b7, 0x221a, 0x207f, 0x00b2, 0x25a0, 0x00a0
    ];
 }
+
+#
+# fansi_decode
+#    cp437 doesn't seem to follow cp437 as far as perl is concerned.
+#    This function uses the table in fansi_init() to convert the
+#    text into unicode character by character. I'm not sure if this
+#    is actually right but it seems to be how 8bit's web interface
+#    works.
+#
+sub fansi_decode
+{
+    my ($w,$txt) = @_;
+    my $out;
+
+   for my $i (0 .. length($txt)) {
+      if(is_in(ord(substr($txt,$i,1)),0,7,10,13,27)) {
+         $out .= substr($txt,$i,1);
+      } else {
+         $out .= chr(@{@state{cp437}}[ord(substr($txt,$i,1))]);
+      }
+   }
+   return $out;
+}
+
+#
+# fansi_detect_client
+#    Listen for the Detecting client string and then send the CLIENT
+#    string. Muddler then needs to pause for a little bit to ensure
+#    that the login screen is shown before connecting or the login.txt
+#    does not get displayed.
+sub fansi_detect_client
+{
+   my $w = shift;
+   my $id = (scalar keys %def) + 1;
+
+   @def{sprintf("fansi_06s",$id)} = {
+       regexp  => "^Detecting client\.\.\.\$",
+       world   => world($w),
+       ttl     => 2,
+       hits    => 1,
+       created => time(),
+       LOGIN   => 1,
+       cmd     => "/send -w$w CLIENT WEBCLIENT2;" .
+                  "/def -1 -w$w -t'*connect*' -s2 fl_$w\_login=/handle_login $w"
+   };
+}
+
+#----------------------------------------------------------------------------#
+#                                                                            #
+#  General Stuff                                                             # 
+#                                                                            #
+#----------------------------------------------------------------------------#
 
 sub telnet_ch_init
 {
@@ -1491,7 +1541,11 @@ sub io
          } else {
             if(defined @socket{$w}->{socket_pending}) {
                delete @socket{$w}->{socket_pending};
-               handle_login($w);
+               if(world_encode($w) eq "cp437") {
+                  fansi_detect_client($w);
+               } else {
+                  handle_login($w);
+               }
             }
             @socket{$w}->{last_recv} = time();
 
@@ -2337,13 +2391,15 @@ sub gagged
                   if(@def{$key}->{atr} =~ /g/) {
                       $$txt{gagged} = 1;
                       $$txt{keepalive} = 1 if defined @def{$key}->{keepalive};
-                      if(defined @def{$key}->{hits}) {
-                         @def{$key}->{hits}--;
-                         delete @def{$key} if(@def{$key}->{hits} <= 0);
-                      }
                   }
                   if(defined @def{$key}->{cmd}) {
-                    do_cmd($w,@def{$key}->{cmd},$conn);
+                    for my $cmd (split(';',@def{$key}->{cmd})) {
+                       do_cmd($w,$cmd,$conn);
+                    }
+                  }
+                  if(defined @def{$key}->{hits}) {
+                     @def{$key}->{hits}--;
+                     delete @def{$key} if(@def{$key}->{hits} <= 0);
                   }
                   if(defined $$txt{gagged} && $$txt{gagged} == 1) {
                      return 1;
@@ -2714,11 +2770,6 @@ sub in_more
       return 0;
    } elsif(@socket{$w}->{more_cnt} >= min_visible($w)-overlap() &&
       $#{@pending{$w}} > -1) {
-#      loggit("In more1: %s > %s {%s}",
-#             @socket{$w}->{more_cnt}+$add,
-#             min_visible($w)-overlap(),
-#             $#{@pending{$w}});
-      # loggit("%s",print_var(@pending{$w}));
       return 1;
    } else {
       return 0;
@@ -3115,7 +3166,6 @@ sub get_output
        $i >= 0 && $#out < $max && $i <= $#$hist;
        $i--) {
       next if $$hist[$i]->{gagged};
-      logged("int: %s",$$hist[$i]->{txt}) if $$hist[$i]->{internal} == 2;
       next if $$hist[$i]->{internal} == 2;
 
       if($i == $start_pos) {                   # possible partial line at end
@@ -3785,7 +3835,7 @@ sub out
       $msg .= "\n" if($msg !~ /\n$/);               # add returns if needed.
 
       my $sock = @socket{$world}->{sock};
-      # loggit("out[%s] %s [%s]",$world,$msg,code("short"));
+      # loggit("\nout[%s] %s [%s]",$world,$msg,code("short"));
       # loggit("out[%s] %s",$world,$msg);
 
       if(module_enabled("Encode")) {
@@ -7012,12 +7062,13 @@ sub cmd_def
 #-#
 #-#      -w<world>        Match will be limited to a specific world
 #-#      -t"text"         Text to match. May include wild cards.
+#-#      -s<seconds>      Time to live for this define in seconds
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
    my ($opt,$reg,$name,$value) = ({},undef,undef,undef);
    
 
-   my $str = getopt("m:n:E:t:h:b:B:p:c:w:T:Fa:P:fiIq1",$txt,$opt);
+   my $str = getopt("m:n:E:t:h:b:B:p:c:w:T:Fa:P:fiIq1s:L",$txt,$opt);
 
    if($str =~ /=/) {
       $name = trim($`);
@@ -7054,11 +7105,14 @@ sub cmd_def
          $reg = glob2re($$opt{t});
       }
 
-      @def{$name} = { atr   => $$opt{a},
-                      txt   => $$opt{t},
-                      world => $$opt{w},
-                      regexp=> $reg,
+      @def{$name} = { atr     => $$opt{a},
+                      txt     => $$opt{t},
+                      world   => $$opt{w},
+                      regexp  => $reg,
+                      created => time(),
                     };
+      @def{$name}->{LOGIN} = 1 if defined $$opt{L};
+      @def{$name}->{ttl} = $$opt{s} if defined $$opt{s};
       @def{$name}->{cmd} = trim($value) if(trim($value) ne undef);
       @def{$name}->{hits} = 1 if $$opt{1};
    }
@@ -8461,6 +8515,19 @@ sub tick
    for my $id (keys %pid) {
       if(@pid{$id}->{last} + @pid{$id}->{tick} <= time()) {
          run_pid($id);
+      }
+   }
+
+   for my $key (keys %def) {
+      # check to see if trigger has "timed out"
+      if(defined @def{$key}->{ttl} && 
+         (time() > @def{$key}->{created} + @def{$key}->{ttl})) {
+
+         # wait for detect client timed out for fansi worlds.
+         if(defined @def{$key}->{world} && defined @def{$key}->{LOGIN}) {
+            handle_login(@def{$key}->{world});
+         }
+         delete @def{$key};
       }
    }
 }
