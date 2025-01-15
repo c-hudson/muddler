@@ -89,6 +89,10 @@ my %mod = (
                                       for => "utf8/fansi",
                                       quote => "qw(decode encode)"
                                     },
+   'Fcntl'                       => { fatal => 0,
+                                      for => "writing rc file",
+                                      quote => "qw(SEEK_END)"
+                                    },
    'Digest::MD5'                 => { fatal => 0,
                                       pkg => "Digest::MD5",
                                       for => "caching/code reloading"
@@ -228,6 +232,7 @@ sub command_init
    @command{accept}        = sub { return cmd_accept(@_);                  };
    @command{request_info}  = sub { return cmd_request_info(@_);            };
    @command{handle_login}  = sub { return handle_login(@_);                };
+   @command{sync}          = sub { return cmd_sync(@_);                    };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -4132,7 +4137,7 @@ sub key_default
    if($ch eq " " && module_enabled("Text::Aspell") &&
      (!defined @state{p_spell} || TRUE(@state{p_spell}))) {
       if(substr(join('',@{$$input[-1]}),0,line_pos()) =~ 
-            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
+            /(^| |^:|^"|^@)([a-zA-Z']+)([,\.!"']{0,1})(\s*)$/) {
          @state{speller} = Text::Aspell->new if(!defined @state{speller});
          if(!@state{speller}->check($2)) {
              make_string_bold("$2$3$4",1);
@@ -5115,7 +5120,7 @@ sub key_esc_q
    my $input = input();
    if(module_enabled("Text::Aspell")) {
       if(substr(join('',@{$$input[-1]}),0,line_pos()) =~ 
-            /(^| |^:|^"|^@)([a-zA-Z']+)([\.!"']{0,1})(\s*)$/) {
+            /(^| |^:|^"|^@)([a-zA-Z']+)([,\.!"']{0,1})(\s*)$/) {
 
          if(!defined @state{suggest}) {                   # no saved results
             @state{speller} = Text::Aspell->new if(!defined @state{speller});
@@ -5275,6 +5280,7 @@ sub dialog_populate
              $txt = " ";
           }
        }
+       @state{dialog}->{$pos}->{orig} = $txt;
        @state{dialog}->{$pos}->{input} = [[ split(//,$txt) ]];
        @state{dialog}->{$pos}->{line_pos} = length($txt);
    }
@@ -5454,11 +5460,15 @@ sub editor_connect
    editor_save();
    cmd_world($conn,$name);
 }
+
 sub editor_save
 {
    my $data = {};
    for my $i (0 .. dialog_lines()) {
       $$data{dialog_name($i)} = dialog_value($i);
+      if(dialog_name($i) eq "World Name") {
+         $$data{"Orig_World_Name"} = dialog_orig_value($i);
+      }
    }
    my $conn = @state{dialog}->{conn};
    my $w = world($conn);
@@ -5486,20 +5496,31 @@ sub editor_save
    }
 
    dialog_cancel();
-   cmd_editor($conn,
-           sprintf("%s %s %s %s %s %s %s",
-                   ($$data{"Use SSL to connnect"} eq "x") ? "-s" : "",
-                   ($$data{"Log output to $w.log"} eq "x") ? "-l" : "",
-                   $$data{"World Name"},
-                   $$data{User},
-                   $$data{Password},
-                   $$data{Host},
-                   $$data{Port}
-                  )
-          );
 
-   cmd_set($conn,"keepalive=" . $$data{"KeepAlive CMD"});
-   cmd_set($conn,"encode=" . encoding_detranslate($$data{Encoding}));
+   if($$data{"Orig_World_Name"} ne $$data{"World Name"}) {
+      delete @address{$$data{"Orig_World_Name"}};
+      save($conn,"WORLD",$$data{"Orig_World_Name"});
+   }
+   my $name = lc($$data{"World Name"});
+   @address{$name} = {};
+   if($$data{"Use SSL to connnect"} eq "x") {
+      @address{$name}->{ssl} = 1;
+   }
+   if($$data{"Log output to $w.log"} eq "x") {
+      @address{$name}->{log} = 1;
+   }
+   @address{$name}->{name} = $$data{"World Name"};
+   @address{$name}->{user} = $$data{"User"} if trim($$data{"User"}) ne undef;
+   if(trim($$data{"Password"}) ne undef) {
+      @address{$name}->{pass} = $$data{"Password"};
+   }
+   @address{$name}->{host} = $$data{"Host"};
+   @address{$name}->{port} = $$data{"Port"};
+   if(trim($$data{"KeepAlive CMD"}) ne undef) {
+      @address{$name}->{keepalive} = $$data{"KeepAlive CMD"};
+   }
+   @address{$name}->{encode} = encoding_detranslate($$data{Encoding});
+   save($conn,"WORLD",$name);
 }
 
 sub editor_delete
@@ -5510,7 +5531,7 @@ sub editor_delete
       echo($conn,"%% World %s has been deleted",dialog_value(1));
       dialog_cancel();
       delete @address{dialog_value(1)};
-      save_differential();
+      save($conn,"STATE",dialog_value(1));
    } else {
       echo($conn,"%% Unable to find and delete world '%s'",dialog_value(1));
    }
@@ -5567,11 +5588,11 @@ sub set_save
              $count++;
           } else {
              @state{"p_" . @lookup{dialog_name($i)}} = $val;
+             save($conn,"STATE","p_" . @lookup{dialog_name($i)});
              $count++;
           }
        }
    }
-   save_differential();
 
    dialog_cancel();
 
@@ -5671,6 +5692,140 @@ sub dialog_value
    }
 }
 
+#
+# dialog_value
+#    return the original value of the requested dialog item/line
+#
+sub dialog_orig_value
+{
+   my $pos;
+
+   if( $#_ == -1 ){
+      $pos = @state{dialog_x};
+   } elsif($#_ == 0) {
+      $pos = shift;
+   } else {
+      die("dialog_type supports either 0 or 1 arguements");
+   }
+
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{$pos} &&
+      defined @state{dialog}->{$pos}->{orig}) {
+
+      return @state{dialog}->{$pos}->{orig};
+   }
+}
+
+sub safe
+{
+   my $txt = shift;
+
+   my $ret = chr(23);
+   $txt =~ s/\\/\\\\/g;
+   $txt =~ s/\r\n/$ret/g;
+   $txt =~ s/\n/$ret/g;
+   $txt =~ s/\r/$ret/g;
+   $txt =~ s/;/\\;/g;
+
+   return $txt;
+}
+
+sub hash_dump
+{
+   my $hash = shift;
+   my $out;
+
+   for my $key (keys %$hash) {
+      if($$hash{$key} ne "0" && $$hash{$key} ne undef) {
+         $out .= (($out ne undef) ? ";" : "") . $key .":". safe($$hash{$key});
+      }
+   }
+
+   return $out;
+}
+
+sub save
+{
+   my ($conn,$type,$key) = @_;
+
+   if($type eq "STATE") {
+      if(defined @state{$key}) {
+         save_entry("%s:\"%s\"",$key,single(@state{$key}));
+      } else {
+         save_entry("%s:\"%s\"",$key,"%DELETE%");
+      }
+   } elsif($type eq "WORLD") {
+      if(defined @address{$key}) {
+         save_entry("%s:{%s}",$key,hash_dump(@address{$key}));
+      } else {
+         save_entry("%s:{%s}",$key,"%DELETE%");
+      }
+   } else {
+      echo($conn,"Invalid 'save' request");
+   }
+}
+
+#
+# seperate
+#   grab a block of text that ends with a $sep seperator. Honor escaped
+#   characters and drop the "\" as an escape character when found.
+#
+sub seperate
+{
+   my ($sep,$txt) = @_;
+   my $result;
+
+   my $len = length($txt);
+   for(my $i = 0;$i < $len;$i++) {
+      if(substr($txt,$i,1) eq "\\") {
+         $result .= substr($txt,$i+1,1);
+         $i++;
+      } elsif(substr($txt,$i,1) eq $sep) {
+         return (substr($txt,$i+1),$result);
+      } else {
+         $result .= substr($txt,$i,1);
+      }
+   }
+   return (undef,$result);
+}
+
+#
+# hashsplit
+#    take a string and split it into a hash. The format is the key name
+#    seperated by a colon and ending with a semi-colon. Semi-colons may
+#    be escaped out if they are not significant. This format then repeats.
+#
+#    Format: <key>:<value>;<key .. >
+#    
+sub hashsplit
+{
+   my ($world,$txt) = @_;
+   @address{$world} = {};
+   my $val;
+
+   while($txt =~ /^([^:]+):/) {
+      ($txt,$val)  = seperate(";",$');
+      @address{$world}->{$1} = $val;
+   }
+}
+
+sub cmd_sync
+{
+   my ($conn,$txt) = @_;
+   my $fd;
+
+   open($fd,"> @ENV{HOME}/.muddler") ||
+      e("Unable to open .muddler for writing");
+   @state{save_fd} = $fd;
+
+   for my $world (keys %address) {
+      save($conn,"WORLD",$world);
+   }
+
+   for my $key (grep {/^p_/} keys %state) {
+      save($conn,"STATE",$key);
+   }
+}
 
 #
 # cmd_request_info
@@ -6095,7 +6250,7 @@ sub vencode
       return echo($conn,"%% Encoding '%s' not supported.",$value);
    } else {
       @address{world($conn)}->{decode} = $enc;
-      save_differential();
+      save($conn,"WORLD",world($conn));
    }
 }
 
@@ -6147,7 +6302,7 @@ sub update_keepalive
    my ($conn,$val) = @_;
 
    @address{world($conn)}->{keepalive} = $val;
-   save_differential();
+   save($conn,"WORLD",world($conn));
    echo($conn,"% Keepalive for %s set to: %s",world($conn),$val);
 }
 
@@ -6245,7 +6400,7 @@ my ($conn,$txt) = @_;
          
          if(defined @var{$name}->{set} && @var{$name}->{set} == 1) {
             @state{"p_$name"} = trim($val);
-            save_differential();
+            save($conn,"STATE","p_$name");
             if(length trim($val)) {
                if(@state{state} ne "init") {
                   echo($conn,
@@ -6269,7 +6424,7 @@ my ($conn,$txt) = @_;
    } elsif($txt =~ /^\s*list\s*$/) {
       cmd_showset(@_);
    } else {
-      echo($conn,"%% All variables require a value: /set varible=value");
+      cmd_showset(@_,$txt);
    }
 }
 
@@ -6309,7 +6464,7 @@ sub cmd_common
       if(defined @list{trim($')}) {
          delete @list{trim{$'}};
          @state{p_common} = join(":",keys %list);
-         save_differential();
+         save($conn,"STATE","p_common");
       } else {
          echo($conn,"%% Worlds '%s' not defined in /common",trim($'));
       }
@@ -6321,7 +6476,7 @@ sub cmd_common
       } else {
          @list{trim($txt)} = 1;
          @state{p_common} =  join(":",keys %list);
-         save_differential();
+         save($conn,"STATE","p_common");
       }
    }
 }
@@ -6340,6 +6495,25 @@ sub cmd_log
    LOGGIT("log: $txt");
 }
 
+#
+# safe_match:
+#   See if $pat matches $txt. If $pat doesn't contain a pattern then its
+#   considered a match. $pat could be a malformed regexp which would cause
+#   an error,  so protect against that situation too.
+#
+sub safe_match
+{
+   my ($txt,$pat) = @_;
+
+   return 1 if $pat eq undef;
+
+   my $match = 0;
+   eval {
+      $match = 1 if($txt =~ /^\s*$pat\s*$/);
+   };
+   return $match;
+}
+
 sub cmd_showset
 {
 #-# ------------------------------------------------------------------------
@@ -6350,7 +6524,7 @@ sub cmd_showset
 #-#
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
-   my $count = 0;
+   my ($count,$pat) = (0);
 
 #   echo($conn,"# cache hits      %s",@state{cached});
 #   echo($conn,"# cache misses    %s",@state{nocache});
@@ -6364,22 +6538,26 @@ sub cmd_showset
 #      }
 #      echo($conn,"# cache_size      %s",$count);
 #   }
+   $pat = glob2re($txt) if($txt ne undef);
    for my $key (keys %state) {
       if(@state{$key} !~ /^\s*(0|off)\s*$/ && $key =~ /^p_/) {
-         echo($conn,"# %-15s %s",$',@state{$key});
+         if(safe_match($',$pat)) {
+            echo($conn,"# %-15s %s",$',@state{$key});
+         }
       }
    }
  
-   if(defined @address{world($conn)} &&
+   if($pat eq undef && defined @address{world($conn)} &&
       defined @address{world($conn)}->{decode}) {
       echo($conn,"# %-15s %s","encode",@address{world($conn)}->{decode});
    }
-   if(defined @address{world($conn)} &&
+   if($pat eq undef && defined @address{world($conn)} &&
       defined @address{world($conn)}->{keepalive}) {
       echo($conn,"# %-15s %s","keepalive",@address{world($conn)}->{keepalive});
    }
+   if($pat eq undef) {
    echo($conn,"# %-15s %sx%s","screen size",@state{size_x},@state{size_y});
-   
+   }
 }
 
 #
@@ -6466,13 +6644,13 @@ sub cmd_more
          echo($conn,"%% \"More\" paging enabled.  Use TAB to scroll.");
       }
       @state{p_more} = 1;
-      save_differential();
+      save($conn,"STATE","p_more");
    } elsif($txt =~ /^\s*(0|off)\s*$/) {
       if(@state{state} eq "init") {
          echo($conn,"%% \"More\" paging disabled.");
       }
       @state{p_more} = 0;
-      save_differential();
+      save($conn,"STATE","p_more");
    } elsif($txt =~ /^\s*$/) {
       echo($conn,"%% more is %s",(@state{p_more} eq 1) ? "on" : "off");
    } else {
@@ -6694,7 +6872,7 @@ sub cmd_editor
    @address{@field[0]}->{ssl} = 1 if($$opt{s});
    @address{@field[0]}->{log} = 1 if($$opt{l});
 
-   save_differential();
+   save($conn,"WORLD",@field[0]);
 }
 
 sub chksum
@@ -6713,86 +6891,19 @@ sub save_entry
    my ($fmt,@args) = @_;
    my $fd;
 
-   if(!@state{save_append}
-      || !defined @state{save_fd}
-      || ref(@state{save_fd}) ne "GLOB") {
-      open($fd,((@state{save_append}) ? ">" : "") . "> @ENV{HOME}/.muddler") ||
+   if(ref(@state{save_fd}) ne "GLOB") {
+      open($fd,">> @ENV{HOME}/.muddler") ||
          e("Unable to open .muddler for writing");
       @state{save_fd} = $fd;
    } else {
       $fd = @state{save_fd};
    }
-   @state{save_append} = 1 if @state{save_append} == 0;
 
+   seek($fd,0,SEEK_END);
    # optionally add return at end of the line
    my $txt = sprintf("$fmt",@args);
-   $txt .= "\n" if($txt !~ /\n$/);
-
-   printf($fd "%s",$txt);
-   @state{save_last} = time();
-}
-
-sub save_differential
-{
-   my $first = 0;
-   my (%world_new, %state_new);
-
-   if(!defined @state{world_prev}) {
-      ($first,@state{world_prev},@state{state_prev}) = (1,{},{});
-   }
-
-   if(time() - @state{save_differential_first_time} > 86400 || 1) {
-      @state{save_differential_first_time} = time();
-      @state{state_prev} = {};
-      @state{world_prev} = {};
-      @state{save_append} = 0;
-   } else {
-      @state{save_append} = 1;
-   }
- 
-   # save differences between world file
-   for my $world (sort grep {!/^\(unnamed_/i} keys %address) {
-      my $data = "$world {\n   type:address\n";
-      for my $key (keys %{@address{$world}}) {
-         $data .= "   $key:" . single(@address{$world}->{$key}) . "\n";
-      }
-      $data .= "}\n";
-      my $chk = chksum($data);
-      if($chk ne @state{world_prev}->{$world}) {
-         save_entry($data) if(!$first);
-         @world_new{$world} = $chk;
-      }
-      @world_new{$world} = $chk;
-   }
-
-   # remove world entry if it was deleted
-   for my $world (keys %{@state{world_prev}}) {
-      if(!$first && !defined @address{$world}) {
-         save_entry("world_delete:$world");
-      }
-   }
-
-    
-   # save state differences
-   for my $key (grep {/^p_/} keys %state) {
-      my $chk = chksum(single(@state{$key}));
-      if($chk ne @state{state_prev}->{$key}) {
-         if(!$first) {
-            save_entry("state:%s:%s",$key,single(@state{$key}));
-         }
-      }
-      @state_new{$key} = $chk;
-   }
-
-   # remove state entry as it was deleted
-   for my $key (keys %{@state{state_prev}}) {
-      if(!$first && !defined @state{$key}) {
-         save_entry("state_delete:%s",$key);
-      }
-   }
-
-   @state{state_prev} = \%state_new;                # store previous state
-   @state{world_prev} = \%world_new;                # store previous world
+   printf($fd "%s",$txt . (($txt =~ /\n$/) ? "" : "\n"));
+   $fd->flush;
 }
 
 sub load
@@ -6810,7 +6921,19 @@ sub load
    while(<$file>) {
       my $orig = $_;
       s/\r|\n//g;
-      if(/^\s*state:([^:]+):/) {                    # state variable values
+      if(/^([^: ]+):{(.*)}$/) {                # handle new world format
+         if($2 eq "%DELETE%") {
+            delete @address{$1};
+         } else {
+            hashsplit($1,$2);
+         }
+      } elsif(/^([^: ]+):"(.*)"$/) {               # handle new set format
+         if($2 eq "%DELETE%") {
+            delete @state{$1};
+         } else {
+            @state{$1} = $2;
+         }
+      } elsif(/^\s*state:([^:]+):/) {              # state variable values
          @state{$1} = $';
       } elsif(/^\s*([^ ]+)\s*{\s*$/) {                   # start of segment
          $name = $1;
@@ -6937,13 +7060,31 @@ sub cmd_listdef
 #-#      Lists all defines or any matching <pattern>
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
+   my $w = world($conn);
    my $opt = {};
    my $pat;
+   my $wmax = 5;
+   my $nmax = 3;
+   my $cwin = min_size($w);
+   $cwin = 50 if $cwin < 50;
 
    my $str = getopt("sSm:t:b:B:E:T:h:a:P:iIw:",$txt,$opt);
 
+   for my $key (keys %def) {
+      if(($pat eq undef || $key =~ /^$pat$/i) &&
+         (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
+         if(length(@def{$key}->{world}) > $wmax) {
+            $wmax = length(@def{$key}->{world});
+         }
+         $nmax = length($key) if length($key) > $nmax;
+      }
+   }
    history(world($conn),
-           sprintf("%-15s %4s %-8s %s","NAME","ATTR","WORLD","STRING")
+           sprintf("%-*s %4s %-*s %s",
+                   $nmax,"NAME",
+                   "ATTR",
+                   $wmax,"WORLD",
+                   "STRING")
           );
 
    $pat = glob2re(trim($str)) if($str !~ /^\s*$/);
@@ -6953,19 +7094,19 @@ sub cmd_listdef
 
       if(($pat eq undef || $key =~ /^$pat$/i) &&
          (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
-        for my $line (ansi_wrap(@def{$key}->{txt},49)) {
+        for my $line (ansi_wrap(@def{$key}->{txt},$cwin - $nmax - $wmax - 7)) {
            if($count++ == 0) {
-               history(world($conn),sprintf("%-15s %4s %-8s %s",
-                    $key,
+               history(world($conn),sprintf("%-*s %4s %-*s %s",
+                    $nmax,$key,
                     @def{$key}->{atr},
-                    @def{$key}->{world},
+                    $wmax,@def{$key}->{world},
                     txt($line)
                    ),0);
             } else {
-               history(world($conn),sprintf("%-15s %4s %-8s %s",
+               history(world($conn),sprintf("%-*s %4s %-*s %s",
+                    $nmax,"",
                     "",
-                    "",
-                    "",
+                    $wmax,"",
                     txt($line)
                    ),0);
             }
@@ -7132,6 +7273,7 @@ sub cmd_undef
    my ($conn,$str) = (shift,trim(shift));
    my $count = 0;
    my $pat;
+   my $name;
 
    if($str !~ /^\s*$/) {
       $pat = glob2re(trim($str));
@@ -7142,14 +7284,20 @@ sub cmd_undef
    for my $key (sort keys %def) {
       eval {
          if($key =~ /^$pat$/i) {
+            $name = $key;
             $count++;
             delete @def{$key};
          }
       };
+      if($@) {
+         return echo($conn,"%% UNDEF: Aborting, Invalid pattern '%s'");
+      }
    }
 
-   if($count) {
-      echo($conn,"%% UNDEF: $count macros undefined");
+   if($count == 1) {
+      echo($conn,"%% UNDEF: '%s' macro undefined",$name);
+   } elsif($count) {
+      echo($conn,"%% UNDEF: $count macros undefined matched by pattern.");
    } else {
       echo($conn,"%% UNDEF: no macros matched '%s'",$str);
    }
@@ -7468,7 +7616,7 @@ sub cmd_web
          echo($conn,"%% %s file is now: %s",lc($1),trim($2));
       }
       @state{"p_" . lc($1)} = trim($2);
-      save_differential();
+      save($conn,"STATE","p_" . lc($1));
    } elsif($status =~ /^\s*on\s*$/i) {
       if(@state{p_web} == 1 && !$startup) {
          echo($conn,
@@ -8315,7 +8463,6 @@ sub reload_code
    encoding_init();
    load_modules() if(!$nomodules);
    callback_init();
-   save_differential();
 
 
    if($count == 0) {
@@ -8586,7 +8733,6 @@ sub muddler_init
 
    @state{chksum} = get_checksums();
    load(@state{world},1);
-   save_differential(); # prime the pump, won't actually save
    LOGGIT("### START ###");
 
    # initialize websocket client
@@ -8774,7 +8920,7 @@ for my $i (0 .. $#ARGV) {
       @state{port} = $1;
    } elsif(@ARGV[$i] =~ /^--(pass|password)=(.*)$/) {
       @state{p_password} = $2;
-      save_differential();
+      save("muddler","p_password");
    } elsif(@ARGV[$i] =~ /^--xy=(\d+),(\d+)$/) {
       (@state{size_x},@state{size_y}) = ($1,$2);
    } elsif(@ARGV[$i] =~ /^--window=/) {
