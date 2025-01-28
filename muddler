@@ -4138,8 +4138,10 @@ sub key_default
      (!defined @state{p_spell} || TRUE(@state{p_spell}))) {
       if(substr(join('',@{$$input[-1]}),0,line_pos()) =~ 
             /(^| |^:|^"|^@)([a-zA-Z']+)([,\.!"']{0,1})(\s*)$/) {
-         @state{speller} = Text::Aspell->new if(!defined @state{speller});
-         if(!@state{speller}->check($2)) {
+         spell_init();
+         if(!@state{spell_status}) {
+             # do nothing, spelling is broken
+         } elsif(!@state{speller}->check($2)) {
              make_string_bold("$2$3$4",1);
              @state{spelling_error} = 1;
          } elsif(@state{spelling_error} == 1) {  # this will not unbold every
@@ -4148,6 +4150,7 @@ sub key_default
          }
       }
    }
+
 
 
    if(in_dialog()) {
@@ -5033,7 +5036,7 @@ sub loggit
    my ($fmt,@args) = @_;
    my $file;
 
-   # @state{p_debug} = 1;
+   @state{p_debug} = 1;
    #   die("no debug - " . code()) if !@state{p_debug};
    return if !defined @state{p_debug} || !@state{p_debug};
 
@@ -5751,13 +5754,13 @@ sub save
    if($type eq "STATE") {
       if(defined @state{$key}) {
          save_entry("%s:\"%s\"",$key,single(@state{$key}));
-      } else {
+      } elsif($key ne "") {
          save_entry("%s:\"%s\"",$key,"%DELETE%");
       }
    } elsif($type eq "WORLD") {
       if(defined @address{$key}) {
          save_entry("%s:{%s}",$key,hash_dump(@address{$key}));
-      } else {
+      } elsif($key ne "") {
          save_entry("%s:{%s}",$key,"%DELETE%");
       }
    } else {
@@ -5814,17 +5817,18 @@ sub cmd_sync
    my ($conn,$txt) = @_;
    my $fd;
 
-   open($fd,"> @ENV{HOME}/.muddler") ||
-      e("Unable to open .muddler for writing");
-   @state{save_fd} = $fd;
-
-   for my $world (keys %address) {
-      save($conn,"WORLD",$world);
-   }
-
-   for my $key (grep {/^p_/} keys %state) {
-      save($conn,"STATE",$key);
-   }
+#   open($fd,"> @ENV{HOME}/.muddler") ||
+#      e("Unable to open .muddler for writing");
+#   @state{save_fd} = $fd;
+#
+#   for my $world (keys %address) {
+#      save($conn,"WORLD",$world);
+#   }
+#
+#   for my $key (grep {/^p_/} keys %state) {
+#      save($conn,"STATE",$key);
+#   }
+   loggit("%s",print_var(@address{mellow}));
 }
 
 #
@@ -6375,7 +6379,7 @@ my ($conn,$txt) = @_;
             if($val =~ /^\s*(@var{$name}->{chk})\s*$/) {
                $txt = $val;
             } else {
-               return echo($conn,"%% %s expects a value of: %s\n",$name,
+               return echo($conn,"%% %s expects a value of: %s",$name,
                   join(", ",split(/\|/,@var{$name}->{chk})));
             }
          }
@@ -6911,6 +6915,7 @@ sub load
    my ($conn,$quiet) = @_;
    my ($file,$name,$data);
 
+   loggit("LOAD: called");
    if(!open($file,"@ENV{HOME}/.muddler")) {
       if(!$quiet) {
          echo($conn,"%% Unable to open @ENV{HOME}/.muddler for reading");
@@ -6921,6 +6926,7 @@ sub load
    while(<$file>) {
       my $orig = $_;
       s/\r|\n//g;
+      loggit("# %s",$_);
       if(/^([^: ]+):{(.*)}$/) {                # handle new world format
          if($2 eq "%DELETE%") {
             delete @address{$1};
@@ -6940,18 +6946,25 @@ sub load
          delete @$data{keys %$data};
       } elsif(/^\s*([^:]+)\s*:\s*/) {                      # segment value
          if($name eq undef) {
-            return echo($conn,"% Corrupted .muddler file found on line $.");
+            echo($conn,"% Corrupted .muddler file found on line $.");
+            loggit("% Corrupted .muddler file found on line $.");
+         } else {
+            $$data{$1} = $';
          }
-         $$data{$1} = $';
       } elsif(/^\s*}\s*$/) {                             # end of segment
          if($$data{type} eq "address") {          # segment was an address
             @address{$name} = { %$data };
          }
          $name = undef;
       } else {
-        echo($conn,"% Corrupted @ENV{HOME}/.muddler file found on line $. - '%s'",$_);
-        close($file);
-        return 1;
+        echo($conn,
+             "% Corrupted @ENV{HOME}/.muddler file found on line $. - '%s'",
+             $_
+            );
+        loggit($conn,
+             "% Corrupted @ENV{HOME}/.muddler file found on line $. - '%s'",
+             $_
+            );
       }
    }
    close($file);
@@ -8551,15 +8564,6 @@ sub myshuffle (@)
 
 sub tick
 {
-   if(defined @state{save_last} &&
-      defined @state{save_fd} &&
-      time() - @state{save_last} > 2) {
-      my $fd = @state{save_fd};
-      $fd->close();
-      delete @state{save_fd};
-      delete @state{save_last};
-      $fd = undef;
-   }
    # keep alive. Send something to a world to keep it alive if nothing has
    # bloggiteen sent / recieved.
    for my $w (keys %socket) {
@@ -8691,6 +8695,30 @@ sub read_file
    return $result;
 }
 
+# 
+# spell_init
+#    initialize the spell module. If the spelling module fails to correctly
+#    determine if a word is spelled correctly that is spelled correctly, it
+#    will disable spelling to prevent all words from being marked as
+#    misspelled.
+#
+sub spell_init
+{
+   return if defined @state{spell_status};
+
+   if(module_enabled("Text::Aspell") &&
+     !defined @state{spell_status} &&
+     (!defined @state{p_spell} ||  
+      TRUE(@state{p_spell}))) {
+      @state{speller} = Text::Aspell->new if(!defined @state{speller});
+      if(!@state{speller}->check("the")) {
+         @state{spell_status} = 0;
+      } else {
+         @state{spell_status} = 1;
+      }
+   }
+}
+
 #
 # muddler_init: run once type stuff
 #
@@ -8783,6 +8811,7 @@ sub muddler_init
    fansi_init();
 
    cmd_web("muddler","on",1) if(@state{p_web} == 1);
+   spell_init();
 }
 
 #
