@@ -126,6 +126,10 @@ my %mod = (
    'Data::Dumper'                => { fatal => 0,
                                       for => 'remote console'
                                     },
+   'Time::HiRes'                 => { fatal => 1,
+                                      for => 'Accurate Prompt Detection'
+                                    },
+  
 );
 #
 # define all keys/commands in a manor so that they can be reloaded
@@ -771,6 +775,7 @@ sub socket_connect
                           history_pos_partial => -1,
                           created             => time(),
                           do_login            => (defined $$opt{l}) ? 0 : 1,
+                          last_send           => time(),
                         };
    }
 
@@ -1131,6 +1136,7 @@ sub telnet_ch_init
    @telnet_ch{normal} = 
       sub {
          my ($world,$ch) = @_;
+         # loggit("tch: $world -> normal [%s] [%s]",ord($ch));
         
          if($ch eq @state{IAC}) {
             return (undef, @state{IAC});
@@ -1142,6 +1148,7 @@ sub telnet_ch_init
    @telnet_ch{@state{IAC}} =
       sub {
          my ($world,$ch) = @_;
+         # loggit("tch: $world -> IAC [%s]",ord($ch));
 
          if($ch eq @state{IAC}) {
             return (@state{IAC}, 'normal');
@@ -1149,6 +1156,8 @@ sub telnet_ch_init
                  @state{SB})) {
             return (undef,$ch);
          } elsif($ch eq @state{NOP}) {                       # keep-a-live?
+            # nothing needs to be done. the timers are reset when the
+            # packet comes in.
             return (undef, 'normal');
          } else {
             return (undef, 'normal');
@@ -1158,6 +1167,7 @@ sub telnet_ch_init
    @telnet_ch{@state{DO}} =
       sub {
          my ($world,$opt, $mode) = @_;
+         # loggit("tch: $world -> DO [$opt,$mode]");
  
          my $wopt = $options[ord($opt)] || ord($opt);
          if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
@@ -1188,6 +1198,7 @@ sub telnet_ch_init
    @telnet_ch{@state{SB}} =
       sub {
          my ($world,$c) = @_;
+         # loggit("tch: $world -> sb [$c]");
          return (undef, 'sbiac') if $c eq @state{IAC};
          @state{telnet_sb_buffer} .= $c;
          return;
@@ -1196,6 +1207,7 @@ sub telnet_ch_init
    @telnet_ch{sbiac} =
        sub {
           my ($world,$c) = @_;
+          # loggit("tch: $world -> sbiac [$c]");
 
           if ($c eq @state{IAC}) {
               @state{telnet_sb_buffer} .= @state{IAC};
@@ -1511,6 +1523,14 @@ sub server_address
    }
 }
 
+sub noret
+{
+   my $txt = shift;
+
+   $txt =~ s/\r|\n//g;
+   return $txt;
+}
+
 
 #
 # io
@@ -1520,7 +1540,8 @@ sub server_address
 sub io
 {
    my $buf;
-   
+   my $do_release = 0;
+   my %new_input;
 
    my ($sockets) = IO::Select->select($ws_server->{select_readable},
                                       $ws_server->{select_writeable},
@@ -1552,7 +1573,7 @@ sub io
                   handle_login($w);
                }
             }
-            @socket{$w}->{last_recv} = time();
+            @socket{$w}->{last_recv} = Time::HiRes::gettimeofday();
 
             if(module_enabled("Encode")) {
                if(world_encode($w) eq "cp437") {
@@ -1561,15 +1582,27 @@ sub io
                   @socket{$w}->{buf} .= decode(world_encode($w),
                                                _parse($w,$buf)
                                               );
+                  # $buf =~ s/\r|\n//g;
+                  # loggit("# $w '%s'\n",$buf);
                }
            } else {
                @socket{$w}->{buf}.= _parse($w,$buf);
             }
    
+            # loggit("#$w-1# '%s'",$buf);
+            @state{norelease} = 1;
+            @new_input{$w} = 1;
             while(defined @socket{$w}->{sock} &&
-                  @socket{$w}->{buf} =~ /\n/) {
+                  defined @socket{$w}->{buf} &&
+                  @socket{$w}->{buf} =~ /(\r\n|\n)/) {
+                # loggit("   #$w-2# '%s'",$`);
                 history($w,$`,1);
-                @socket{$w}->{buf} = $';
+                $do_release = 1 if(@state{world} eq $w);
+                if(length($') != 0) {
+                   @socket{$w}->{buf} = $';
+                } else {
+                   delete @socket{$w}->{buf};
+                }
              }
          }
       } elsif( $sock == $ws_listen ) {
@@ -1651,6 +1684,30 @@ sub io
          $ws_server->{select_readable}->remove( $sock );
       }
    }
+
+   # show prompt after 1 second?
+   for my $w (keys %socket) {
+      if(defined @socket{$w}->{buf} &&
+         length(@socket{$w}->{buf}) != 0 && 
+         Time::HiRes::gettimeofday() - @socket{$w}->{last_recv} >= 1.5) {
+         # loggit("#$w-3# '%s'",@socket{$w}->{buf}) if($w eq "bi");
+         history($w,@socket{$w}->{buf},1,1);
+         delete @socket{$w}->{buf};
+      }
+   }
+   @state{norelease} = 0;
+
+   # optimize output by only releasing output when needed.
+   #   i.e. when the input is for the console or a web socket client world
+   my $hash = $ws_server->{conns};
+   for my $key (keys %$hash) {
+      my $c = $$hash{$key}->{conn};
+      if(defined @new_input{@ws{$c}->{world}}) {
+         $do_release = 1;
+      }
+   }
+   $do_release if(defined @new_input{@state{world}});
+   release_some_pending(@state{world},@state{world}) if($do_release);
 }
 
 
@@ -2208,7 +2265,7 @@ sub echo_console
       @state{optimize_output} = 2 if(@state{optimize_output} == 1);
    }
 
-   printf("\n%s",$msg);
+   PRINTF("\n%s",$msg);
 
    if(@state{optimize_output} == 0) {
       update_scroll_region("input");
@@ -2511,7 +2568,7 @@ sub gagged
 #
 sub history
 {
-   my ($conn,$txt,$mud) = @_;
+   my ($conn,$txt,$mud,$partial) = @_;
    $txt =~ s/\r//g;
 
    my $world = world($conn);
@@ -2522,6 +2579,17 @@ sub history
    }
    @history{$world} = [] if !defined @history{$world};
    @pending{$world} = [] if !defined @pending{$world};
+   $partial = 0 if !$partial;
+
+   # if a partial line is sent, the next part should just be a return?
+   # if so, we can just ignore it and turn off the partial line attr.
+   # if not, the output will could be wrong. That at situation can be
+   # addressed if its ever found in the wild.
+   if($#{@history{$world}} >= 0 && @{@history{$world}}[-1]->{partial} &&
+      $txt eq "") {
+      @{@history{$world}}[-1]->{partial} = 0;
+      return;
+   }
 
    my $str = { txt       =>  $txt,
                ts        => time(),
@@ -2530,6 +2598,7 @@ sub history
                original  => undef,               # unmodified txt, if changed
                internal  => ($mud) ? 0 : 1,                 # internal output
                size      => @state{size_y},            # wrapped at this size
+               partial   => $partial
              };
 
    remove_nospoof($str);
@@ -2550,7 +2619,7 @@ sub history
       send_to_window($world,$str);                    # handle /window stuff
       loggit_world($world,$txt) if($$str{internal} == 0);
       push(@{@pending{$world}},$str);
-      release_some_pending($conn,$world);
+      release_some_pending($conn,$world) if(!@state{norelease});
    }
 
    draw_bar() if(!world_visible($world));
@@ -2806,7 +2875,7 @@ sub line_finish
 #
 sub release_some_pending
 {
-   my ($conn,$w) = @_;
+   my ($conn,$w,$flag,$no_output) = @_;
    my (@out, @web, $result, $start,$end, @orig);
 
    if(!defined @socket{$w}
@@ -2815,9 +2884,11 @@ sub release_some_pending
       || in_more($w) 
       || in_hist($w) 
       || !world_visible($w)) {
-#       loggit("Skipping: $w [%s,%s,%s,%s]",$#{@pending{$w}},in_more($w),in_hist($w),world_visible($w));
+      # loggit("Skipping: $w [%s,%s,%s,%s]",(defined @pending{$w}) ? "pending" : "no_pend",in_more($w),in_hist($w),world_visible($w));
        return 0;
    }
+
+   # loggit("release_some_pending called: %s[%s] - %s",$#{@pending{$w}},@state{norelease},code("shortest"));
 
    my $str = @pending{$w}->[0];
    while(!in_more($w,0,1) && $#{@pending{$w}} > -1) {
@@ -2825,7 +2896,7 @@ sub release_some_pending
       $start = $line if(!defined $start);
       if(!defined $line) {
          if($#orig == 0 && defined $start && $start != 0) {
-            push(@orig,txt(ansi_substr(@pending{$w}->[0],$start)));
+            push(@orig,txt(ansi_substr(@pending{$w}->[0]->{txt},$start)));
          } else {
             push(@orig,@pending{$w}->[0]->{txt});
          }
@@ -2863,6 +2934,10 @@ sub release_some_pending
    # must have been called with a previously finished line in it. Nothing
    # needs to be done.
    return 0 if($#out == -1 && $#{@pending{$w}});
+
+   # release_some_pending called but lines will be outputed by something
+   # else (i.e. drawoutput). This is done to mimize output.   
+   # return $#out + 1 if $no_output;
 
    echo_world($w,join("\n",@out),join("\n",@orig));
    return $#out + 1;
@@ -3262,7 +3337,7 @@ sub draw_output_world_new
                $str = $$h[$pos]->{txt};
             }
             for my $line (reverse ansi_wrap($str,$y)) {
-               if($cnt > $x) {
+               if($cnt >= $x) {
                   last;
                } else {
                   unshift(@out,txt($line));
@@ -3305,10 +3380,10 @@ sub draw_input
          my $end = $pos + input_size() - 1;
          for my $i (input_start() .. input_end()) {
             if($pos <= $end) {                      # line $pos of typed input
-               printf("%s\033[K%s",input_line($pos),
+               PRINTF("%s\033[K%s",input_line($pos),
                   ($i != input_end()) ? "\n" : "");
             } else {            # blank line with return but not on last line
-               printf("\033[K%s",($i != input_end()) ? "\n" : "");
+               PRINTF("\033[K%s",($i != input_end()) ? "\n" : "");
             }
             $pos++;
          }
@@ -3326,9 +3401,11 @@ sub draw_screen
 
    return if(!console());
    printf("\033[r\033[2J") if(is_console($conn) && $clear);
-   clear_screen($conn);
+   # clear_screen($conn);
+   @state{optimize_output} = 1;
    draw_output($conn,$flag);
    draw_bar(1);
+   delete @state{optimize_output};
    draw_input($conn);
 }
 
@@ -3841,7 +3918,7 @@ sub out
 
       my $sock = @socket{$world}->{sock};
       # loggit("\nout[%s] %s [%s]",$world,$msg,code("short"));
-      # loggit("out[%s] %s",$world,$msg);
+      loggit("out[%s] %s",$world,$msg) if $world eq "bi";
 
       if(module_enabled("Encode")) {
          printf($sock "%s",encode(world_encode($world),$msg));
@@ -3905,7 +3982,11 @@ sub key_return
      # do nothing
    } elsif(defined @socket{@state{world}} && 
            defined @socket{@state{world}}->{sock}) {
-      out(@state{world},"%s",$txt) if(!in_dialog());
+      if($txt =~ /^\/\//) {
+         out(@state{world},"%s","\/$'") if(!in_dialog());
+      } else {
+         out(@state{world},"%s",$txt) if(!in_dialog());
+      }
    }
    @state{input_pos} = -1;                    # reset keyboard history pos
    push(@$input,[]);
@@ -3918,8 +3999,6 @@ sub key_return
       @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
    }
    input_clear() if(!in_dialog());
-#   printf("\n");
-   xy(input_x(),input_y());
 }
 
 sub input_lines
@@ -3974,6 +4053,9 @@ sub key_delete
    
    my $input = input();
 
+   if(defined @state{spelling_error} && @state{spelling_error}) {
+      @state{spelling_delete}++;
+   }
    if(line_pos() < 1) {                             # nothing left to delete
       return;
    } elsif(line_pos() < $#{$$input[-1]}+1) {          # delete in middle
@@ -4073,6 +4155,7 @@ sub make_string_bold
       $i++;
    }
    printf("\033[0m") if($bold);                               # turn off bold
+   xy(input_x(),input_y());
 }
 
 sub input_eol
@@ -4144,9 +4227,13 @@ sub key_default
          } elsif(!@state{speller}->check($2)) {
              make_string_bold("$2$3$4",1);
              @state{spelling_error} = 1;
+             @state{spelling_delete} = 0;
          } elsif(@state{spelling_error} == 1) {  # this will not unbold every
-             make_string_bold("$2$3$4",0);              # thing, improve later?
+             if(@state{spelling_delete}) {
+                make_string_bold("$2$3$4",0);          # thing, improve later?
+             }
              @state{spelling_error} = 0;
+             @state{spelling_delete} = 0;
          }
       }
    }
@@ -4161,7 +4248,7 @@ sub key_default
       } elsif(dialog_type() =~ /^cycle\./) {
          dialog_populate(dialog_x(),cycle_next($'));
          xy(input_x(),dialog_max() + 6);
-         printf("\033[K[ %s ]",dialog_value(dialog_x()));
+         PRINTF("\033[K[ %s ]",dialog_value(dialog_x()));
          xy(input_x(),input_y());
          return;
       } elsif(dialog_type() eq "check") {
@@ -4512,6 +4599,7 @@ sub switch_world
    }
 
 
+   release_some_pending($conn,$world,undef,1);
    if(TRUE(@state{p_sync})) {                     # world syncing turned on,
       draw_output($conn,0);                      # keep all worlds in sync
       for my $key (keys %ws) {
@@ -4520,7 +4608,7 @@ sub switch_world
    } else {
       draw_output($conn,0);
    }
-   release_some_pending($conn,$world);
+   # release_some_pending($conn,$world);
    update_scroll_region("input");
 #   if(in_dialog() && dialog_name(1) eq "World Name") {
 #      cmd_editor($conn,$world);
@@ -4609,7 +4697,7 @@ sub update_scroll_region
    my $stop  = ($region eq "input") ? input_end() : output_end();
 
    if(@state{region} ne "$start,$stop" || $force) {           # do the work
-      printf("\033[%s;%sr",$start,$stop);
+      PRINTF("\033[%s;%sr",$start,$stop);
       @state{region} = "$start,$stop";
       @state{r} = $region;
    }
@@ -4714,9 +4802,9 @@ sub clear_screen
    if(is_console($conn) && console()) {
       for my $line (1 .. @state{size_x}) {
          if($line == @state{size_x}) {
-            printf("\033[K");
+            PRINTF("\033[K");
          } else {
-            printf("\033[K\n");
+            PRINTF("\033[K\n");
          }
       }
    } elsif(is_web($conn)) {
@@ -4735,7 +4823,7 @@ sub xy
 
    return if !console();
    return if defined @state{monitor_value};
-   printf("\033[%s;%sH",$x,$y);
+   PRINTF("\033[%s;%sH",$x,$y);
 }
 
 #
@@ -4875,6 +4963,27 @@ sub draw_bar
             xy(input_x(),input_y());
       }
       return;
+
+   } elsif(console() && "$hr$min" ne @state{bar_time} &&    # just update time
+      @state{bar_activity} eq $cnt &&                   # if only time changed
+      @state{bar_name} eq name(@state{world}) &&
+      @state{bar_more} eq pending(@state{world}) &&
+      @state{bar_pos} eq hist_pos(@state{world}) &&
+      @state{size_x}.@state{size_y} eq @state{bar_size}) {
+      xy(input_start() - 1,@state{size_y} - 2 - length($hr));
+      PRINTF("%s:%02d",$hr,$min);
+      xy(input_x(),input_y());
+      @state{bar_time} = "$hr$min";
+   } elsif(console() && "$hr$min" eq @state{bar_time} &&    # just update time
+      @state{bar_activity} eq $cnt &&                   # if only time changed
+      @state{bar_name} ne name(@state{world}) &&
+      @state{bar_more} eq pending(@state{world}) &&
+      @state{bar_pos} eq hist_pos(@state{world}) &&
+      @state{size_x}.@state{size_y} eq @state{bar_size}) {
+      xy(input_start() - 1,11);
+      PRINTF("%s%s",name(),"_" x (length(@state{bar_name} - length(name()))+1));
+      xy(input_x(),input_y());
+      @state{bar_name} = name(@state{world});
    } elsif(console() && ($force || "$hr$min" ne @state{bar_time} ||
       @state{bar_activity} ne $cnt ||
       @state{bar_name} ne name(@state{world}) ||
@@ -4904,7 +5013,7 @@ sub draw_bar
       #---
       xy(input_start() - 1,0);
 
-      printf("%s%s_%s%s_%s_%s_%s:%02d",
+      PRINTF("%s%s_%s%s_%s_%s_%s:%02d",
              "_" x (9 - ansi_length($more)),
              $more,
              name(),
@@ -4915,7 +5024,7 @@ sub draw_bar
              $min
             );
 #      update_scroll_region("input");
-      xy(input_x(),input_y());
+      xy(input_x(),input_y()) if !@state{optimize_output};
    }
 
 
@@ -5089,7 +5198,7 @@ sub code
          }
       }
       if($type eq "shortest") {
-         return join(',',@stack[0 .. 5]);
+         return join(',',@stack[0 .. 7]);
       } else {
          return join(',',@stack);
       }
@@ -5103,9 +5212,24 @@ sub input_clear
    update_scroll_region("input");
    my $start = @state{size_x} - input_size() + 1;
    xy($start,0);
-   for my $i ($start .. @state{size_y}) {
-      printf("\033[K\n");
+   for my $i ($start .. @state{size_x}) {
+      PRINTF("\033[K\n");
    }
+}
+
+#
+# PRINTF
+#    call printf() but allow for debuging of output, typically find
+#    determine if what is being sent is efficent.
+sub PRINTF
+{
+    my ($fmt,@args) = @_;
+
+    my $msg = sprintf($fmt,@args);
+    printf("%s",$msg);
+
+    # $msg =~ s/\r|\n//g;
+    # loggit("%s - %s",ansi_debug($msg),code("shortest"));
 }
 
 #----------------------------------------------------------------------------#
@@ -5817,18 +5941,18 @@ sub cmd_sync
    my ($conn,$txt) = @_;
    my $fd;
 
-#   open($fd,"> @ENV{HOME}/.muddler") ||
-#      e("Unable to open .muddler for writing");
-#   @state{save_fd} = $fd;
-#
-#   for my $world (keys %address) {
-#      save($conn,"WORLD",$world);
-#   }
-#
-#   for my $key (grep {/^p_/} keys %state) {
-#      save($conn,"STATE",$key);
-#   }
-   loggit("%s",print_var(@address{mellow}));
+   open($fd,"> @ENV{HOME}/.muddler") ||
+      e("Unable to open .muddler for writing");
+   @state{save_fd} = $fd;
+
+   for my $world (keys %address) {
+      save($conn,"WORLD",$world);
+   }
+
+   for my $key (grep {/^p_/} keys %state) {
+      save($conn,"STATE",$key);
+   }
+#   loggit("%s",print_var(@address{mellow}));
 }
 
 #
@@ -7493,7 +7617,9 @@ sub do_cmd
       return wc_out($input);
    }
 
-   if($input =~ /^\/([^ ]+)\s*/) {
+   if($input =~ /^\/\//) {
+      return 0;
+   } elsif($input =~ /^\/([^ ]+)\s*/) {
       @state{cmd_reset_more} = 1;
       if(defined @command{lc($1)} && ref(@command{lc($1)}) eq "CODE") {
          &{@command{lc($1)}}($conn,$');         # regular non-aliased command
@@ -7690,16 +7816,15 @@ sub cmd_help
 {
 #-# summary: internal
 #-# ------------------------------------------------------------------------
-#-# Common Commands:
-#-#   /dc              :  Forcefully disconnect from current world
-#-#   /list [-c]       :  Lists all saved worlds, -c list connections
-#-#   /world new       :  Setup a connection to a new world
-#-#   /world [<world>] :  Connect or switch to an existing world
-#-#   /quit            :  Quit Muddler
-#-# All Commands Help: 
-#-#   /help commands   :  Lists all of muddlers internal commands
-#-#   /help keys       :  Help entry for keyboard short cuts
-#-#   /help <command>  :  Help entry for a command
+#-# Commands:
+#-#   /dc               :  Forcefully disconnect from current world
+#-#   /help <entry>     :  Help entry for a command or help topic
+#-#   /help commands    :  Lists all of muddlers internal commands
+#-#   /help keys        :  Help entry for keyboard short cuts
+#-#   /list [-c]        :  Lists all saved worlds, -c list open connections
+#-#   /quit             :  Quit Muddler
+#-#   /world -e <world> :  Edit an existing or setup a new world
+#-#   /world <world>    :  Connect or switch to an existing world
 #-# ------------------------------------------------------------------------
    my ($conn,$cmd) = (shift, lc(trim(shift)));
 
@@ -8152,6 +8277,14 @@ sub cmd_listsockets
    }
 }
 
+#
+# reconnect
+#    Reconnect to the world if the socket is disconnected and 
+#    reconnect is turned on. This is only called when a web
+#    based interface is connecting. Special case for Lilly,
+#    to make it easier for her so she doesn't have to type
+#    /world puggy.
+#
 sub reconnect
 {
    my ($conn) = shift;
@@ -8568,12 +8701,13 @@ sub tick
    # bloggiteen sent / recieved.
    for my $w (keys %socket) {
       if(is_loggedin($w) &&
-         time()-@socket{$w}->{last_send} > @socket{$w}->{next_check}) {
+         time()-@socket{$w}->{last_send} > @socket{$w}->{next_check} &&
+         time()-@socket{$w}->{last_recv} > @socket{$w}->{next_check}) {
          if(defined @address{$w} &&
             defined @address{$w}->{keepalive} &&
             trim(@address{$w}->{keepalive}) ne "") {
 
-            if(@address{$w}->{keepalive} !~ /^\s(off|none)\s*$/i) {
+            if(@address{$w}->{keepalive} !~ /^\s*(off|none)\s*$/i) {
                @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
                @state{out_nomore} = 1;
                # loggit("#ka1{$w} %s",@address{$w}->{keepalive});
