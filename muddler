@@ -7,7 +7,7 @@
 #-#   /-()---()   |_|_|_|___/\___\___/|_|\__/_/   
 #
 # Note: A large section of the javascript, html, css came from Grapenut's
-#       websocket client and has been embeded into this perl script.
+#       websocket client and has been embedded into this perl script.
 #       I'm betting this is okay considering the license is described as:
 #       There is no license. Just make a neato game with it.
 #
@@ -55,7 +55,7 @@ my @options = qw(
 my %state = (
    line_pos        => 0,           # character position on the current line
    size_x          => 24,                     # size of screen horizontally
-   size_y          => 80,                  # size of the screen veritically
+   size_y          => 80,                  # size of the screen vertically
    input_offset    => 0,                   # lines scrolled off input buffer
    input_pos       => -1,                        # location in input history
    line            => [],                                # curent input line
@@ -65,7 +65,7 @@ my %state = (
    p_password      => "xyzzy",
    p_theme         => "light",                     # default websocket theme
    p_port          => 9000,                 # web/websock port starting port
-   p_debug         => 0,                   # store debuging info to log file
+   p_debug         => 0,                  # store debugging info to log file
    p_more          => 1,                                      # enable /more
    p_nospoof       => 1,
    overlap         => 3,                        # keep X lines from previous
@@ -219,7 +219,7 @@ sub command_init
    @command{undef}         = sub { return cmd_undef(@_);                   };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
    @command{listworlds}    = sub { return cmd_listworlds(@_);              };
-   @command{addworld}      = sub { return cmd_editor(@_);                  };
+   @command{addworld}      = sub { return cmd_addworld(@_);                };
    @command{rc}            = sub { return read_tfrc("@ENV{HOME}/.tfrc");   };
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
@@ -237,6 +237,7 @@ sub command_init
    @command{request_info}  = sub { return cmd_request_info(@_);            };
    @command{handle_login}  = sub { return handle_login(@_);                };
    @command{sync}          = sub { return cmd_sync(@_);                    };
+   @command{wsconsole}     = sub { return cmd_wsconsole(@_);               };
    #-----------------------------------------------------------------------#
    @command{clock}         = sub { return cmd_null(@_);                    };
    @command{lcd}           = sub { return cmd_null(@_);                    };
@@ -265,9 +266,9 @@ sub callback_init
 {
    delete @call{keys %call};
    @call{dialog_cancel}         = sub { return dialog_cancel(@_) };
-   @call{editor_save}           = sub { return editor_save(@_) };
-   @call{editor_connect}        = sub { return editor_connect(@_) };
-   @call{editor_delete}         = sub { return editor_delete(@_) };
+   @call{world_save}            = sub { return world_save(@_) };
+   @call{world_connect}         = sub { return world_connect(@_) };
+   @call{world_delete}          = sub { return world_delete(@_) };
    @call{set_save}              = sub { return set_save(@_) };
 }
 
@@ -359,7 +360,7 @@ sub load_modules
 # install_modules
 #    There's really no way to get this right as package names will probably
 #    vary from distribution to distribution. This installer will probably
-#    only get it right if its Linux and ubuntu? This doesn't prevent
+#    only get it right if its Linux and Ubuntu? This doesn't prevent
 #    from you installing the modules manually yourself.
 #
 sub install_modules
@@ -402,7 +403,7 @@ sub install_modules
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  ansi support                                                              #
-#    Routines taken from teenymush. This should probably be turned into a    #
+#    Routines taken from TeenyMush. This should probably be turned into a    #
 #    module if i liked using multiple files.                                 #
 #                                                                            #
 #----------------------------------------------------------------------------#
@@ -533,7 +534,7 @@ sub ansi_init
 #
 # dearray
 #    Take an array of ansi strings and convert them into txt with
-#    the embeded escape sequences.
+#    the embedded escape sequences.
 #
 sub dearray
 {
@@ -549,7 +550,7 @@ sub dearray
 
 #
 # txt
-#    Take a single ansi string or mutliple and conver them into
+#    Take a single ansi string or multiple and convert them into
 #    standard text.
 sub txt
 {
@@ -719,7 +720,7 @@ sub handle_login
 
 #
 # world_encode
-#    Return the encoding type for a specifed world. This is only needed
+#    Return the encoding type for a specified world. This is only needed
 #    because encode() expects different encoding types then what the
 #    standard user is expecting. Maybe this should just be a hash table.
 #
@@ -917,8 +918,8 @@ sub test_worlds
 
 #
 # err
-#    Save the error in the state variable. The END declarition will
-#    then reset the terminal and show the messaqe afterwards.
+#    Save the error in the state variable. The END declaration will
+#    then reset the terminal and show the message afterwards.
 #
 sub err
 {
@@ -949,6 +950,7 @@ sub wc_connect
    } else {
       wc_out("/key_ctl_l\n",@state{size_x},@state{size_y});
       wc_out("/focused\n");
+      wc_out("/wsconsole\n");
    }
 }
 
@@ -999,8 +1001,10 @@ sub wc_read
       echo_console("%s",$');
    } elsif($buf =~ /^r\r\n/) {
       my ( $id,$hash ) = undump($');
+      loggit("wc_read: found request_info result: $id");
+      loggit("%s",print_var($hash));
       @address{$id} = $hash;
-      cmd_editor(world(),$id,1);
+      world_dialog_create($client,$id,1);
    } elsif($buf =~ /^b\r\n/) {
       @state{remote_bar} = $';
       @state{remote_bar} =~ s/ /_/g;
@@ -1546,7 +1550,7 @@ sub io
    my ($sockets) = IO::Select->select($ws_server->{select_readable},
                                       $ws_server->{select_writeable},
                                       undef,
-                                      1
+                                      .3
                                      );
 
    for my $sock (@$sockets) {
@@ -1589,7 +1593,7 @@ sub io
                @socket{$w}->{buf}.= _parse($w,$buf);
             }
    
-            # loggit("#$w-1# '%s'",$buf);
+            #loggit("#$w-1# '%s'",$buf);
             @state{norelease} = 1;
             @new_input{$w} = 1;
             while(defined @socket{$w}->{sock} &&
@@ -1597,7 +1601,6 @@ sub io
                   @socket{$w}->{buf} =~ /(\r\n|\n)/) {
                 # loggit("   #$w-2# '%s'",$`);
                 history($w,$`,1);
-                $do_release = 1 if(@state{world} eq $w);
                 if(length($') != 0) {
                    @socket{$w}->{buf} = $';
                 } else {
@@ -1689,7 +1692,7 @@ sub io
    for my $w (keys %socket) {
       if(defined @socket{$w}->{buf} &&
          length(@socket{$w}->{buf}) != 0 && 
-         Time::HiRes::gettimeofday() - @socket{$w}->{last_recv} >= 1.5) {
+         Time::HiRes::gettimeofday() - @socket{$w}->{last_recv} >= .5) {
          # loggit("#$w-3# '%s'",@socket{$w}->{buf}) if($w eq "bi");
          history($w,@socket{$w}->{buf},1,1);
          delete @socket{$w}->{buf};
@@ -1699,15 +1702,23 @@ sub io
 
    # optimize output by only releasing output when needed.
    #   i.e. when the input is for the console or a web socket client world
-   my $hash = $ws_server->{conns};
-   for my $key (keys %$hash) {
-      my $c = $$hash{$key}->{conn};
-      if(defined @new_input{@ws{$c}->{world}}) {
-         $do_release = 1;
+   if(scalar keys %new_input > 0) {
+      if(defined @new_input{@state{world}}) {
+         release_some_pending(@state{world},@state{world});
+         delete @new_input{@state{world}};
+      }
+      my $hash = $ws_server->{conns};
+      for my $key (keys %$hash) {
+         my $c = $$hash{$key}->{conn};
+
+         if(defined @ws{$c} && 
+            defined @ws{$c}->{world} &&
+            defined @new_input{@ws{$c}->{world}}) {
+            release_some_pending(@state{world},@ws{$c}->{world});
+            delete @new_input{@ws{$c}->{world}};
+         }
       }
    }
-   $do_release if(defined @new_input{@state{world}});
-   release_some_pending(@state{world},@state{world}) if($do_release);
 }
 
 
@@ -1945,7 +1956,7 @@ sub http_reply
 #
 # ws_process
 #    A message has come in via the websocket, hand it off to the MUSH
-#    via the server_proces_line() function. The websocket client sends
+#    via the server_process_line() function. The websocket client sends
 #    a flag via the first character (text, html, and publeo, etc).
 #    Currently, that flag is just being stripped and ignored. Maybe
 #    later?
@@ -1962,8 +1973,9 @@ sub ws_process
 
    # if unathorized check password before allowing any input. Websize
    # is sent on connect, so exclude that.
+   loggit("input: %s",$input);
    if((!defined @ws{$conn} || @ws{$conn}->{auth} eq 0) &&
-           $input !~ /^\/(version|web_size|focused|blured|key_ctl_l|monitor|window|mobile)/) {
+           $input !~ /^\/(wsconsole|version|web_size|focused|blurred|key_ctl_l|monitor|window|mobile)/) {
       if($input eq @state{p_password}) {
          @ws{$conn}->{auth} = 1;
          draw_screen($conn);
@@ -1978,6 +1990,7 @@ sub ws_process
          ws_disconnect($conn);
       }
    } elsif(do_cmd(world($conn),$input,$conn)) {
+      # loggit("wc_process: %s",$input);
       # do_cmd runs the command.
    } elsif(no_world()) {
      # do nothing
@@ -2100,7 +2113,7 @@ sub hist_pos
       delete @socket{$w}->{hist_pos};
       delete @socket{$w}->{hist_offset};
    } elsif($action ne undef) {
-      if($action > 0) {                # don't rollpast begining of history
+      if($action > 0) {             # don't roll past beginning of history
          @socket{$w}->{hist_pos} = $action;
          @socket{$w}->{hist_offset} += $offset;
          if(@socket{$w}->{hist_offset} == 0) {
@@ -2304,7 +2317,7 @@ sub recent
    for(my $i = $#$array;$i >= 0 && time() - $$array[$i]->{ts};$i--) {
       # always count original to make counting easier but not gagged.
       # In the situation of a text being replaced, we technically we should
-      # count just the modifed version but then you have figure out how to
+      # count just the modified version but then you have figure out how to
       # count the original version when not modified. Gagged output should
       # never be "original".
       if(!$$array[$i]->{gagged} && $$array[$i]->{original}) {
@@ -2884,7 +2897,11 @@ sub release_some_pending
       || in_more($w) 
       || in_hist($w) 
       || !world_visible($w)) {
-      # loggit("Skipping: $w [%s,%s,%s,%s]",(defined @pending{$w}) ? "pending" : "no_pend",in_more($w),in_hist($w),world_visible($w));
+      #loggit("Skipping: $w [%s,%s,%s,%s,%s,%s]",
+      #   (defined @socket{$w}) ? "socket" : "no_sock",
+      #   (defined @pending{$w}) ? "pending" : "no_pend",
+      #   $#{@pending{$w}},
+      #   in_more($w),in_hist($w),!world_visible($w));
        return 0;
    }
 
@@ -2939,6 +2956,7 @@ sub release_some_pending
    # else (i.e. drawoutput). This is done to mimize output.   
    # return $#out + 1 if $no_output;
 
+   # loggit("ew: '%s'",join("\n",@orig));
    echo_world($w,join("\n",@out),join("\n",@orig));
    return $#out + 1;
    draw_bar();
@@ -3638,7 +3656,7 @@ sub print_state
 
 #
 # key_dump
-#   Write out the data in the history variable for debuging purposes.
+#   Write out the data in the history variable for debugging purposes.
 #
 sub key_dump
 {
@@ -3918,7 +3936,7 @@ sub out
 
       my $sock = @socket{$world}->{sock};
       # loggit("\nout[%s] %s [%s]",$world,$msg,code("short"));
-      loggit("out[%s] %s",$world,$msg) if $world eq "bi";
+      # loggit("out[%s] %s",$world,$msg);
 
       if(module_enabled("Encode")) {
          printf($sock "%s",encode(world_encode($world),$msg));
@@ -4067,7 +4085,7 @@ sub key_delete
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
          key_left($ch);
       } else {                            # deleting in the middle of a line.
-         my $bol =                                  # [find begining of line] 
+         my $bol =                                 # [find beginning of line] 
              (@state{size_y} - 1) *           # number of characters per line
              (@state{input_offset} +            # number of lines not visible
              input_x() - input_start());            # number of visible lines
@@ -4100,8 +4118,8 @@ sub key_delete
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
       line_pos_set(line_pos() - 1);                # move cursor pos back one
-      pop(@{$$input[-1]});                           # remove char from buffer
-      xy(input_x(),input_y());             # move cursor back incase it moved
+      pop(@{$$input[-1]});                          # remove char from buffer
+      xy(input_x(),input_y());            # move cursor back in case it moved
       printf("\033[P");                       # delete character under cursor
 
       if(in_dialog()) {
@@ -4113,7 +4131,7 @@ sub key_delete
       # check to see if the cursor needs to go up a line, and therefor needs
       # to redraw the line.
       if((line_pos()-1)-(@state{input_offset}*(@state{size_y} - 1))==-2){
-         xy(input_x(),1);                   # move cursor to begining of line
+         xy(input_x(),1);                  # move cursor to beginning of line
          @state{input_offset}--;               # move input focus one line up
          printf("%s",input_line(input_on_line()));               # print line
          # xy() - no need to move cursor to right location, its there.
@@ -4123,7 +4141,7 @@ sub key_delete
 
 #
 # make_string_bold
-#    Given a word/string in the input buffer that immediate preceeds where
+#    Given a word/string in the input buffer that immediate proceeds where
 #    the cursor is, make it bold.
 #
 sub make_string_bold
@@ -4170,7 +4188,7 @@ sub input_eol
 }
 
 # input_onscreen
-#    deteremine if the current position is within the current viewable
+#    determine if the current position is within the current viewable
 #    area of the input scroll region.
 sub input_onscreen
 {
@@ -4292,11 +4310,11 @@ sub key_default
 
 #
 # key_ctl_a
-#    Move the cursor to the begining of the line
+#    Move the cursor to the beginning of the line
 #
 sub key_ctl_a
 {
-#-# summary: Move the cursor to the begining of the line
+#-# summary: Move the cursor to the beginning of the line
    my ($conn,$key) = @_;
    my $offset = @state{input_offset};
 
@@ -4421,7 +4439,7 @@ sub name
 
 #
 # state
-#    Simplify the retriveal / storage of values from the current state
+#    Simplify the retrieval / storage of values from the current state
 #    that may exist in one of two different locations.
 #
 sub mstate
@@ -4610,9 +4628,6 @@ sub switch_world
    }
    # release_some_pending($conn,$world);
    update_scroll_region("input");
-#   if(in_dialog() && dialog_name(1) eq "World Name") {
-#      cmd_editor($conn,$world);
-#   }
 }
 
 #
@@ -4727,7 +4742,7 @@ sub key_multi
    my $array = @state{multikey};
    push(@$array,ord($ch));
 
-   if($#$array >= 10) {             # shoudln't happen but protect against it
+   if($#$array >= 10) {             # shouldn't happen but protect against it
       delete @state{multikey};
       key_process($ch);                       # process character generically
    }
@@ -4779,6 +4794,19 @@ sub key_process
       }
    }
 }
+
+sub is_wsconsole
+{
+  my $conn = shift;
+
+  if(defined @ws{$conn} &&
+     defined @ws{$conn}->{websocket_console}) {
+     return 1;
+  } else {
+     return 0;
+   }
+}
+
 
 sub is_console
 {
@@ -4911,7 +4939,7 @@ sub size_y
 #
 # activity_count
 #    Count up the number of worlds that have activity, excluding those
-#    worlds that are currently visibile. Worlds with pending activity
+#    worlds that are currently visible. Worlds with pending activity
 #    should get activity notices as long as they're not visible.
 #
 sub activity_count
@@ -4946,7 +4974,7 @@ sub draw_bar
    if(is_remote()) {
       if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
          @state{remote_bar} ne @state{bar_prev} ||
-         @state{bar_time} ne "$hr$min") {
+         @state{bar_time} ne "$hr$min" || $force) {
          @state{bar_time} = "$hr$min";
          @state{bar_size} = @state{size_x}.@state{size_y};
          @state{bar_prev} = "_" if(!defined @state{bar_prev});
@@ -4981,7 +5009,13 @@ sub draw_bar
       @state{bar_pos} eq hist_pos(@state{world}) &&
       @state{size_x}.@state{size_y} eq @state{bar_size}) {
       xy(input_start() - 1,11);
-      PRINTF("%s%s",name(),"_" x (length(@state{bar_name} - length(name()))+1));
+      if(length(@state{bar_name}) > length(name())) {
+         PRINTF("%s%s",
+                name(),
+                "_" x (length(@state{bar_name}) - length(name())));
+      } else {
+         PRINTF("%s%s",name());
+      }
       xy(input_x(),input_y());
       @state{bar_name} = name(@state{world});
    } elsif(console() && ($force || "$hr$min" ne @state{bar_time} ||
@@ -5219,8 +5253,8 @@ sub input_clear
 
 #
 # PRINTF
-#    call printf() but allow for debuging of output, typically find
-#    determine if what is being sent is efficent.
+#    call printf() but allow for debugging of output, typically find
+#    determine if what is being sent is efficient.
 sub PRINTF
 {
     my ($fmt,@args) = @_;
@@ -5335,41 +5369,12 @@ sub single
     return $txt;
 }
 
-sub call_addworld
-{
-   my ($conn,$data) = @_;
-
-   if(!defined $$data{"World Name"} ||
-      trim($$data{"World Name"}) eq "") {
-      return echo($conn,"A required World Name was not provided.");
-   }
-   if(!defined $$data{"Host"} ||
-      trim($$data{"Host"}) eq "") {
-      return echo($conn,"A required Host was not provided.");
-   }
-   if(!defined $$data{"Port"} ||
-      trim($$data{"Host"}) eq "") {
-      return echo($conn,"A Port was not provived.");
-   }
-
-   cmd_editor($conn,
-           sprintf("%s %s %s %s %s %s",
-                   ($$data{"Use SSL to connnect"} eq "x") ? "-s" : "",
-                   $$data{"World Name"},
-                   $$data{User},
-                   $$data{Password},
-                   $$data{Host},
-                   $$data{Port}
-                  )
-          );
-}
-
 
 #----------------------------------------------------------------------------#
 #                                                                            #
 #  dialog support                                                            #
 #    Support for some generic "dialog" box routines. This is actually just   #
-#    Increasing the size of the input box on the bottom of the screen andt   #
+#    Increasing the size of the input box on the bottom of the screen and    #
 #    using this space for prompting the user with input boxes/prompts.       #
 #                                                                            #
 #----------------------------------------------------------------------------#
@@ -5529,6 +5534,7 @@ sub dialog_draw
    }
 
    my $wsize = 8 + dialog_input_size() + dialog_max();
+   loggit("%s",print_var(@state{dialog}));
    for my $but (@{@state{dialog}->{buttons}}) {
       push(@buttons,sprintf("[ %s ]",(split(":",$but))[0]));
    }
@@ -5580,16 +5586,22 @@ sub dialog_cancel
    draw_screen(@state{world},1);
 }
 
-sub editor_connect
+sub world_connect
 {
    my $name = dialog_value(1);
    my $conn = @state{dialog}->{conn};
-   editor_save();
+   world_save();
    cmd_world($conn,$name);
 }
 
-sub editor_save
+#
+# world_save
+#   code behind the save button on the world "editor" window.
+#
+sub world_save
 {
+   # copy the results from the @state{dialog} structure into
+   # $data hash table for ease of use.
    my $data = {};
    for my $i (0 .. dialog_lines()) {
       $$data{dialog_name($i)} = dialog_value($i);
@@ -5600,6 +5612,9 @@ sub editor_save
    my $conn = @state{dialog}->{conn};
    my $w = world($conn);
 
+   #
+   # check what was typed in
+   #
    if(!defined $$data{"World Name"} ||
       trim($$data{"World Name"}) eq "") {
       return echo($conn,"A required World Name was not provided.");
@@ -5626,8 +5641,9 @@ sub editor_save
 
    if($$data{"Orig_World_Name"} ne $$data{"World Name"}) {
       delete @address{$$data{"Orig_World_Name"}};
-      save($conn,"WORLD",$$data{"Orig_World_Name"});
+      save($conn,"WORLD",$$data{"Orig_World_Name"});       # mark as deleted
    }
+
    my $name = lc($$data{"World Name"});
    @address{$name} = {};
    if($$data{"Use SSL to connnect"} eq "x") {
@@ -5645,12 +5661,14 @@ sub editor_save
    @address{$name}->{port} = $$data{"Port"};
    if(trim($$data{"KeepAlive CMD"}) ne undef) {
       @address{$name}->{keepalive} = $$data{"KeepAlive CMD"};
+   } else {
+      delete @address{$name}->{keepalive};
    }
    @address{$name}->{encode} = encoding_detranslate($$data{Encoding});
    save($conn,"WORLD",$name);
 }
 
-sub editor_delete
+sub world_delete
 {
    my $conn = @state{dialog}->{conn};
    if(defined @address{dialog_value(1)}) {
@@ -5785,7 +5803,7 @@ sub dialog_name
    } elsif($#_ == 0) {
       $pos = shift;
    } else {
-      die("dialog_type supports either no or one arguements");
+      die("dialog_type supports either no or one arguments");
    }
 
    if(defined @state{dialog} &&
@@ -5808,7 +5826,7 @@ sub dialog_value
    } elsif($#_ == 0) {
       $pos = shift;
    } else {
-      die("dialog_type supports either 0 or 1 arguements");
+      die("dialog_type supports either 0 or 1 arguments");
    }
 
    if(defined @state{dialog} &&
@@ -5832,7 +5850,7 @@ sub dialog_orig_value
    } elsif($#_ == 0) {
       $pos = shift;
    } else {
-      die("dialog_type supports either 0 or 1 arguements");
+      die("dialog_type supports either 0 or 1 arguments");
    }
 
    if(defined @state{dialog} &&
@@ -5871,6 +5889,13 @@ sub hash_dump
    return $out;
 }
 
+#
+# save
+#   write out an entry to the .muddler. The format is a journaled
+#   log of sorts, so that if you have multiple copies of muddler running
+#   that the data is appended at the end for less likely hood of corrupting
+#   the data.
+#   
 sub save
 {
    my ($conn,$type,$key) = @_;
@@ -5893,11 +5918,11 @@ sub save
 }
 
 #
-# seperate
-#   grab a block of text that ends with a $sep seperator. Honor escaped
+# separate
+#   grab a block of text that ends with a $sep separator. Honor escaped
 #   characters and drop the "\" as an escape character when found.
 #
-sub seperate
+sub separate
 {
    my ($sep,$txt) = @_;
    my $result;
@@ -5919,7 +5944,7 @@ sub seperate
 #
 # hashsplit
 #    take a string and split it into a hash. The format is the key name
-#    seperated by a colon and ending with a semi-colon. Semi-colons may
+#    separated by a colon and ending with a semi-colon. Semi-colons may
 #    be escaped out if they are not significant. This format then repeats.
 #
 #    Format: <key>:<value>;<key .. >
@@ -5931,8 +5956,23 @@ sub hashsplit
    my $val;
 
    while($txt =~ /^([^:]+):/) {
-      ($txt,$val)  = seperate(";",$');
+      ($txt,$val)  = separate(";",$');
       @address{$world}->{$1} = $val;
+   }
+}
+
+#
+# cmd_wsconsole
+#    internal command issued by remote console muddler client to
+#    flag it is not a browser connection.
+#
+sub cmd_wsconsole
+{
+   my ($conn,$txt) = @_;
+
+   if(defined @ws{$conn}) {
+      @ws{$conn}->{websocket_console} = 1;
+      loggit("Set console");
    }
 }
 
@@ -5975,10 +6015,12 @@ sub cmd_request_info
          "MIME::Base64 module");
    }
 
-   if(!is_remote()) {
+   $txt = world($conn) if($txt eq "");
+   if(!is_wsconsole($conn)) {
       return echo($conn,"%% request_info is an internal command and cannot " .
                         "be used directly.");
    } elsif(defined @address{$txt}) {
+      loggit("ri: %s",mydump($txt,@address{$txt}));
       ws_echo($conn,"r",mydump($txt,@address{$txt}));
    } else {
       LOGGIT("Invalid world. '$txt'");
@@ -6454,7 +6496,7 @@ sub cmd_set
 #-#   debug      : Turns debugging on for logging to muddler.log file.
 #-#   password   : Password required to log for /web
 #-#   allow      : Allow hostname(s) via web interface without a password
-#-#   watchdog   : Supress spam when 2-5 duplicate lines are found
+#-#   watchdog   : Suppress spam when 2-5 duplicate lines are found
 #-#   theme      : Select either a dark or light theme for /web
 #-#   overlap    : number of lines kept on the screen from the previous
 #-#                "page" of text to give context.
@@ -6697,8 +6739,8 @@ sub cmd_mobile
 #-# ------------------------------------------------------------------------
 #-# /mobile [on|off]
 #-#
-#-#      Enable a tweaks for the web/webosocket interface that should make
-#-#      mobile browsers more useable. This includes showing buttons for
+#-#      Enable a tweaks for the web/websocket interface that should make
+#-#      mobile browsers more usable. This includes showing buttons for
 #-#      keys which the mobile users may not have.
 #-#
 #-# ------------------------------------------------------------------------
@@ -6860,36 +6902,24 @@ sub encoding_detranslate
    return @state{encoding}->{default};
 }
 
-sub cmd_editor
+sub cmd_addworld
 {
-#-# summary: Edit/define a world that can be connected to.
+#-# summary: Add/replace the connection information for a world
 #-# ------------------------------------------------------------------------
-#-# /edit [or /editor]
-#-# /edit <world>
-#-#      This command will show a "world editor" input window at the
-#-#      bottom of the screen. Enter/edit the values as needed to
-#-#      setup a world that can be connected to. Use the tab/return
-#-#      to switch between fields/buttons. Hitting escape twice will
-#-#      will do the same as selecting the cancel button.
-#-#
-#-#      Note: A world editor has not been written for the web interface
-#-#            yet. Use the below commandline when editing/defining worlds.
-#-#
-#-# /edit [-s] <name> [<user> <pass>] <host> <port>
-#-#
+#-# /addworld <Name> <address> <port>
+#-# /addworld <Name> <username> <password> <address> <port>
 #-#      Adds a world or overwrites an existing world. If a username and
+#-#      password are provided, muddler will issue a connect command
+#-#      to log into the user.
 #-#      password are provided, muddler will issue a connect command
 #-#      to log into the user.
 #-#
 #-#      Options:
 #-#         -s   Use ssl to connect to the world.
 #-# ------------------------------------------------------------------------
-   my ($conn,$txt,$noremote) = @_;
+   my ($conn,$txt) = @_;
    my $w = world($conn);
    my $opt = {};
-
-   return echo($conn,"%% Sorry, the world settings editor is only " .
-      "compatible with the console.") if(is_web($conn));
 
    my $txt = getopt("sl",trim($txt),$opt);
    my @field = split(" ",$txt);
@@ -6902,70 +6932,7 @@ sub cmd_editor
          @field[$i] = trim(@field[$i]);
       }
    }
-   if((is_console($conn) || is_remote()) && 
-      ($#field == -1 || $#field == 0)) {  # use a dialog
-      if($#field == -1 && (@state{world} ne "muddler" || is_remote())) {
-         @field[0] = world($conn);
-      }
-      if(is_remote() && @field[0] ne "" && !$noremote) {
-         return wc_out("/request_info @field[0]");
-      }
-      dialog_init($conn,
-                  "World Name:word," .
-                  "User:word," .
-                  "Password:word,Host:word," .
-                  "Port:word," .
-                  "KeepAlive CMD:text," .
-                  "Log File:text,".
-                  "Encoding:cycle." . join(".",encoding_values()) .",".
-                  "Use SSL to connnect:check," .
-                  "Auto Reconnect w/web interface:check",
-                  ["Cancel:dialog_cancel",
-                   "Save:editor_save",
-                   "Delete:editor_delete",
-                   "Connect:editor_connect"],1);
-      if($#field == 0) {
-         dialog_populate(1,@field[0]);
-         if(defined @address{@field[0]}) {
-            if(defined @address{@field[0]}->{user}) {
-               dialog_populate(2,@address{@field[0]}->{user});
-            }
-            if(defined @address{@field[0]}->{pass}) {
-               dialog_populate(3,@address{@field[0]}->{pass});
-            }
-            if(defined @address{@field[0]}->{host}) {
-               dialog_populate(4,@address{@field[0]}->{host});
-            }
-            if(defined @address{@field[0]}->{port}) {
-               dialog_populate(5,@address{@field[0]}->{port});
-            }
-            if(defined @address{@field[0]}->{keepalive}) {
-               dialog_populate(6,@address{@field[0]}->{keepalive});
-            } else {
-               dialog_populate(6,"@@ idle");
-            }
-            if(defined @address{@field[0]}->{decode}) {
-               dialog_populate(8,
-                   encoding_translate(@address{@field[0]}->{decode}));
-            }
-            if(defined @address{@field[0]}->{ssl} && 
-               @address{@field[0]}->{ssl} == 1) {
-               dialog_populate(9,"x");
-            }
-            # if(defined @address{@field[0]}->{log} &&
-            #    @address{@field[0]}->{log} eq "1") {
-            #    dialog_populate(9,"x");
-            # }
-         }
-      }
-      return draw_screen($conn);
-   }
-
-   return wc_out("/editor $txt") if(is_remote());
-   my $append = 0;
-
-   $append = 1 if(!defined @address{trim(lc(@field[0]))});
-
+  
    if(trim(@field[0]) =~ /^p_/) {
       echo($conn,"%% World names may not start with 'p_' at this time");
    } elsif($#field == 2) {
@@ -7039,7 +7006,6 @@ sub load
    my ($conn,$quiet) = @_;
    my ($file,$name,$data);
 
-   loggit("LOAD: called");
    if(!open($file,"@ENV{HOME}/.muddler")) {
       if(!$quiet) {
          echo($conn,"%% Unable to open @ENV{HOME}/.muddler for reading");
@@ -7050,7 +7016,6 @@ sub load
    while(<$file>) {
       my $orig = $_;
       s/\r|\n//g;
-      loggit("# %s",$_);
       if(/^([^: ]+):{(.*)}$/) {                # handle new world format
          if($2 eq "%DELETE%") {
             delete @address{$1};
@@ -7264,7 +7229,7 @@ sub cmd_list
 #-# /list [-c] [<pattern>]
 #-#
 #-#      Lists connected worlds, defined worlds, or worlds matching
-#-#      <pattern>. The default behavoir is to show defined worlds.
+#-#      <pattern>. The default behavior is to show defined worlds.
 #-#      Using the -s option will list connected worlds.
 #-# ------------------------------------------------------------------------
    my ($conn,$txt) = @_;
@@ -7501,7 +7466,7 @@ sub cmd_kill
          echo($conn,"% KILL: no process %s",$1);
       }
    } else {
-      echo($conn,"% KILL: invalid or missing numeric arguement");
+      echo($conn,"% KILL: invalid or missing numeric argument");
    }
 }
 
@@ -7525,9 +7490,9 @@ sub cmd_repeat
 #-#    <time> A time between commands should be specified in hour, minute,
 #-#    second format using -00:00:00.
 #-#
-#-#    -0          Sepecify seconds between commands.
-#-#    -00:00      Sepecify hours minutes between commands.
-#-#    -00:00:00   Sepecify hours, minutes, seconds  between commands.
+#-#    -0          Specify seconds between commands.
+#-#    -00:00      Specify hours minutes between commands.
+#-#    -00:00:00   Specify hours, minutes, seconds  between commands.
 #-#
 #-#    <command>   The command that will be sent to the world.
 #-#
@@ -7613,7 +7578,7 @@ sub do_cmd
    my ($world,$input,$conn) = @_;
 
 
-   if(is_remote() && $input !~ /^\s*\/(window|quit|key_ctl_l|edit)\s*/) {
+   if(is_remote() && $input !~ /^\s*\/(window|quit|key_ctl_l|edit|world)\s*/) {
       return wc_out($input);
    }
 
@@ -7627,6 +7592,7 @@ sub do_cmd
       } elsif(defined @command{lc($1)} && ref(@command{lc($1)}) eq "" &&
          defined @command{@command{lc($1)}} &&
          ref(@command{@command{lc($1)}}) eq "CODE") {          # handle alias
+         loggit("do_cmd: running $1");
          &{@command{@command{lc($1)}}}($conn,$');
          return 1;
       } else {
@@ -7816,15 +7782,12 @@ sub cmd_help
 {
 #-# summary: internal
 #-# ------------------------------------------------------------------------
-#-# Commands:
-#-#   /dc               :  Forcefully disconnect from current world
-#-#   /help <entry>     :  Help entry for a command or help topic
-#-#   /help commands    :  Lists all of muddlers internal commands
-#-#   /help keys        :  Help entry for keyboard short cuts
-#-#   /list [-c]        :  Lists all saved worlds, -c list open connections
-#-#   /quit             :  Quit Muddler
-#-#   /world -e <world> :  Edit an existing or setup a new world
-#-#   /world <world>    :  Connect or switch to an existing world
+#-# Basic Commands:
+#-#   /dc                 :  Disconnect from current world
+#-#   /help [<entry>]     :  Help for commands, keys, or a command
+#-#   /list [-c]          :  Lists all saved worlds, -c list open connections
+#-#   /quit               :  Quit Muddler
+#-#   /world [-e] <world> :  switch to an world, -e to edit connection info 
 #-# ------------------------------------------------------------------------
    my ($conn,$cmd) = (shift, lc(trim(shift)));
 
@@ -7887,7 +7850,7 @@ sub cmd_version
 
 #
 # remove_quotes
-#    Remove quotes from a string that occure at the begining and end
+#    Remove quotes from a string that occur at the beginning and end
 #    of the string.
 #
 sub remove_quotes
@@ -7924,7 +7887,7 @@ sub get_segment_end
 
 #
 # getopt
-#    My own implimentation of get opts that better fits how tinyfugue
+#    My own implementation of get opts that better fits how TinyFugue
 #    handles options and doesn't require loading a module that isn't
 #    standard on my system.
 #
@@ -8024,7 +7987,7 @@ sub cmd_quote
 #-#                  Sends "think" idle every second
 #-#    
 #-# Options:
-#-#   -d<option>  How to display: echo, send, exec [not impliemented]
+#-#   -d<option>  How to display: echo, send, exec [not implemented]
 #-#   -w<world>   Which world to send the output to
 #-#
 #-# ------------------------------------------------------------------------
@@ -8036,7 +7999,7 @@ sub cmd_quote
 
    $txt = getopt("d:w:",$txt,$opt,1);
 
-   # future impliment?
+   # future implement?
    my $delay = 0;
    if(defined $$opt{time}) {
       if($$opt{time} =~ /^\s*([\d]+):([\d+]):([\d+])\s*/) {
@@ -8319,7 +8282,7 @@ sub cmd_world
 #-#      Initiate a new connection or switch to an already connected world.
 #-# 
 #-# Options:
-#-#     -l            don't send a user connecton string when connecting
+#-#     -l            don't send a user connect string when connecting
 #-#     -e <world>    edit the existing or new world entry 
 #-#
 #-# Ex: /world puggy, /world -l puggy, /world -e puggy
@@ -8328,6 +8291,7 @@ sub cmd_world
    my $opt = {};
    $txt = trim(getopt("le",$txt,$opt));
 
+   loggit("cmd_world: '%s'",is_remote());
 
    if($txt =~ /^([^ ]+)\s+(\d+)$/) {
       for my $i (1 .. 100) {
@@ -8337,7 +8301,7 @@ sub cmd_world
             $txt = "(Unnamed_#" . $i . ")";
             last;
          } elsif(!defined @address{lc("(Unnamed_#" . $i . ")")}) {
-            cmd_editor($conn,"(Unnamed_#" . $i . ") $txt");
+            cmd_addworld($conn,"(Unnamed_#" . $i . ") $txt");
             $txt = "(Unnamed_#" . $i . ")";
             last;
          }
@@ -8346,9 +8310,9 @@ sub cmd_world
 
 
    if($txt =~ /^\s*$/) {
-      cmd_editor($conn);
+      world_dialog_create($conn);
    } elsif(defined $$opt{e}) {
-      cmd_editor($conn,$txt);
+      world_dialog_create($conn,$txt);
    } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
@@ -8365,6 +8329,64 @@ sub cmd_world
                      $opt
                     );
    }
+}
+
+#
+# world_item_populate
+#    Populate an item's data structure safely by making sure the
+#    item exists in the address hash table first.
+#
+sub world_item_populate
+{
+   my ($item,$w,$name) = @_;
+
+   if(defined @address{$w} && defined @address{$w}->{$name}) {
+      if(dialog_type($item) eq "check") {
+         if(@address{$w}->{$name} == 1) {
+            dialog_populate($item,"x");
+         }
+      } else {
+         dialog_populate($item,@address{$w}->{$name});
+      }
+   }
+}
+
+#
+# world_dialog_create
+#   create a dialog box for a world.
+#
+sub world_dialog_create
+{
+   my ($conn,$w) = (shift,lc(trim(shift)));
+   my $i = 1;
+
+   $w = world($conn) if($w =~ /^\s*$/);
+   $w = undef if($w eq "muddler");
+
+   # create dialog box data structure
+   dialog_init($conn,
+               "World Name:word," .
+               "User:word," .
+               "Password:word," .
+               "Host:word," .
+               "Port:word," .
+               "KeepAlive CMD:text," .
+               "Encoding:cycle." . join(".",encoding_values()) .",".
+               "Use SSL to connnect:check," .
+               "Log output to $w\.log:check",
+               ["Cancel:dialog_cancel",
+                "Save:world_save",
+                "Delete:world_delete",
+                "Connect:world_connect"],1);
+
+   # populate dialog box data structure with values
+   dialog_populate($i++,$w);
+
+   for my $id (split(",","user,pass,host,port,keepalive,decode,ssl,log")) {
+      world_item_populate($i++,$w,$id);
+   }
+
+   draw_screen($conn);
 }
 
 
@@ -8564,8 +8586,6 @@ sub get_checksums
          echo(@state{world},"% Warning: Did not find end to %s",$pos);
       }
    }
-   @state{help}->{cmd_addworld} = "n/a";
-   @state{summary}->{cmd_addworld} = "internal";
    return \%data;
 }
 
@@ -8673,7 +8693,7 @@ sub print_var
 
 
 #
-# remove any space at the begining or end of a string
+# remove any space at the beginning or end of a string
 #
 sub trim
 {
@@ -8695,8 +8715,16 @@ sub myshuffle (@)
 }
 
 
+#
+# tick
+#    Handle keep alive and any activity which needs to run over time
+#    and not all at once. This would include /quote, file transfers,
+#    and any clean up activities.
+#
 sub tick
 {
+   return if is_remote();               # remote sessions just relay data
+
    # keep alive. Send something to a world to keep it alive if nothing has
    # bloggiteen sent / recieved.
    for my $w (keys %socket) {
@@ -8950,7 +8978,7 @@ sub muddler_init
 
 #
 # muddler
-#    Contents of the main loop, seperated so it can be reloaded since
+#    Contents of the main loop, separated so it can be reloaded since
 #    the main loop should not be.
 #
 sub muddler
