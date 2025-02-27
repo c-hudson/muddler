@@ -1001,8 +1001,6 @@ sub wc_read
       echo_console("%s",$');
    } elsif($buf =~ /^r\r\n/) {
       my ( $id,$hash ) = undump($');
-      loggit("wc_read: found request_info result: $id");
-      loggit("%s",print_var($hash));
       @address{$id} = $hash;
       world_dialog_create($client,$id,1);
    } elsif($buf =~ /^b\r\n/) {
@@ -1973,7 +1971,6 @@ sub ws_process
 
    # if unathorized check password before allowing any input. Websize
    # is sent on connect, so exclude that.
-   loggit("input: %s",$input);
    if((!defined @ws{$conn} || @ws{$conn}->{auth} eq 0) &&
            $input !~ /^\/(wsconsole|version|web_size|focused|blurred|key_ctl_l|monitor|window|mobile)/) {
       if($input eq @state{p_password}) {
@@ -2986,6 +2983,23 @@ sub line_pos_set
 }
 
 #
+# dialog_x_actual
+#    since dialog_x returns the position within the dialog
+#    structure, dialog_x_actual returns the position on the
+#    screen when there are two checkboxes on the same line.
+#
+sub dialog_x_actual
+{
+   my $offset = 0;
+   my $i;
+
+   for($i=1;$i <= dialog_x();$i++) {
+      $offset++ if(dialog_offset($i) eq undef);
+   }
+   return $offset;
+}
+
+#
 # return the X position of the input cursor
 #
 sub input_x
@@ -2993,10 +3007,10 @@ sub input_x
    my $offset = shift;
 
    if(in_dialog()) {
-      if(dialog_x() > dialog_lines()) {          # jump down to cancel/save
-         return input_start() + dialog_lines() + 2;
+      if(dialog_x() > dialog_items()) {          # jump down to cancel/save
+         return input_start() + dialog_items() + 2;
       } else {
-         return input_start() + dialog_x() + dialog_input_offset();
+         return input_start() + dialog_x_actual();
       }
    } else {
       my $x = input_start() + 
@@ -3019,11 +3033,12 @@ sub input_y
 
    if(in_dialog()) {
       if(dialog_type() eq "check") {         # handle fixed position checkbox
-         return 5;
+         my $offset = dialog_offset(dialog_x());
+         return ($offset eq undef) ? 5 : $offset;
       } elsif(dialog_type() =~ /^cycle\./) {
          return dialog_max() + 8;
-      } elsif(dialog_x() > dialog_lines()) { # handle fixed position "buttons"
-         return @state{dialog}->{bpos}->[dialog_x()-dialog_lines()-1];
+      } elsif(dialog_x() > dialog_items()) { # handle fixed position "buttons"
+         return @state{dialog}->{bpos}->[dialog_x()-dialog_items()-1];
       }
    }
    return ((in_dialog()) ? dialog_max() + 5 : 0) + $pos;
@@ -3815,7 +3830,7 @@ sub key_tab
    if(is_remote() && !in_dialog()) {
       return wc_out("/key_tab");
    } elsif(in_dialog() && !$shift_down) {
-      if(dialog_lines() + dialog_buttons() -1 < dialog_x()) {
+      if(dialog_items() + dialog_buttons() -1 < dialog_x()) {
          dialog_x(1);
       } else {
          dialog_x(dialog_x() + 1);
@@ -3982,8 +3997,8 @@ sub key_return
    $array = [] if ref($array) ne "ARRAY";
 
    if(in_dialog()) {
-      if(dialog_x() > dialog_lines()) {
-         my $b=@state{dialog}->{buttons}->[dialog_x()-dialog_lines()-1];
+      if(dialog_x() > dialog_items()) {
+         my $b=@state{dialog}->{buttons}->[dialog_x()-dialog_items()-1];
          if(defined @call{(split(":",$b))[1]}) {
             return &{@call{(split(":",$b))[1]}}();
          }
@@ -4473,7 +4488,7 @@ sub key_up
 
    if(in_dialog()) {
       if(dialog_x() == 1) {
-         dialog_x(dialog_lines() + 2);
+         dialog_x(dialog_items() + 2);
       } else {
          dialog_x(dialog_x()-1);
       }
@@ -4521,7 +4536,7 @@ sub key_down
    return wc_out("/key_up") if(is_remote());
 
    if(in_dialog()) {
-      if(dialog_lines() + 3 <= dialog_x() + 1) {
+      if(dialog_items() + 3 <= dialog_x() + 1) {
          dialog_x(1);
       } else {
          dialog_x(dialog_x()+1);
@@ -4828,13 +4843,14 @@ sub clear_screen
    return if defined @state{monitor_value};
 
    if(is_console($conn) && console()) {
-      for my $line (1 .. @state{size_x}) {
-         if($line == @state{size_x}) {
-            PRINTF("\033[K");
-         } else {
-            PRINTF("\033[K\n");
-         }
-      }
+      PRINTF("\033[J");
+#      for my $line (1 .. @state{size_x}) {
+#         if($line == @state{size_x}) {
+#            PRINTF("\033[K");
+#         } else {
+#            PRINTF("\033[K\n");
+#         }
+#      }
    } elsif(is_web($conn)) {
       ws_echo($conn,"d","clear");          # clear output websocket window
    }
@@ -5246,9 +5262,10 @@ sub input_clear
    update_scroll_region("input");
    my $start = @state{size_x} - input_size() + 1;
    xy($start,0);
-   for my $i ($start .. @state{size_x}) {
-      PRINTF("\033[K\n");
-   }
+   PRINTF("\033[J");
+   #for my $i ($start .. @state{size_x}) {
+   #   PRINTF("\033[K\n");
+   #}
 }
 
 #
@@ -5262,8 +5279,8 @@ sub PRINTF
     my $msg = sprintf($fmt,@args);
     printf("%s",$msg);
 
-    # $msg =~ s/\r|\n//g;
-    # loggit("%s - %s",ansi_debug($msg),code("shortest"));
+#    $msg =~ s/\r|\n//g;
+#    loggit("%s - %s",ansi_debug($msg),code("shortest"));
 }
 
 #----------------------------------------------------------------------------#
@@ -5422,6 +5439,8 @@ sub dialog_init
 {
    my ($conn,$definition,$buttons,$indent) = @_;
    my $count = 0;
+   my $toggle = 0;
+   my $lines = 0;
    my $max;
 
    line_pos_set(0);
@@ -5433,6 +5452,12 @@ sub dialog_init
    for my $i (split(/,/,$definition)) {                 # find max
       $count++;
       my ($name,$type) = split(/:/,$i);
+      if($type eq "check") {
+         $lines++ if($toggle == 0);
+         $toggle = ($toggle + 1) % 2;
+      } else {
+         $lines++;
+      }
       my $size = length($name);
       $max = $size if($max < $size && $type  ne "check");
       @state{dialog}->{$count} = {};
@@ -5448,15 +5473,32 @@ sub dialog_init
 
    @state{dialog}->{max} = $max;
    @state{dialog}->{count} = $count;
+   @state{dialog}->{lines} = $lines;
    @state{dialog}->{conn} = $conn;
    @state{dialog}->{buttons} = $buttons;
 }
 
-sub dialog_lines
+#
+# dialog_items
+#    Number of items in the current dialog menu.
+#
+sub dialog_items
 {
    if(defined @state{dialog} &&
       defined @state{dialog}->{count}) {
       return @state{dialog}->{count};
+   }
+}
+
+#
+# dialog_lines
+#    Number of lines that the dialog menu will consume
+#
+sub dialog_lines
+{
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{lines}) {
+      return @state{dialog}->{lines};
    }
 }
 
@@ -5502,13 +5544,17 @@ sub cycle_first
 
 sub dialog_draw
 {
-   my @buttons;
+   my (@buttons, $haschk);
+   my $new = 0;
 
    update_scroll_region("input",1);
    xy(input_start(),1,1);
    printf("\033[J\n");
 
-   for my $i (1 .. dialog_lines()) {
+   for my $i (1 .. dialog_items()) {
+      dialog_offset($1,undef) if(dialog_offset($i) ne undef);
+   }
+   for my $i (1 .. dialog_items()) {
       if(in(dialog_type($i),"word","text","num")) {
          printf("   %-*s: %s\n",
                 dialog_max(),
@@ -5526,15 +5572,29 @@ sub dialog_draw
                 dialog_value($i)
                );
       } elsif(dialog_type($i) eq "check") {
-         printf("   [%1s] %s\n",
+         # if two checkboxes are sequential, save space by putting them
+         # on the same line.
+         my $size = size_y() - $haschk - length(dialog_name($i)) - 20;
+         $haschk = length(dialog_name($i));
+
+         if(dialog_type($i-1) ne "check" || dialog_offset($i-1) ne undef) {
+            $new = 1;
+         } else {
+            $new = 0;
+         }
+        
+         printf("%s[%1s] %s%s",
+                ($new) ? "   " : (" " x $size),
                 dialog_value($i),
                 dialog_name($i),
+                ($new && dialog_type($i+1) eq "check") ? "" : "\n"
                );
+         # save checkbox location for later use
+         dialog_offset($i,$size + length(dialog_name($i-1)) + 9) if(!$new);
       }
    }
 
    my $wsize = 8 + dialog_input_size() + dialog_max();
-   loggit("%s",print_var(@state{dialog}));
    for my $but (@{@state{dialog}->{buttons}}) {
       push(@buttons,sprintf("[ %s ]",(split(":",$but))[0]));
    }
@@ -5603,7 +5663,7 @@ sub world_save
    # copy the results from the @state{dialog} structure into
    # $data hash table for ease of use.
    my $data = {};
-   for my $i (0 .. dialog_lines()) {
+   for my $i (0 .. dialog_items()) {
       $$data{dialog_name($i)} = dialog_value($i);
       if(dialog_name($i) eq "World Name") {
          $$data{"Orig_World_Name"} = dialog_orig_value($i);
@@ -5721,7 +5781,7 @@ sub set_save
       @lookup{@var{$key}->{web}} = $key if(defined @var{$key}->{web});
    }
 
-   for my $i (1 .. dialog_lines()) {
+   for my $i (1 .. dialog_items()) {
        my $val = dialog_fixed_value($i);
        # loggit("val: '%s'\n",$val);
        if(@state{"p_" . @lookup{dialog_name($i)}} ne $val) {
@@ -5834,6 +5894,31 @@ sub dialog_value
       defined @state{dialog}->{$pos}->{input}) {
 
       return join('',@{@{@state{dialog}->{$pos}->{input}}[-1]});
+   }
+}
+
+#
+# dialog_offset
+#    When showing a checkbox, the dialog box tries to save some
+#    space by putting checkboxes on a line. The location of the
+#    second checkbox is stored in the offset for later reference
+#    instead of calculating the location on the spot. The first
+#    checkbox is always at pos 5.
+#
+sub dialog_offset
+{
+   my $pos = shift;
+
+   if($#_ == -1) {
+      if(defined @state{dialog} &&
+         defined @state{dialog}->{$pos} &&
+         defined @state{dialog}->{$pos}->{offset}) {
+         return @state{dialog}->{$pos}->{offset};
+      }
+   } elsif($#_ == 0) {
+      @state{dialog}->{$pos}->{offset} = shift;
+   } else {
+      die("dialog_offset supports either 0 or 1 arguments");
    }
 }
 
@@ -7592,7 +7677,6 @@ sub do_cmd
       } elsif(defined @command{lc($1)} && ref(@command{lc($1)}) eq "" &&
          defined @command{@command{lc($1)}} &&
          ref(@command{@command{lc($1)}}) eq "CODE") {          # handle alias
-         loggit("do_cmd: running $1");
          &{@command{@command{lc($1)}}}($conn,$');
          return 1;
       } else {
@@ -8290,8 +8374,6 @@ sub cmd_world
    my ($conn,$txt) = (shift,lc(trim(shift)));
    my $opt = {};
    $txt = trim(getopt("le",$txt,$opt));
-
-   loggit("cmd_world: '%s'",is_remote());
 
    if($txt =~ /^([^ ]+)\s+(\d+)$/) {
       for my $i (1 .. 100) {
