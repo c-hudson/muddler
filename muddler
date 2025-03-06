@@ -575,7 +575,7 @@ sub ansi_substr
    my ($data,$start,$count,$noansi) = @_;
    my ($result,$i);
 
-   $data = ansi_init($data) if(ref($data) ne "HASH");
+   $data = ansi_init($data) if(!is_ansi_string($data));
    $start = 0 if($start !~ /^\s*\d+\s*$/);                 # sanity checks
    if($count !~ /^\s*\d+\s*$/) {
       $count = ansi_length($data);
@@ -638,7 +638,7 @@ sub ansi_length
    my $txt = shift;
    my $data = shift;
 
-   if(ref($txt) eq "HASH") {                           # already inited txt?
+   if(is_ansi_string($txt)) {                          # already inited txt?
       $data = $txt;
    } else {
       return length(ansi_remove($txt));   # faster if  not in out ansi format?
@@ -728,16 +728,16 @@ sub world_encode
 {
    my $w = world(shift);
  
-   if(!defined @address{$w} || !defined @address{$w}->{decode}) {
-      return "UTF-8";
-   } elsif(@address{$w}->{decode} =~ /^\s*utf8\s*$/) {
+   if(!defined @address{$w} ||
+      !defined @address{$w}->{decode} ||
+      @address{$w}->{decode} =~ /^\s*utf8\s*$/) {
       return "UTF-8";
    } elsif(@address{$w}->{decode} =~ /^\s*fansi\s*$/) {
       return "cp437";
    } elsif(@address{$w}->{decode} =~ /^\s*latin\s*$/) {
       return "iso-8859-1";
    } else {
-     @address{$w}->{decode};
+      @address{$w}->{decode};
   }
 }
 
@@ -1138,7 +1138,7 @@ sub telnet_ch_init
    @telnet_ch{normal} = 
       sub {
          my ($world,$ch) = @_;
-         # loggit("tch: $world -> normal [%s] [%s]",ord($ch));
+         # loggit("tch: $world -> normal [%s] [%s]",ord($ch),$ch);
         
          if($ch eq @state{IAC}) {
             return (undef, @state{IAC});
@@ -1153,15 +1153,24 @@ sub telnet_ch_init
          # loggit("tch: $world -> IAC [%s]",ord($ch));
 
          if($ch eq @state{IAC}) {
+            # loggit("     tch2: $world -> IAC [%s]",ord($ch));
             return (@state{IAC}, 'normal');
          } elsif(is_in($ch,@state{DO},@state{DONT},@state{WILL},@state{WONT},
                  @state{SB})) {
+            # loggit("     tch3: $world -> IAC [%s]",ord($ch));
             return (undef,$ch);
          } elsif($ch eq @state{NOP}) {                       # keep-a-live?
+            # loggit("     tch4: $world -> IAC [%s]",ord($ch));
             # nothing needs to be done. the timers are reset when the
             # packet comes in.
             return (undef, 'normal');
+         } elsif($ch eq @state{GO}) {
+            # loggit("GO FOUND");
+            @state{PROMPT} = 1;
+            return (undef, 'normal');
          } else {
+            @state{GO} = chr(249);
+            # loggit("     tch5: $world -> IAC [%s]",ord($ch));
             return (undef, 'normal');
          }
       };
@@ -1248,6 +1257,7 @@ sub _parse
 
     
     for my $c (split '', $in) {
+        # loggit("_parse: '%s' -> '%s' @state{telnet_mode}",ord($c),$c);
         my ($o, $m) = $telnet_ch{@state{telnet_mode}}->
             ($world,$c, @state{telnet_mode});
 
@@ -1553,7 +1563,7 @@ sub io
 
    for my $sock (@$sockets) {
       if($sock eq \*STDIN) {
-         sysread($sock,$buf,1024);
+         sysread($sock,$buf,10240);
          key_process($buf) if(console());
       } elsif(defined @socket_lookup{$sock}) {
          my $w = @socket_lookup{$sock};
@@ -1591,20 +1601,30 @@ sub io
                @socket{$w}->{buf}.= _parse($w,$buf);
             }
    
-            #loggit("#$w-1# '%s'",$buf);
+            # my $out = $buf;
+            # $out =~ s/\r/<r>/g;
+            # $out =~ s/\n/<n>/g;
+            # loggit("#$w-1# '%s'",lord(ansi_remove($buf)));
             @state{norelease} = 1;
             @new_input{$w} = 1;
+ 
             while(defined @socket{$w}->{sock} &&
                   defined @socket{$w}->{buf} &&
-                  @socket{$w}->{buf} =~ /(\r\n|\n)/) {
-                # loggit("   #$w-2# '%s'",$`);
-                history($w,$`,1);
-                if(length($') != 0) {
-                   @socket{$w}->{buf} = $';
-                } else {
-                   delete @socket{$w}->{buf};
-                }
-             }
+                  @socket{$w}->{buf} =~ /(\n\r|\r\n|\n|\r)/) {
+               # loggit("   #$w-2# '%s'",$`);
+               history($w,$`,1);
+               if(length($') != 0) {
+                  @socket{$w}->{buf} = $';
+               } else {
+                  delete @socket{$w}->{buf};
+               }
+            }
+            if(defined @state{PROMPT}) {                # telnet signaled GO
+               prompt($w,@socket{$w}->{buf});      # this better be a prompt
+               draw_input($w);
+               delete @socket{$w}->{buf};
+               delete @state{PROMPT};
+            }
          }
       } elsif( $sock == $ws_listen ) {
          my $s = $ws_listen->accept or die("Couldn't accept connection");
@@ -1692,8 +1712,11 @@ sub io
          length(@socket{$w}->{buf}) != 0 && 
          Time::HiRes::gettimeofday() - @socket{$w}->{last_recv} >= .5) {
          # loggit("#$w-3# '%s'",@socket{$w}->{buf}) if($w eq "bi");
-         history($w,@socket{$w}->{buf},1,1);
+         # history($w,@socket{$w}->{buf},1,1);
+         prompt($w,@socket{$w}->{buf});
+         draw_input($w);
          delete @socket{$w}->{buf};
+         loggit("Found time prompt");
       }
    }
    @state{norelease} = 0;
@@ -2960,27 +2983,23 @@ sub release_some_pending
 }
 
 
+#
+# line_pos
+#    set or return the current line position in the input array
+#
 sub line_pos
 {
-   if(defined @state{dialog} &&
-      defined @state{dialog}->{dialog_x()}) {
+   if($#_ == -1 && in_dialog()) {
       return @state{dialog}->{dialog_x()}->{line_pos};
-   } else {
+   } elsif($#_ == -1) {
       return @state{line_pos};
-   }
-}
-
-sub line_pos_set
-{
-   my $val = shift;
-
-   if(defined @state{dialog} &&
-      defined @state{dialog}->{dialog_x()}) {
-      @state{dialog}->{dialog_x()}->{line_pos} = $val;
+   } elsif(in_dialog()) {
+      @state{dialog}->{dialog_x()}->{line_pos} = shift;
    } else {
-      @state{line_pos} = $val;
+      @state{line_pos} = shift;
    }
 }
+
 
 #
 # dialog_x_actual
@@ -3005,6 +3024,7 @@ sub dialog_x_actual
 sub input_x
 {
    my $offset = shift;
+   my $plen = 0;
 
    if(in_dialog()) {
       if(dialog_x() > dialog_items()) {          # jump down to cancel/save
@@ -3013,8 +3033,9 @@ sub input_x
          return input_start() + dialog_x_actual();
       }
    } else {
+      $plen = ansi_length(prompt()) + 1 if(has_prompt());
       my $x = input_start() + 
-              sprintf("%d",(@state{line_pos} - $offset -
+              sprintf("%d",(line_pos() + $plen - $offset -
                            ((@state{size_y} - 1) * @state{input_offset})) /
                            (@state{size_y} - 1));
 
@@ -3028,8 +3049,10 @@ sub input_x
 sub input_y
 {
    my $offset = shift;
+   my $plen = 0;
 
-   my $pos = 1 + ((line_pos() - $offset)%(@state{size_y} - 1));
+   $plen = ansi_length(prompt()) + 1 if(has_prompt());
+   my $pos = 1 + ((line_pos() - $offset + $plen)%(@state{size_y} - 1));
 
    if(in_dialog()) {
       if(dialog_type() eq "check") {         # handle fixed position checkbox
@@ -3041,6 +3064,7 @@ sub input_y
          return @state{dialog}->{bpos}->[dialog_x()-dialog_items()-1];
       }
    }
+
    return ((in_dialog()) ? dialog_max() + 5 : 0) + $pos;
 }
 
@@ -3390,6 +3414,46 @@ sub draw_output_world_new
 }
 
 #
+# has_prompt
+#   check to see if the specified or current world has a prompt set.
+#   If the user is in a dialog, the dialog takes presidence. 
+#
+sub has_prompt
+{
+   my $w = world(($#_ == -1) ? @state{world} : shift);
+
+   if(!in_dialog() &&
+      defined @socket{$w} &&
+      defined @socket{$w}->{prompt}) {
+      return 1;
+   } else {
+      return 0;
+   }
+}
+
+#
+# prompt
+#    store or return the current prompt used by worlds with prompts.
+#    aka talkers.
+#
+sub prompt
+{
+   my $w = world(($#_ == -1) ? @state{world} : shift);
+
+   if($#_ == 0) {
+      @socket{$w}->{prompt} = ansi_init(shift);
+
+      # its faster to delete after the ansi_init() then check if
+      # the string is empty before hand.
+      if(ansi_length(@socket{$w}->{prompt}) == 0) {
+         delete @socket{$w}->{prompt};
+      }
+   } elsif(has_prompt($w)) {
+      return ansi_substr(@socket{$w}->{prompt},0,@state{size_y} - 10);
+   }
+}
+
+#
 # draw_input
 #    Draw the input window which is where the user to composes whatever they
 #    have to say. Replacing this with nothing would probably be a better
@@ -3404,7 +3468,7 @@ sub draw_input
    if(is_console($conn) || is_remote()) {
       update_scroll_region("input");
       xy(input_start(),1,1);
-      printf("\033[J");
+      PRINTF("\033[J");
 
       if(in_dialog()) {
          dialog_draw();
@@ -3413,10 +3477,10 @@ sub draw_input
          my $end = $pos + input_size() - 1;
          for my $i (input_start() .. input_end()) {
             if($pos <= $end) {                      # line $pos of typed input
-               PRINTF("%s\033[K%s",input_line($pos),
+               PRINTF("%s%s",ansi_remove(input_line($pos)),
                   ($i != input_end()) ? "\n" : "");
             } else {            # blank line with return but not on last line
-               PRINTF("\033[K%s",($i != input_end()) ? "\n" : "");
+               PRINTF("%s",($i != input_end()) ? "\n" : "");
             }
             $pos++;
          }
@@ -3520,7 +3584,7 @@ sub key_home
 
    # reset input location to the begining
    @state{input_offset} = 0;
-   line_pos_set(0);
+   line_pos(0);
    draw_input($conn);
 }
 
@@ -3531,8 +3595,11 @@ sub key_home
 #
 sub update_input_offset
 {
-   my $lines = sprintf("%d",@state{line_pos} / (@state{size_y}-1));
-   $lines++ if(@state{line_pos} % (@state{size_y}-1) >= 0);
+   my $plen = 0;
+
+   $plen = ansi_length(prompt()) + 1 if(has_prompt());
+   my $lines = sprintf("%d",(line_pos() + $plen )/ (@state{size_y}-1));
+   $lines++ if((line_pos() + $plen) % (@state{size_y}-1) >= 0);
    $lines = 1 if $lines < 1;
 
    if($lines > input_end() - input_start() + 1) {
@@ -3547,7 +3614,7 @@ sub key_end
    my ($conn,$size) = @_;
 
    my $input = input();
-   line_pos_set($#{$$input[-1]}+1);
+   line_pos($#{$$input[-1]}+1);
    update_input_offset() if(!in_dialog());
    draw_input($conn);
 }
@@ -3678,6 +3745,8 @@ sub key_dump
    my ($conn,$txt,$force) = @_;
    my $w = world($conn);
 
+   loggit("size_x: %s, size_y: %s, offset: '%s'",input_x(),input_y(),@state{input_offset});
+   return;
    my $input = input();
    for my $i (0 .. $#$input) {
       LOGGIT("$i : '%s'\n",join('',@{$$input[$i]}));
@@ -3723,7 +3792,7 @@ sub key_ctl_p
       delete @state{input_offset};
    }
    @state{input_pos}--;
-   line_pos_set($#{$$input[-1]} + 1);
+   line_pos($#{$$input[-1]} + 1);
    draw_input($conn);
 }
 
@@ -3749,7 +3818,7 @@ sub key_ctl_n
    }
 
    @{$$input[-1]} = @{$$input[@state{input_pos}]};           # overwrite input
-   line_pos_set($#{$$input[-1]} + 1);
+   line_pos($#{$$input[-1]} + 1);
 
    # set offset so just the end of the line is shown if the whole line is
    # not visible.
@@ -3859,13 +3928,16 @@ sub key_ctl_u
    my $input = input();
    if(is_console($conn)) {
       $$input[-1] = [];
-      line_pos_set(0);
+      line_pos(0);
       delete @state{input_offset};
-      xy(input_x(),input_y());
+
+      xy(input_x(),0);
       
       if(console()) {
          if(in_dialog()) {
             dialog_draw();
+         } elsif(has_prompt(@state{world})) {
+            printf("\033[J%s ",txt(prompt(@state{world})));
          } else {
             printf("\033[J");
          }
@@ -4009,6 +4081,18 @@ sub key_return
    my $txt = join('',@$array);
 
    reset_more($conn);
+   input_clear() if(!in_dialog());
+   @state{input_pos} = -1;                    # reset keyboard history pos
+   push(@$input,[]);
+   line_pos(0) if (!in_dialog());
+   @state{buffer_pos}++ if(@state{buffer_pos} < input_size());
+   delete @state{input_offset};
+
+   # just entered input, don't be so quick to show the more
+   if(!no_world()) {
+      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
+   }
+
    if(do_cmd(@state{world},$txt,$conn)) {
       # do_cmd runs the command
    } elsif(no_world()) {
@@ -4017,21 +4101,11 @@ sub key_return
            defined @socket{@state{world}}->{sock}) {
       if($txt =~ /^\/\//) {
          out(@state{world},"%s","\/$'") if(!in_dialog());
-      } else {
+      } elsif(!in_dialog()) {
          out(@state{world},"%s",$txt) if(!in_dialog());
+         prompt(@state{world},undef) if(has_prompt());
       }
    }
-   @state{input_pos} = -1;                    # reset keyboard history pos
-   push(@$input,[]);
-   line_pos_set(0) if (!in_dialog());
-   @state{buffer_pos}++ if(@state{buffer_pos} < input_size());
-   delete @state{input_offset};
-
-   # just entered input, don't be so quick to show the more
-   if(!no_world()) {
-      @socket{@state{world}}->{more_last} = $#{@history{@state{world}}};
-   }
-   input_clear() if(!in_dialog());
 }
 
 sub input_lines
@@ -4128,11 +4202,11 @@ sub key_delete
             }
          }
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
-         line_pos_set(line_pos() - 1);
+         line_pos(line_pos() - 1);
          xy(input_x(),input_y());                            # return cursor
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
-      line_pos_set(line_pos() - 1);                # move cursor pos back one
+      line_pos(line_pos() - 1);                    # move cursor pos back one
       pop(@{$$input[-1]});                          # remove char from buffer
       xy(input_x(),input_y());            # move cursor back in case it moved
       printf("\033[P");                       # delete character under cursor
@@ -4191,15 +4265,14 @@ sub make_string_bold
    xy(input_x(),input_y());
 }
 
+#
+# input_eol
+#    determine if the current postition is at the end of the screen or
+#    not.
 sub input_eol
 {
    my $pos = shift;
-
-   if($pos % (@state{size_y}-1) == 0 && $pos != 0) {
-      return 1;
-   } else {
-      return 0;
-   }
+   return (input_y() == 1) ? 1 : 0;
 }
 
 # input_onscreen
@@ -4208,11 +4281,13 @@ sub input_eol
 sub input_onscreen
 {
    my $pos = shift;
+   my $plen = 0;
 
    my $input = input();
    return 0 if(!defined $$input[-1]->[$pos]);    # pos larger then array
 
-   my $start = @state{input_offset} * (@state{size_y} -1);
+   $plen = ansi_length(prompt()) + 1 if(has_prompt());
+   my $start = @state{input_offset} * (@state{size_y} -1) + $plen;
    my $end  = $start + ((@state{size_y} - 1) * input_size());
    if($pos >= $start && $pos < $end) {
       return 1;                          # pos is in the input scroll region
@@ -4243,7 +4318,7 @@ sub key_default
    my ($conn,$ch) = @_;
    my $pre_x = input_x();
    my $debug=0;
-   my $ret;
+   my ($ret, $plen);
 
    return if !console();
     update_scroll_region("input");
@@ -4298,8 +4373,8 @@ sub key_default
       }
    }
 
-   splice(@{$$input[-1]},line_pos(),0,$ch);         # add ch to buffer
-   line_pos_set(line_pos() + 1);                # move cursor position over 1
+   splice(@{$$input[-1]},line_pos(),0,$ch);                # add ch to buffer
+   line_pos(line_pos() + 1);                    # move cursor position over 1
    printf("%s",$ch);                                     # print out new char
 
    # at end of line, drop down to next line
@@ -4311,10 +4386,11 @@ sub key_default
    }
 
    # display characters after cursor
+   $plen = ansi_length(prompt()) + 1 if(has_prompt());
    if(defined @$input[-1] && $#{$$input[-1]} >= line_pos()) {
       for(my $i=line_pos();input_onscreen($i);$i++){
          if(input_eol($i)) {                    # only if not already printed
-            printf("\r\n") if(($ret && $i != line_pos()) or !$ret);
+            printf("\r\n") if(($ret && $i != line_pos() + $plen) or !$ret);
             $ret = 0;
          }
          printf("%s",$$input[-1]->[$i]);
@@ -4334,7 +4410,7 @@ sub key_ctl_a
    my $offset = @state{input_offset};
 
    @state{input_offset} = 0;                    # reset the cursor location
-   line_pos_set(0);
+   line_pos(0);
 
    if($offset > 0) {     # line is not fully viewable, so a redraw is needed.
       draw_input($conn);
@@ -4364,7 +4440,7 @@ sub key_ctl_e
    } else {
       @state{input_offset} = 0;
    }
-   line_pos_set($#{$$input[-1]} + 1);
+   line_pos($#{$$input[-1]} + 1);
 
    if(@state{input_offset} != $original) {
       draw_input($conn);
@@ -4414,7 +4490,7 @@ sub key_left
       }
    }
    if(line_pos() >= 1) {
-      line_pos_set(line_pos() - 1);
+      line_pos(line_pos() - 1);
       xy(input_x(),input_y());
    }
 }
@@ -4430,8 +4506,18 @@ sub input_line
    $pos = -1 if $pos eq undef;
 
    my $input = input();
-   my $start = ($line - 1) * (@state{size_y} -1);
-   my $stop = $start + @state{size_y}-2;
+   my $start = (($line - 1) * (@state{size_y} -1));
+   my $stop = $start + @state{size_y} - 2;
+
+   if(has_prompt()) {
+      my $plen = ansi_length(prompt()) + 1;
+      $stop -= $plen;
+      if($line == 1) {
+         return txt(prompt()) ." ". join('',@{$$input[$pos]}[$start .. $stop]);
+      } else {
+         $start -= $plen;
+      }
+   }
    return join('',@{$$input[$pos]}[$start .. $stop]);
 }
 
@@ -4496,8 +4582,8 @@ sub key_up
    }
    
    if(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
-      if(@state{line_pos} > @state{size_y} - 1) {
-         @state{line_pos} -= @state{size_y} - 1;
+      if(line_pos() > @state{size_y} - 1) {
+         line_pos(line_pos() - @state{size_y} - 1);
          update_input_offset();
          draw_input($conn);
       }
@@ -4544,10 +4630,10 @@ sub key_down
       return xy(input_x(),input_y());
    } elsif(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
       my $input = input();
-      if(@state{line_pos} + @state{size_y} - 1 > $#{$$input[-1]}) {
+      if(line_pos() + @state{size_y} - 1 > $#{$$input[-1]}) {
          key_end(@_);
       } else {
-         @state{line_pos} += @state{size_y} - 1;
+         line_pos(line_pos() + @state{size_y} - 1);
          update_input_offset();
          draw_input($conn);
       }
@@ -4590,7 +4676,7 @@ sub key_right
          printf("\n%s",input_line(input_on_line()+1));
       }
 
-      line_pos_set(line_pos() + 1);
+      line_pos(line_pos() + 1);
       xy(input_x(),input_y());         # move cursor to expected location
    }
 }
@@ -4610,13 +4696,17 @@ sub TRUE
 # switch_world
 #    Switch the current world or all of them.
 #
+#    $w     = world switching from
+#    $world = world switching to
+#
 sub switch_world
 {
    my ($conn,$world) = @_;
+   my $w = world($conn);
 
    return if $world eq undef;
 
-   mstate($conn,"world_last",world($conn));
+   mstate($conn,"world_last",$w);
 
    if(TRUE(@state{p_sync})) {                       # switch all interfaces
       @state{world_last} = @state{world};
@@ -4643,6 +4733,13 @@ sub switch_world
    }
    # release_some_pending($conn,$world);
    update_scroll_region("input");
+
+   # redraw the input if the world we're coming from has a prompt or the
+   # world we're going to has a prompt. Both situations will require the
+   # removal of the prompt or the addition of the prompt.
+   if(has_prompt($w) || has_prompt($world)) {
+      draw_input($world);
+   }
 }
 
 #
@@ -5069,7 +5166,10 @@ sub draw_bar
              name(),
              "_" x (12 - length(name())),
              $act,
-             "_" x (@state{size_y} - length("$act$hr")-28),
+             "_" x (@state{size_y} -
+                    length("$act$hr") -
+                    28
+                   ),
              $hr,
              $min
             );
@@ -5263,6 +5363,8 @@ sub input_clear
    my $start = @state{size_x} - input_size() + 1;
    xy($start,0);
    PRINTF("\033[J");
+   printf("\033[J%s ",txt(prompt())) if(has_prompt());
+
    #for my $i ($start .. @state{size_x}) {
    #   PRINTF("\033[K\n");
    #}
@@ -5276,11 +5378,28 @@ sub PRINTF
 {
     my ($fmt,@args) = @_;
 
+    
     my $msg = sprintf($fmt,@args);
     printf("%s",$msg);
 
 #    $msg =~ s/\r|\n//g;
 #    loggit("%s - %s",ansi_debug($msg),code("shortest"));
+}
+
+#
+# PRINTF
+#    call printf() but allow for debugging of output, typically find
+#    determine if what is being sent is efficient.
+sub PRINTF2
+{
+    my ($fmt,@args) = @_;
+
+    my $msg = sprintf($fmt,@args);
+    printf("%s",$msg);
+
+    $msg =~ s/\r/<RET>/g;
+    $msg =~ s/\n/<NEW>/g;
+    loggit("P2: %s - %s",ansi_debug($msg),code("shortest"));
 }
 
 #----------------------------------------------------------------------------#
@@ -5443,7 +5562,7 @@ sub dialog_init
    my $lines = 0;
    my $max;
 
-   line_pos_set(0);
+   line_pos(0);
 
    @state{dialog} = {};
    @state{dialog}->{input_x} = 1;
@@ -6468,7 +6587,10 @@ sub cmd_perl
 #-#      needs to be valid perl command(s).    
 #-#
 #-# ------------------------------------------------------------------------
-   eval($txt);
+   for my $i (0 .. 170) {
+      loggit("x[$i]: %s",get_pos($i));
+   }
+   # eval($txt);
 }
 
 sub vencode
@@ -7948,25 +8070,38 @@ sub remove_quotes
    }
 }
 
+#
+# get_segment_end
+#    Scan to the end of a word or string segment.  String segments start
+#    with a ' or " and end with the same starting character. Characters
+#    may be escaped out.
+#
 sub get_segment_end
 {
-   my $txt = shift;
+   my ($txt,$char) = @_;
    my ($in_single, $in_double);
+   my $seg;
+
 
    for(my $i=0;$i <= length($txt);$i++) {
       my $ch = substr($txt,$i,1);
 
       if($ch eq "\\") {
-         $ch++;
+         $i++;
+         $seg .= substr($txt,$i,1);
       } elsif($ch eq "\"" && !$in_single) {
          $in_double = !$in_double;
+         $seg .= $ch;
       } elsif($ch eq "\'" && !$in_double) {
          $in_single = !$in_single;
+         $seg .= $ch;
       } elsif($ch eq " " && !$in_single && !$in_double) {
-         return $i;                                       # done
+         return ($i, $seg);                         # done
+      } else {
+         $seg .= $ch;
       }
    }
-   return length($txt);
+   return (length($txt), $txt );
 }
 
 #
@@ -7978,7 +8113,7 @@ sub get_segment_end
 sub getopt
 {
    my ($opts,$txt,$result,$time) = @_;
-   my ($in_arg,%lookfor,$prev,$end);
+   my ($in_arg,%lookfor,$prev,$end,$tmp);
 
    for(my $i = 0;$i < length($opts);$i++) {     # determine what to look for
       my $ch = substr($opts,$i,1);
@@ -8005,14 +8140,14 @@ sub getopt
                $$result{$ch} = 1;
             } elsif(@lookfor{$ch} == 2 || ($time && $ch =~ /^\d+$/)) {
                # option w/value
-               $end = get_segment_end(substr($txt,$i));      # scan to end
+               ($end,$tmp) = get_segment_end(substr($txt,$i),$ch); # scan2end
                if($time && $ch =~ /^\d+$/) {
-                  $$result{time} = remove_quotes(trim(substr($txt,$i,$end))); 
+                  $$result{time} = remove_quotes(trim($tmp)); 
                   $i += $end - 1;
                } elsif($end eq undef) {                      # nothing found
                   $$result{$ch} = "";
                } else {                                    # found something
-                  $$result{$ch} = remove_quotes(trim(substr($txt,$i+1,$end))); 
+                  $$result{$ch} = remove_quotes(trim(substr($tmp,1))); 
                   $i += $end - 1;
                }
             }
@@ -8272,7 +8407,7 @@ sub cmd_listsockets
 #-#      Shows all open connections and some minimal data about them.
 #-# ------------------------------------------------------------------------
    my $conn = shift;
-   my ($maxh, $maxn) = (5,5);
+   my ($maxh, $maxn, $last) = (5,5);
 
    for my $key (keys %ws) {
       if(length(@ws{$key}->{auth} ? "Web [ath]" : "Web") > $maxn) {
@@ -8307,6 +8442,16 @@ sub cmd_listsockets
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && $w ne "muddler") {
+         if(@socket{$w}->{last_send} > @socket{$w}->{last_recv}) {
+            $last = @socket{$w}->{last_send};
+         } else {
+            $last = @socket{$w}->{last_recv};
+         }
+         loggit("%-10s : %4s : %20s - %s",
+                $w,
+                @socket{$w}->{next_check},
+                $last,
+                time() - $last);
          echo($conn,
               "%-*s %-*s %-5s %-6s %-4s %-4s %s",
               $maxn,
@@ -8315,8 +8460,7 @@ sub cmd_listsockets
               @address{$w}->{host},
               @address{$w}->{port},
               @address{$w}->{ssl} ? "Yes" : "No",
-              shorten_time(@socket{$w}->{next_check} - 
-                           (time() - @socket{$w}->{last_send})),
+              shorten_time(time() - $last + @socket{$w}->{next_check}),
               shorten_time(time() - @socket{$w}->{last_send}),
               ((defined @pending{$w} && $#{@pending{$w}} > -1) ?
                  ($#{@pending{$w}}+1) : ""));
@@ -9042,7 +9186,9 @@ sub muddler_init
    @state{250} = 'SB';
    @state{240} = 'SE';
    @state{241} = 'NOP';
+   @state{249} = 'GO';
 
+   @state{GO} = chr(249);
    @state{WILL} = chr(251);
    @state{WONT} = chr(252);
    @state{DO}   = chr(253);
