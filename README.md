@@ -3,58 +3,34 @@ Three windows are displaying a connection to 8bit and Parlor via Firefox, a remo
 
 # muddler
 
-Muddler is a client for connecting with text based MUDs. A console and web interface provide a seperate panels for keyboard and world output to
-interact with one or more MUDs. Its primary purpose is to be an improved but visually similar version of Tinyfugue.
+Muddler is a mud client inspired by TinyFugue but with extra sprinkles. 
 
-# Key Improvements
+# Features
 ```
-   o Dialog editor for many key commands instead of complex commands
-   o Optional Web Interface for phone or browser use
-   o Integrated input spell check
-   o 256 Color, UTF8, Fansi, Latin Support
-   o Multiple Window support via multiple terminals and websockets
-   o Activitly developed
-
-# Similarties
+   o Console and/or web interface. Use them both if your feeling adventurous.
+   o Separate Input and output areas to keep your words separated.
+   o Multiple world support. Jump between worlds like a caffeinated squirrel.
+   o Handy activity notifications and more pager to keep you in the loop.
+   o A spell checker that turns your typos bright red.
+   o Scroll backwards and forwards in time using PGUP/PGDN keys.
+   o Editor for world configuration or settings
+   o Support for ANSI color, UTF, Fansi, and Latin encoding
+   o SSL Support for world connections and Web interface
+   o Prompt support coming from worlds such as talkers / MUDS.
+   o Automatically update to newest version while muddler is running
 ```
-   o Support of many Tinyfugue commands
-   o Connect to Multiple worlds at the same time
-   o Input and Output pane to keep your typing seperate from MUD output
-   o Visually the same interface as TinyFugue on console and via the web.
-     I.e. Input / output window panes for keyboard and MUD output
-   o Internal /help Command
-   o Pausable output to control output
-   o History buffer scrolling via PGUP/PGDOWN keys
-
-# Supported Platforms
+# Requirements
 ```
-   muddler runs on almost anything that supports Perl. The list of
-   supported platforms is due more to Perl then say good coding on my
-   part.
+   You'll need Perl and some extra Perl parts. It runs on macOS, Linux and even
+   Windows (with a little help from WSL, cygwin, or Strawberry Perl)
 
-   o Windows via WSL
-   o Android via Termux
-   o Drobo NAS
-   o More standard UNIX plantorms (Linux/NetBSD/etc)
-   o The Web interface can be viewed on any browser
+   Optional Perl parts:
+      Term::ReadKey, Net::WebSocket::Server, Encode, Fcntl, Digest::MD5, Text::Aspell
+      IO::Socket:SSL, IO::Select, IO::Socket, Text::ParseWords, IO::Socket::Timeout,
+      Protocol::WebSocket::Client, MIME::Base64, Data::Dumper, and Time::HiRes.
 
-
+      Muddler will be useable but less functional without the optional modules.
 ```
-# muddler goals
-```
-   o Simplicity. A MUD client should be simple to use.
-   o Aid users in switching between computers/phones without loosing
-     connectivity.
-   o Waste time writing code few will use. We're not in 1990 any more.
-   o Simple installation  [its a goal, not a feature]
-   o Improvements - Find a bug or something you don't like, I'll make
-     it my challenge to fix it or improve upon the issue.
-
-# References
-```
-   MUDs: https://en.wikipedia.org/wiki/Multi-user_dungeon
-   TinyFugue: https://tinyfugue.sourceforge.net/
-
 # Installation
 ```
    The below install steps are for a Linux system. Please see the specialized
@@ -71,28 +47,14 @@ interact with one or more MUDs. Its primary purpose is to be an improved but vis
 
          This will install missing modules and/or install the modules from
          cpan. Currently this only works on linux systems supporting apt.
-
-   d. ./muddler <options>
-
-   Options:
-      --noconsole        : disable the text based console and enable the
-                           web/websocket server.
-      --password         : specify the password for the websocket interface.
-      --port             : specify the port for the web server. The websocket
-                           server will be one port number higher.
-      --remote=host:port : Specify the remote muddler websocket host/port
-                           to connect to.
 ```
-# Quick Start
-   
+# Basic Commands
 ```
-   Basic Commands:
-      /world
-         Edit the current world's connection details.
+      /world or /world -e <name>
+         Edit the current or specified world's connection details.
       /world <world>
-         Switch the current world to <world>. Muddler will open up a
-         new connection if needed. Switching between existing worlds
-         can also be done with the up/down arrows and escape-w.
+         Connect to <world> or switch back to the world. Also see up/down
+         arrow keys.
       /help [<command>]
          Lists all commands or provides help on an individual command.
       /quit
@@ -103,8 +65,9 @@ interact with one or more MUDs. Its primary purpose is to be an improved but vis
          Note: If you plan to connect outside your network to muddler, the
                program uses <port> for web traffic and <port> + 1 for web-
                sockets. i.e. /port 9000 would use ports 9000 and 9001.
-
-   Command Line:
+```
+# Command Line
+```
       ./muddler <options>
 
           --noconsole        : disable the text based console and enable the
@@ -114,11 +77,11 @@ interact with one or more MUDs. Its primary purpose is to be an improved but vis
                                server will be one port number higher.
           --remote=host:port : Connect to a remote muddler session.
           --xy=x,y           : Set the screen size to x,y.
-
-   Supported Keys:
-
-      Keys         DESCRIPTION
-      Ctl-A      | Move the cursor to the begining of the line
+```
+#  Supported Keys
+```
+      Key          DESCRIPTION
+      Ctl-A      | Move the cursor to the beginning of the line
       Ctl-E      | Move the cursor to the end of the line
       Ctl-L      | Erases the screen and redraws it
       Ctl-N      | Moves forward one entry in the keyboard history.
