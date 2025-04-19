@@ -435,8 +435,11 @@ sub ansi_char
    return @{$$data{ch}}[$pos];
 }
 
-
-sub is_ansi_string
+#
+# is_ansi
+#    determine if a string or hash is an ansi string hash.
+#
+sub is_ansi
 {
    my $txt = shift;
 
@@ -507,21 +510,24 @@ sub ansi_init
    my $str = shift;
    my $digest;
 
-   my $data = { ch => [], code => [], state  => [], snap   => [] };
+   return $str if(is_ansi($str));
+
+   my $data = { code => [], state  => [], snap   => [] };
 #   $$data{trace} = code();
 
-   if($str !~ /\e/) {                             # no ansi characters
-      $$data{ch} = [ split(//,$str) ];
+   if($str !~ /\e/) {                                    # no ansi characters
+      $$data{ch} = [ split(//,$str) ];        # so cheat and just populate ch
       return $data;
    } else {
       $$data{ch} = [];
    }
-   while($str =~ /\e\[([\d;]*)([a-zA-Z])/) {
+
+   while($str =~ /\e\[([\d;]*)([a-zA-Z])/) {   # loop through escape code seq
       $str = $';
       ansi_add($data,1,$`) if $` ne undef;
       ansi_add($data,0,"\e[$1$2");
    }
-   ansi_add($data,1,$str) if($str ne undef);
+   ansi_add($data,1,$str) if($str ne undef);                # add remainder
 
    # reset state at end of line
    if($#{$$data{snap}->[$#{$$data{snap}}]} >= 0) {
@@ -555,12 +561,12 @@ sub dearray
 sub txt
 {
    my @data = @_;
-   my @out;
+   my $out;
 
    for my $i (0 .. $#data) {
-      push(@out,dearray(@data[$i]));
+      $out .= dearray(@data[$i]);
    }
-   return join('',@out);
+   return $out;
 }
 
 
@@ -575,7 +581,7 @@ sub ansi_substr
    my ($data,$start,$count,$noansi) = @_;
    my ($result,$i);
 
-   $data = ansi_init($data) if(!is_ansi_string($data));
+   $data = ansi_init($data) if(!is_ansi($data));
    $start = 0 if($start !~ /^\s*\d+\s*$/);                 # sanity checks
    if($count !~ /^\s*\d+\s*$/) {
       $count = ansi_length($data);
@@ -630,15 +636,15 @@ sub ansi_substr
 
 #
 # ansi_length
-#    Return the length of a string without counting all those pesky escape
-#    codes.
+#    Return the length of a string while skipping all those pesky escape
+#    codes which don't count as being part of the length.
 
 sub ansi_length
 {
    my $txt = shift;
    my $data = shift;
 
-   if(is_ansi_string($txt)) {                          # already inited txt?
+   if(is_ansi($txt)) {                                 # already inited txt?
       $data = $txt;
    } else {
       return length(ansi_remove($txt));   # faster if  not in out ansi format?
@@ -1607,6 +1613,7 @@ sub io
             # loggit("#$w-1# '%s'",lord(ansi_remove($buf)));
             @state{norelease} = 1;
             @new_input{$w} = 1;
+            # loggit("$w> %s",ansi_debug($buf));
  
             while(defined @socket{$w}->{sock} &&
                   defined @socket{$w}->{buf} &&
@@ -1713,10 +1720,10 @@ sub io
          Time::HiRes::gettimeofday() - @socket{$w}->{last_recv} >= .5) {
          # loggit("#$w-3# '%s'",@socket{$w}->{buf}) if($w eq "bi");
          # history($w,@socket{$w}->{buf},1,1);
+         # loggit("time prompt[$w]: '%s'",@socket{$w}->{buf});
          prompt($w,@socket{$w}->{buf});
          draw_input($w);
          delete @socket{$w}->{buf};
-         loggit("Found time prompt");
       }
    }
    @state{norelease} = 0;
@@ -2211,7 +2218,7 @@ sub hist_pos_partial
    if($value ne undef) {
       @socket{$w} = {} if not defined @socket{$w};
       @socket{$w}->{hist_pos_partial} = $value;
-   } else { 
+   } elsif(in_hist($w)) {
       $w = @state{world} if ($w eq undef);
 
       if(defined @socket{$w} && defined @socket{$w}->{hist_pos_partial}) {
@@ -2409,6 +2416,20 @@ sub displayable
    return 1;
 }
 
+sub add_matches
+{
+   my ($reg,$txt) = @_;
+
+   for my $i (1 .. 9) {
+      if(defined $$reg{$i}) {
+         eval {
+            $txt =~ s/_$i\_/$$reg{$i}/g;
+         };
+      }
+   }
+   return $txt;
+}
+
 #
 # gagged
 #    Find output that is gagged and flag it as gagged.
@@ -2417,6 +2438,7 @@ sub gagged
 {
    my ($w,$txt,$conn) = (shift,shift,shift);
    my ($match, $i,$count,$hit);
+   my %reg;
 
    # no defines, no need to search
 #   return if scalar keys %def == 0;
@@ -2479,6 +2501,9 @@ sub gagged
                @def{$key}->{badregexp} = 0;
                eval {
                   $match = 1 if($str =~ /@def{$key}->{regexp}/);
+                  @reg{1} = $1;@reg{2} = $2;@reg{3} = $3;@reg{4} = $4;
+                  @reg{5} = $5;@reg{6} = $6;@reg{7} = $7;@reg{8} = $8;
+                  @reg{9} = $9;
                   @def{$key}->{badregexp} = 1;
                };
 
@@ -2489,7 +2514,7 @@ sub gagged
                   }
                   if(defined @def{$key}->{cmd}) {
                     for my $cmd (split(';',@def{$key}->{cmd})) {
-                       do_cmd($w,$cmd,$conn);
+                       do_cmd($w,add_matches(\%reg,$cmd),$conn);
                     }
                   }
                   if(defined @def{$key}->{hits}) {
@@ -2601,7 +2626,7 @@ sub gagged
 #
 sub history
 {
-   my ($conn,$txt,$mud,$partial) = @_;
+   my ($conn,$txt,$type,$partial) = @_;
    $txt =~ s/\r//g;
 
    my $world = world($conn);
@@ -2629,9 +2654,9 @@ sub history
                gagged    => 0,                         # wiil line be gagged?
 #              pend_code => code(),
                original  => undef,               # unmodified txt, if changed
-               internal  => ($mud) ? 0 : 1,                 # internal output
+               internal  => ($type) ? 0 : 1,                # internal output
                size      => @state{size_y},            # wrapped at this size
-               partial   => $partial
+               partial   => $partial,
              };
 
    remove_nospoof($str);
@@ -3044,17 +3069,18 @@ sub input_x
 }
 
 #
-# return the Y position of the input cursor
+# input_y_actual
+#    return the y location of where the cursor is in the input window
+#    in the console. Things like prompts and dialog boxes will affect
+#    its actual location.
 #
-sub input_y
+sub input_y_actual
 {
    my $offset = shift;
-   my $plen = 0;
-
-   $plen = ansi_length(prompt()) + 1 if(has_prompt());
-   my $pos = 1 + ((line_pos() - $offset + $plen)%(@state{size_y} - 1));
+   my $pos;
 
    if(in_dialog()) {
+      $pos = 1 + ($offset % (@state{size_y} - 1));
       if(dialog_type() eq "check") {         # handle fixed position checkbox
          my $offset = dialog_offset(dialog_x());
          return ($offset eq undef) ? 5 : $offset;
@@ -3063,10 +3089,26 @@ sub input_y
       } elsif(dialog_x() > dialog_items()) { # handle fixed position "buttons"
          return @state{dialog}->{bpos}->[dialog_x()-dialog_items()-1];
       }
+      return dialog_max() + 5 + $pos;
+   } else {
+      my $plen = (has_prompt()) ? (ansi_length(prompt()) + 1) : 0;
+      $pos = 1 + (($offset  + $plen) % (@state{size_y} - 1));
+      return $pos;
    }
-
-   return ((in_dialog()) ? dialog_max() + 5 : 0) + $pos;
 }
+
+#
+# input_y
+#   alias for input_y that just calls input_y_actual with line_pos()
+#   populated.
+#
+sub input_y
+{
+   my $offset = shift;
+
+   return input_y_actual(line_pos() - $offset);
+}
+
 
 #
 # output_end
@@ -3117,10 +3159,13 @@ sub wrap_garbage_collect
 sub ansi_wrap
 {
    my ($str,$size_y) = @_;
+
+   return ansi_init('') if($str eq undef);                # blank line hack
+
    $size_y = @state{size_y} if(!defined $size_y);
    my ($break, $start, @result,@stat,$cbreak);
 
-   $str = ansi_init(shift) if(ref($_[0]) ne "HASH");
+   $str = ansi_init(shift) if(!is_ansi($_[0]));
 
    my $i = 0;
    my $start = 0;
@@ -3176,6 +3221,7 @@ sub ansi_wrap
       push(@stat,{start => $start, end => $#{@$str{ch}} });
    }
    @state{ansi_stat} = @stat;
+
    return @result;
 }
 
@@ -3201,7 +3247,7 @@ sub ansi_stat_wrap
    my ($break, $start,$cbreak);
    my $result = [];
 
-   $str = ansi_init(shift) if(ref($_[0]) ne "HASH");
+   $str = ansi_init(shift) if(!is_ansi($_[0]));
 
    my $i = 0;
    while($i < $#{@$str{ch}}) {
@@ -3441,13 +3487,8 @@ sub prompt
    my $w = world(($#_ == -1) ? @state{world} : shift);
 
    if($#_ == 0) {
-      @socket{$w}->{prompt} = ansi_init(shift);
-
-      # its faster to delete after the ansi_init() then check if
-      # the string is empty before hand.
-      if(ansi_length(@socket{$w}->{prompt}) == 0) {
-         delete @socket{$w}->{prompt};
-      }
+      my $p = ansi_init(@_[0]);
+      @socket{$w}->{prompt} = $p if(ansi_length($p) > 0);
    } elsif(has_prompt($w)) {
       return ansi_substr(@socket{$w}->{prompt},0,@state{size_y} - 10);
    }
@@ -3477,8 +3518,7 @@ sub draw_input
          my $end = $pos + input_size() - 1;
          for my $i (input_start() .. input_end()) {
             if($pos <= $end) {                      # line $pos of typed input
-               PRINTF("%s%s",ansi_remove(input_line($pos)),
-                  ($i != input_end()) ? "\n" : "");
+               PRINTF("%s%s",input_line($pos),($i != input_end()) ? "\n" : "");
             } else {            # blank line with return but not on last line
                PRINTF("%s",($i != input_end()) ? "\n" : "");
             }
@@ -3513,6 +3553,53 @@ sub good
 {
    return ($_[1] >= 0 && $_[1] <= $#{$_[0]}) ? 1 : 0;
 }
+
+
+sub shu
+{
+   my ($w,$conn,$dir) = (world(@_[0]),@_[0],@_[1]);
+   my ($h,$str,@out,$off) = (@history{$w},undef,undef,hist_pos_partial($w));
+   my ($x,$y) = min_size($w);
+   my $start = (in_hist($w)) ? hist_pos($w) : $#$h;
+   return if($start == $#$h && $dir > 0);
+
+   loggit("\n\n\n\n\n\n\n");
+   for(my $i=$start;$i >= 0 && $i <= $#$h;$i += $dir) {
+      if(displayable($$h[$i])) {                      # loop through string
+         if(in_hist($w) && $i == $start && $dir > 0) {
+            $str = ansi_substr($$h[$i]->{txt},0,$off);
+         } elsif(in_hist($w) && $i == $start && $dir < 0) {
+            $str = ansi_substr($$h[$i]->{txt},$off);
+         } else {
+            $str = $$h[$i]->{txt};
+         }
+
+         my @list=($dir < 0) ? (reverse ansi_wrap($str,$y)) :
+                  ansi_wrap($str,$y);
+
+         for my $txt (@list) {
+            unshift(@out,txt($txt));
+            if($#out + 1 == $x - input_size() - overlap()) {
+               loggit("setting offset");
+               hist_pos($w,$i,($#out + 1) * $dir);
+               hist_pos_partial($w,$off + $txt->{end});
+            } elsif($#out + 1 > $x - input_size()) {
+               loggit("%s",join("\n",@out));
+               loggit("POS[$i,$dir]: '%s'",($#out + 1) * $dir);
+               loggit("POS2[$#$h]: '%s'",$off + $txt->{end});
+               # hist_pos($w,$i,($#out + 1) * $dir);
+               # hist_pos_partial($w,$off + $txt->{end});
+               loggit("Got this far");
+               return;
+            }
+         }
+      }
+      $off = undef;
+   }
+   while($#out + 1 >= $x - input_size() - 1) {unshift(@out,"")};
+   loggit("%s",join("\n",@out));
+}
+
 
 #
 # scroll_history
@@ -3745,7 +3832,8 @@ sub key_dump
    my ($conn,$txt,$force) = @_;
    my $w = world($conn);
 
-   loggit("size_x: %s, size_y: %s, offset: '%s'",input_x(),input_y(),@state{input_offset});
+   shu($conn,-1); 
+  # loggit("size_x: %s, size_y: %s, offset: '%s'",input_x(),input_y(),line_pos());
    return;
    my $input = input();
    for my $i (0 .. $#$input) {
@@ -4103,7 +4191,9 @@ sub key_return
          out(@state{world},"%s","\/$'") if(!in_dialog());
       } elsif(!in_dialog()) {
          out(@state{world},"%s",$txt) if(!in_dialog());
-         prompt(@state{world},undef) if(has_prompt());
+         if(has_prompt()) {
+            delete @socket{@state{world}}->{prompt};
+         }
       }
    }
 }
@@ -4159,6 +4249,7 @@ sub key_delete
    update_scroll_region("input");
    
    my $input = input();
+   my $prev_y = input_y();
 
    if(defined @state{spelling_error} && @state{spelling_error}) {
       @state{spelling_delete}++;
@@ -4181,8 +4272,14 @@ sub key_delete
 
          # loop from current line to end of screen horizontally
 
-         xy(input_x(),input_y()-1);
-         printf("\033[P");                 # delete ch before cursor
+         # xy(input_x(),input_y()-1);
+         # PRINTF("\033[P");                 # delete ch before cursor
+         if(input_y() != $prev_y) {                    # check for wrap-around
+            xy(input_x(),input_y());       # move cursor back in case it moved
+            PRINTF("\033[P");                  # delete character under cursor
+         } else {
+            PRINTF("\b\033[P");                # delete character under cursor
+         }
          for my $i (input_x(1) .. @state{size_x}) {
             my $pos=((@state{input_offset} + $i - input_start() + 1)
                     * (@state{size_y} - 1));
@@ -4193,12 +4290,12 @@ sub key_delete
                input_x() == input_x(1) &&           # not when moving up line
                $#{$$input[-1]} >= $pos - @state{size_y} + 1) {     # past EOL
                xy($i,0);
-               printf("\033[P");
+               PRINTF("\033[P");
             }
 #            loggit("Test2: '%s' <= '%s'",$pos,$#{$$input[-1]});
             if($pos <= $#{$$input[-1]}) {
                xy($i,@state{size_y} - 1);
-               printf("%s",$$input[-1]->[$pos]);
+               PRINTF("%s",$$input[-1]->[$pos]);
             }
          }
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
@@ -4206,14 +4303,21 @@ sub key_delete
          xy(input_x(),input_y());                            # return cursor
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
+      my $prev_y = input_y();
       line_pos(line_pos() - 1);                    # move cursor pos back one
       pop(@{$$input[-1]});                          # remove char from buffer
-      xy(input_x(),input_y());            # move cursor back in case it moved
-      printf("\033[P");                       # delete character under cursor
+      # xy(input_x(),input_y());            # move cursor back in case it moved
+
+      if(input_y() != $prev_y) {                       # check for wrap-around
+         xy(input_x(),input_y());          # move cursor back in case it moved
+         PRINTF("\033[P");                     # delete character under cursor
+      } else {
+         PRINTF("\b\033[P");                   # delete character under cursor
+      }
 
       if(in_dialog()) {
          xy(input_x(),dialog_max() + 5 + dialog_input_size());
-         printf("_");
+         PRINTF("_");
          xy(input_x(),input_y());
       }
 
@@ -4222,10 +4326,32 @@ sub key_delete
       if((line_pos()-1)-(@state{input_offset}*(@state{size_y} - 1))==-2){
          xy(input_x(),1);                  # move cursor to beginning of line
          @state{input_offset}--;               # move input focus one line up
-         printf("%s",input_line(input_on_line()));               # print line
+         PRINTF("%s",input_line(input_on_line()));               # print line
          # xy() - no need to move cursor to right location, its there.
       }
    }
+}
+
+#
+# msb
+#   make a string bold or the reverse. 
+#
+sub msb
+{
+   my ($conn,$txt,$bold) = @_;
+
+   my $pos = length($txt);
+
+   xy(input_x($pos),input_y($pos));                    # jump $txt chars back
+
+   PRINTF("\033[1m\033[1;31m") if($bold);                      # flip on bold
+
+   my $loc = line_pos() - $pos + 1;
+   for my $ch (split('',$txt)) {              # reprint $txt letter by letter
+      PRINTF("%s%s",$ch,(input_eol($conn,$loc,$ch)) ? "\r\n" : "");
+      $loc++;
+   }
+   PRINTF("\033[0m") if($bold);                               # turn off bold
 }
 
 #
@@ -4249,8 +4375,9 @@ sub make_string_bold
    for my $ch (split('',$txt)) {
 
       # determine if character would be off the screen, if so done.
-      if($i >= ((@state{size_y}-1) * input_size()) + 
-               (@state{input_offset} * (@state{size_y}-1))) {
+      if(input_eol($i-1)) {
+#      if($i >= ((@state{size_y}-1) * input_size()) + 
+#               (@state{input_offset} * (@state{size_y}-1))) {
          last;
       }
 
@@ -4271,8 +4398,13 @@ sub make_string_bold
 #    not.
 sub input_eol
 {
-   my $pos = shift;
-   return (input_y() == 1) ? 1 : 0;
+   my ($conn,$pos,$ch) = @_;
+
+   if(input_y_actual($pos-1) == size_y($conn) - 1) {
+      return 1;
+   } else {
+      return 0;
+   }
 }
 
 # input_onscreen
@@ -4296,6 +4428,11 @@ sub input_onscreen
    }
 }
 
+#
+# cycle_next
+#   return the next item for a dialog item that has a provided list
+#   of values.
+#
 sub cycle_next
 {
    my $list = shift;
@@ -4313,9 +4450,14 @@ sub cycle_next
    return $first;
 }
 
+#
+# key_default
+#    key handler for all non-special keys. This also handles spell
+#    checking.
+#
 sub key_default
 {
-   my ($conn,$ch) = @_;
+   my ($conn,$ch,$nospell) = @_;
    my $pre_x = input_x();
    my $debug=0;
    my ($ret, $plen);
@@ -4325,20 +4467,25 @@ sub key_default
 
    my $input = input();
    # spell checker code
-   if($ch eq " " && module_enabled("Text::Aspell") &&
+   if(!$nospell && $ch eq " " && module_enabled("Text::Aspell") &&
      (!defined @state{p_spell} || TRUE(@state{p_spell}))) {
       if(substr(join('',@{$$input[-1]}),0,line_pos()) =~ 
             /(^| |^:|^"|^@)([a-zA-Z']+)([,\.!"']{0,1})(\s*)$/) {
          spell_init();
          if(!@state{spell_status}) {
              # do nothing, spelling is broken
+#         } elsif(@state{spell_last} eq $2) {
+#             # do nothing, already checked this word
          } elsif(!@state{speller}->check($2)) {
-             make_string_bold("$2$3$4",1);
+             @state{spell_last} = $2;
+             # make_string_bold("$2$3$4",1);
+             msb($conn,"$2$3$4",1);
              @state{spelling_error} = 1;
              @state{spelling_delete} = 0;
          } elsif(@state{spelling_error} == 1) {  # this will not unbold every
              if(@state{spelling_delete}) {
-                make_string_bold("$2$3$4",0);          # thing, improve later?
+                msb($conn,"$2$3$4",0);                 # thing, improve later?
+                # make_string_bold("$2$3$4",0);          # thing, improve later?
              }
              @state{spelling_error} = 0;
              @state{spelling_delete} = 0;
@@ -4375,11 +4522,11 @@ sub key_default
 
    splice(@{$$input[-1]},line_pos(),0,$ch);                # add ch to buffer
    line_pos(line_pos() + 1);                    # move cursor position over 1
-   printf("%s",$ch);                                     # print out new char
+   PRINTF("%s",$ch);                                     # print out new char
 
    # at end of line, drop down to next line
-   if(input_eol(line_pos())) {
-      printf("\r\n");
+   if(input_eol($conn,line_pos(),$ch)) {
+      PRINTF("\r\n");
       $ret = 1;                                    # flag return was printed
       # has a line has scrolled off the input buffer
       @state{input_offset}++ if($pre_x == @state{size_x});
@@ -4389,11 +4536,11 @@ sub key_default
    $plen = ansi_length(prompt()) + 1 if(has_prompt());
    if(defined @$input[-1] && $#{$$input[-1]} >= line_pos()) {
       for(my $i=line_pos();input_onscreen($i);$i++){
-         if(input_eol($i)) {                    # only if not already printed
-            printf("\r\n") if(($ret && $i != line_pos() + $plen) or !$ret);
+         if(input_eol($conn,$i)) {             # only if not already printed
+            PRINTF("\r\n") if(($ret && $i != line_pos() + $plen) or !$ret);
             $ret = 0;
          }
-         printf("%s",$$input[-1]->[$i]);
+         PRINTF("%s",$$input[-1]->[$i]);
       }
       xy(input_x(),input_y());
    }
@@ -4470,27 +4617,44 @@ sub input_size
 #
 sub key_left
 {
+   my $conn = shift;
+
    return if !console();
 
-   my $ret = "\n";
-   my $input = input();
-   if(@state{input_offset} > 0 && line_pos() % (@state{size_y}-1)==0 &&
-      input_x() == input_start()) {
-      @state{input_offset}--;
-      for my $i (input_on_line() .. input_lines()) {
-         last if(input_size() < $i - @state{input_offset});
-         my $start = ($i-1) * (@state{size_y} -1);
-         my $stop = $start + @state{size_y}-2;
-
-         # only draw lines that are currently visible.
-         if(input_size() < $i + 1 - @state{input_offset}) {
-            $ret = undef;                          # last line? no return
-         }
-         printf("\033[J%s$ret",join('',@{$$input[-1]}[$start .. $stop]));
-      }
-   }
-   if(line_pos() >= 1) {
+   if(line_pos() == 0) {
+     # do nothing, at beginning of line
+   } elsif(input_y() == 1 &&                      # found start of input buff 
+           input_x() == input_start() &&
+           @state{input_offset} > 0) {
+      @state{input_offset}--;                        # move focus one line up
       line_pos(line_pos() - 1);
+      draw_input($conn);
+   } else {
+      line_pos(line_pos() - 1);
+      xy(input_x(),input_y());
+   }
+}
+
+#
+# key_right
+#    Move the cursor one character to the right 
+#
+sub key_right
+{
+   my $conn = shift;
+
+   return if !console();
+
+   my $input = input();
+   if(line_pos() > $#{$$input[-1]}) {
+     # do nothing, already at end of line
+   } elsif(input_y() == size_y() - 1 &&              # found end of input buff 
+           input_x() == size_x()) {
+      @state{input_offset}++;                       # move focus one line down
+      line_pos(line_pos() + 1);
+      draw_input($conn);
+   } else {                                                # move to the right
+      line_pos(line_pos() + 1);
       xy(input_x(),input_y());
    }
 }
@@ -4655,30 +4819,6 @@ sub key_down
    }
    # Try first on list if not current world
    switch_world($conn,$first) if(defined $first && $first ne $w);
-}
-
-#
-# key_right
-#   Handle the pressing of the right arrow key
-#
-sub key_right
-{
-   return if !console();
-
-   my $input = input();
-   if(line_pos() <= $#{$$input[-1]}) {     # not at the end of the line?
-      # will cursor go off screen?
-      #    1 adjust the input_offset to reflect this
-      #    2 show next line
-      if(line_pos() % (@state{size_y}-1)==@state{size_y} - 2 &&
-         input_x() == @state{size_x}) {
-         @state{input_offset}++;
-         printf("\n%s",input_line(input_on_line()+1));
-      }
-
-      line_pos(line_pos() + 1);
-      xy(input_x(),input_y());         # move cursor to expected location
-   }
 }
 
 #
@@ -5300,7 +5440,7 @@ sub loggit
    return if !defined @state{p_debug} || !@state{p_debug};
 
    my $msg = sprintf("$fmt",@args);
-   $msg .= "\n" if($msg !~ /\n/);
+   $msg .= "\n" if($msg !~ /\n$/);
 
    # syswrite on closed filehandle. Happens when the websocket client
    # is closed. Can't seem to stop these, so lets ignore them.
@@ -5382,7 +5522,8 @@ sub PRINTF
     my $msg = sprintf($fmt,@args);
     printf("%s",$msg);
 
-#    $msg =~ s/\r|\n//g;
+#    $msg =~ s/\r/<RET>/g;
+#    $msg =~ s/\n/<NL>/g;
 #    loggit("%s - %s",ansi_debug($msg),code("shortest"));
 }
 
@@ -6176,7 +6317,6 @@ sub cmd_wsconsole
 
    if(defined @ws{$conn}) {
       @ws{$conn}->{websocket_console} = 1;
-      loggit("Set console");
    }
 }
 
@@ -6224,7 +6364,6 @@ sub cmd_request_info
       return echo($conn,"%% request_info is an internal command and cannot " .
                         "be used directly.");
    } elsif(defined @address{$txt}) {
-      loggit("ri: %s",mydump($txt,@address{$txt}));
       ws_echo($conn,"r",mydump($txt,@address{$txt}));
    } else {
       LOGGIT("Invalid world. '$txt'");
@@ -6587,10 +6726,7 @@ sub cmd_perl
 #-#      needs to be valid perl command(s).    
 #-#
 #-# ------------------------------------------------------------------------
-   for my $i (0 .. 170) {
-      loggit("x[$i]: %s",get_pos($i));
-   }
-   # eval($txt);
+   eval($txt);
 }
 
 sub vencode
@@ -8264,7 +8400,11 @@ sub cmd_quote
       return echo($conn,"%% QUOTE: Not connected to world $$opt{$w}");
    }
 
-   if($txt =~ /^([^!`']+)!\s*/) {
+   # if($txt =~ /^([^!`']+)!\s*/) {
+   if($txt =~ /^\s*!\s*/) {
+      system("$' > /dev/null 2>&1");
+      return;
+   } elsif($txt =~ /^([^!`']+)!\s*/) {
       $pre = $1;
       open($fd,"$' |") ||
          return echo($conn,"%% Unable to run commmand '$''.");
@@ -8373,17 +8513,11 @@ sub cmd_recall
    }
 }
 
-sub small
-{
-   my $txt = shift;
-
-   if($txt =~ /\(([^\)]+)\)/) {
-      return $1;
-   } else {
-      return $txt;
-   }
-}
-
+#
+# shorten_time
+#    Give a rough idea on how many seconds is being passed
+#    into the function.
+#
 sub shorten_time
 {
    my $secs = shift;
@@ -8395,7 +8529,7 @@ sub shorten_time
    } elsif($secs > 60) {
       return sprintf("%dm",$secs / 60);
    } else {
-      return $secs. "s";
+      return sprintf("%ds",$secs);
    }
 }
 
@@ -8447,11 +8581,11 @@ sub cmd_listsockets
          } else {
             $last = @socket{$w}->{last_recv};
          }
-         loggit("%-10s : %4s : %20s - %s",
-                $w,
-                @socket{$w}->{next_check},
-                $last,
-                time() - $last);
+         #loggit("%-10s : %4s : %20s - %s",
+         #       $w,
+         #       @socket{$w}->{next_check},
+         #       $last,
+         #       time() - $last);
          echo($conn,
               "%-*s %-*s %-5s %-6s %-4s %-4s %s",
               $maxn,
@@ -8539,6 +8673,8 @@ sub cmd_world
       world_dialog_create($conn);
    } elsif(defined $$opt{e}) {
       world_dialog_create($conn,$txt);
+   } elsif(is_remote()) {
+      wc_out("/world %s\n",$txt);
    } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
       return echo($conn,"% CONNECT: no such world '%s'",$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
@@ -8627,6 +8763,10 @@ END {
      printf("%s\n",@state{err}) if(@state{err});
 }
 
+#
+# center
+#   Center some text within the current window
+#
 sub center
 {
     my ($conn,$txt) = @_;
@@ -10542,8 +10682,8 @@ START: muddler_style.css
      bottom: 0px;
      top: 0px;
      position: absolute;
-/*     width: 100%;
-     height: 100%; */
+     width: 100%;
+     height: 100%;
      margin: 0;
      overflow: hidden;
      background: #2667bd;
@@ -10754,6 +10894,10 @@ START: muddler_client.js
 
    window.addEventListener('blur', window_blurred);
    window.addEventListener('focus', window_focused);
+
+   // block scrolling on mobile
+   function blockMove() { event.preventDefault() ; }
+
    var WSClient = (function (window, document, undefined) {
    
      //////////////////////////////////////////////////////////////////
@@ -11995,7 +12139,7 @@ START: muddler_client.html
    
    <body onLoad="input.focus()"
           setTimeout(conn.close, 1000);"
-         onClick="input.focus()">
+         onClick="input.focus()" ontouchmove="blockMove()">
    
    <div id="terminal">
      <div id="output" class="ansi-37 ansi-40"></div>
