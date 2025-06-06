@@ -129,6 +129,10 @@ my %mod = (
    'Time::HiRes'                 => { fatal => 1,
                                       for => 'Accurate Prompt Detection'
                                     },
+   'IPC::Open2'                  => { fatal => 0,
+                                      for => 'More secure arguments to /quote'
+                                    },
+   
   
 );
 #
@@ -1316,6 +1320,7 @@ sub server_hostname
 {
    my $sock = shift;
    my $ip = $sock->peerhost;                           # contains ip address
+   loggit("IP: $ip\n");
 
    my $name = gethostbyaddr(inet_aton($ip),AF_INET);
 
@@ -1466,7 +1471,13 @@ sub allowed
    if(defined @state{p_allow}) {
       for my $host (split(/,/,@state{p_allow})) {
          my $pat = glob2re($host);
-         return 1 if(@ws{$ws}->{ip} =~ /$pat/i);
+         loggit("Ccheck: %s == $pat",@ws{$ws}->{ip});
+         loggit("   *MATCH*") if(@ws{$ws}->{ip} =~ /$pat/i);
+         if(@ws{$ws}->{ip} =~ /$pat/i) {
+            return 1;
+         } elsif(@ws{$ws}->{hostname} =~ /$pat/i) {
+            return 1;
+         }
       }
    }
    return 0;
@@ -1483,7 +1494,7 @@ sub ws_login_screen
 
    if(allowed($ws)) {
       @ws{$ws}->{auth} = 1;
-      echo($ws,"%% Allowed web connection from: %s",@ws{$ws}->{ip});
+      echo($ws,"%% Allowed web connection from: %s",@ws{$ws}->{hostname});
    } else {
       ws_echo($ws,"d","password",1);
    }
@@ -1514,6 +1525,7 @@ sub ws_echo
       return;
    }
    $msg =~ s/[\r\n]+$//;
+   loggit("WS[%s]: '%s'",$type,$msg);
    eval {
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
@@ -1654,7 +1666,8 @@ sub io
    
          $ws_server->{conns}{$s} = { conn     => $conn,
                                      lastrecv => time,
-                                     ip       => server_hostname($s)
+                                     ip       => $s->peerhost,
+                                     hostname => server_hostname($s)
                                    };
          $ws_server->{select_readable}->add( $s );
          $ws_server->{on_connect}($ws_server, $conn );
@@ -1662,7 +1675,8 @@ sub io
          @ws{$conn}->{conn} = $conn;
          @ws{$conn}->{start} = time();
          @ws{$conn}->{auth} = 0;
-         @ws{$conn}->{ip} = server_hostname($s);
+         @ws{$conn}->{ip} = $s->peerhost;
+         @ws{$conn}->{hostname} = server_hostname($s);
          @ws{$conn}->{port} = @state{p_port} + 1;
          @ws{$conn}->{world} = @state{world};
          @ws{$conn}->{active} = 1;            # assume window/tab is active
@@ -2009,11 +2023,11 @@ sub ws_process
          ws_echo($conn,"t","%% Password validated.") if (no_world());
          echo($conn,
               "%% Authenticated web connection from: %s",
-              @ws{$conn}->{ip}
+              @ws{$conn}->{hostname}
              );
       } else {
          ws_echo($conn,"t","%% Invalid Password.",1);
-         echo($conn,"%% Failed web connect from: %s",@ws{$conn}->{ip});
+         echo($conn,"%% Failed web connect from: %s",@ws{$conn}->{hostname});
          ws_disconnect($conn);
       }
    } elsif(do_cmd(world($conn),$input,$conn)) {
@@ -2422,9 +2436,23 @@ sub add_matches
 
    for my $i (1 .. 9) {
       if(defined $$reg{$i}) {
+         if(module_enabled("MIME::Base64") && $txt =~ /_MIME$i\_/) {
+             my ($before,$after) = ($`,$');
+             my $mime = encode_base64($$reg{$i});
+             $mime =~ s/\r|\n//g;
+             $txt = $before . $mime . $after;
+             loggit("got here: $txt");
+         }
+         
          eval {
             $txt =~ s/_$i\_/$$reg{$i}/g;
          };
+      }
+   }
+
+   for my $key (keys %state) {
+      if($key =~ /^set_/) {
+         $txt =~ s/_$'\_/@state{$key}/g;
       }
    }
    return $txt;
@@ -5984,7 +6012,7 @@ sub world_save
    } else {
       delete @address{$name}->{keepalive};
    }
-   @address{$name}->{encode} = encoding_detranslate($$data{Encoding});
+   @address{$name}->{decode} = encoding_detranslate($$data{Encoding});
    save($conn,"WORLD",$name);
 }
 
@@ -6595,7 +6623,7 @@ sub cmd_window
                     "%15s | %-15s | %20s | %s",
                     $key,
                     "active",
-                    @ws{$$hash{sock}}->{ip},
+                    @ws{$$hash{sock}}->{hostname},
                     $$hash{glob}
                    );
             }
@@ -6881,7 +6909,7 @@ my ($conn,$txt) = @_;
          }
       }
       return draw_screen($conn);
-   } elsif($txt =~ /^\s*([^=]+?)\s*=\s*/) {
+   } elsif($txt =~ /^\s*([^= ]+?)\s*=\s*/) {
       my ($name,$val) = ($1,$');
       if(defined @var{$name}) {
          if(defined @var{$name}->{chk}) { 
@@ -6929,10 +6957,10 @@ my ($conn,$txt) = @_;
          if(@var{$name}->{pfun} ne undef) {
             &{@var{$name}->{pfun}}($conn,$val);
          }
+      } elsif(!length $val) { 
+         delete @state{"set_$name"};
       } else {
-         echo($conn,"%% Unknown variable '%s'",$name);
-         echo($conn,"%% Valid variables are: ");
-         echo($conn,"%%    %s\n",join(', ',keys %var));
+         @state{"set_$name"} = trim($val);
       }
    } elsif($txt =~ /^\s*list\s*$/) {
       cmd_showset(@_);
@@ -7053,7 +7081,7 @@ sub cmd_showset
 #   }
    $pat = glob2re($txt) if($txt ne undef);
    for my $key (keys %state) {
-      if(@state{$key} !~ /^\s*(0|off)\s*$/ && $key =~ /^p_/) {
+      if(@state{$key} !~ /^\s*(0|off)\s*$/ && $key =~ /^(p|set)_/) {
          if(safe_match($',$pat)) {
             echo($conn,"# %-15s %s",$',@state{$key});
          }
@@ -7537,8 +7565,10 @@ sub cmd_listdef
    for my $key (sort keys %def) {
       my $count = 0;
 
+      loggit("pat: %s -> %s",$key,$pat);
       if(($pat eq undef || $key =~ /^$pat$/i) &&
          (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
+        loggit("   *MATCHED*");
         for my $line (ansi_wrap(@def{$key}->{txt},$cwin - $nmax - $wmax - 7)) {
            if($count++ == 0) {
                history(world($conn),sprintf("%-*s %4s %-*s %s",
@@ -7654,7 +7684,10 @@ sub cmd_def
    my ($opt,$reg,$name,$value) = ({},undef,undef,undef);
    
 
+   loggit("txt1: '%s'",$txt);
    my $str = getopt("m:n:E:t:h:b:B:p:c:w:T:Fa:P:fiIq1s:L",$txt,$opt);
+   loggit("txt2: '%s'",$str);
+   
 
    if($str =~ /=/) {
       $name = trim($`);
@@ -7662,7 +7695,6 @@ sub cmd_def
    } else {
       $name = $str;
    }
-
    return if($name =~ /^\s*$/ || $$opt{t}=~ /^\s*$/);
 
    if(!$$opt{h}) {
@@ -7701,6 +7733,8 @@ sub cmd_def
       @def{$name}->{ttl} = $$opt{s} if defined $$opt{s};
       @def{$name}->{cmd} = trim($value) if(trim($value) ne undef);
       @def{$name}->{hits} = 1 if $$opt{1};
+   } else {
+      loggit("Got here");
    }
 }
 
@@ -8323,6 +8357,13 @@ sub ts
    return sprintf("%02d:%02d@%02d/%02d",$hour,$min,$mon,$mday);
 }
 
+sub safe_system
+{
+   my ($cmd, $txt) = @_;
+
+   my $pid = open2(my $cout, my $cin, $cmd);
+}
+
 sub cmd_quote
 {
 #-# summary: Send text to a world from unix command or file.
@@ -8352,10 +8393,14 @@ sub cmd_quote
    my $world = $conn;
    my $opt = {};
 
-   $txt = getopt("d:w:",$txt,$opt,1);
+   $txt = getopt("d:w:e",$txt,$opt,1);
 
    # future implement?
    my $delay = 0;
+   if(defined $$opt{e} && !module_enabled("IPC::Open2")) {
+      return echo($conn,"%% Module IPC::Open2 not enabled, -e option disabled");
+   }
+
    if(defined $$opt{time}) {
       if($$opt{time} =~ /^\s*([\d]+):([\d+]):([\d+])\s*/) {
          if($1 > 24) {
@@ -8406,6 +8451,7 @@ sub cmd_quote
       return;
    } elsif($txt =~ /^([^!`']+)!\s*/) {
       $pre = $1;
+
       open($fd,"$' |") ||
          return echo($conn,"%% Unable to run commmand '$''.");
    } elsif($txt =~ /^([^!`']+)'\s*/) {
@@ -8456,6 +8502,18 @@ sub cmd_recall
    my ($conn,$txt) = @_;
    my ($count,$pat,@out,$gagged,$ts) = 10;
    my $opt = {};
+   my $w = world($conn);
+
+   $count = 5;
+#   for(my $i=$#{@history{$w}};$i >= 0 && $count > 0;$i--) {
+#      if(ansi_remove(@history{$w}->[$i]->{txt}) =~ /\b(?<![@.,%&#-])(\w{2,10}:\/\/)?((?:\w|&#\d{1,5};)[.-]?)+(\.([a-z]{2,15})|((?::\d{1,6})|(?!)))\b(?![@])(\/)?(?:([\w\d?\-=#:%@&.;])+(?:\/(?:([\w\d?\-=#:%@&;.])+))*)?(?<![.,?!-'"])/g) {
+#
+#      if(ansi_remove(@history{$w}->[$i]->{txt}) =~ /(https{0,1}:\/\/)([^ ]+)?(?<![.,?!-'"])/i) {
+#         loggit("%s -> {$1}{$2}{$3}$4$5$6$7$8$9 -> $'",@history{$w}->[$i]->{txt});
+#         $count--;
+#      }
+#   }
+#   return;
 
    return echo($conn,"%% Not connected to a world.") if(no_world());
    $txt = getopt("a:t",$txt,$opt);
@@ -8547,7 +8605,9 @@ sub cmd_listsockets
       if(length(@ws{$key}->{auth} ? "Web [ath]" : "Web") > $maxn) {
          $maxn = length(@ws{$key}->{auth} ? "Web [ath]" : "Web");
       }
-      $maxn = length(@ws{$key}->{ip}) if length(@ws{$key}->{ip}) > $maxn;
+      if(length(@ws{$key}->{hostname}) > $maxn) {
+         $maxn = length(@ws{$key}->{hostname});
+      }
    }
    for my $w (keys %socket) {
       if(defined @socket{$w}->{sock} && $w ne "muddler") {
@@ -8566,7 +8626,7 @@ sub cmd_listsockets
             $maxn,
             @ws{$key}->{auth} ? "Web [ath]" : "Web",
             $maxh,
-            @ws{$key}->{ip},
+            @ws{$key}->{hostname},
             @ws{$key}->{port},
             @state{secure} ? "Yes" : "No",
             "",
@@ -10681,7 +10741,7 @@ START: muddler_style.css
      right: 0px;
      bottom: 0px;
      top: 0px;
-     position: absolute;
+     position: fixed;
      width: 100%;
      height: 100%;
      margin: 0;
@@ -10728,7 +10788,7 @@ START: muddler_style.css
    }
    
    #terminal {
-     position: fixed;
+     position: absolute;
      margin: 0;
      padding: 0;
      border: none;
@@ -10847,7 +10907,7 @@ START: muddler_style.css
 
    .triangle {
        border: 2px solid gray;
-       position: absolute;
+       position: fixed;
        height: 100px;
        width: 100px;
        z-index: 2; 
@@ -10896,7 +10956,18 @@ START: muddler_client.js
    window.addEventListener('focus', window_focused);
 
    // block scrolling on mobile
-   function blockMove() { event.preventDefault() ; }
+   function blockMove() { 
+      event.preventDefault() ;
+   }
+
+//   window.addEventListener("orientationchange", function() {
+      // window.scrollTo(0, document.documentElement.offsetHeight + 1000)
+      // window.scrollTo(0, document.body.scrollHeight + 100);
+      // nestedElement.scrollTo(0, nestedElement.scrollHeight);
+//   });
+
+   // history.scrollRestoration = "manual";
+
 
    var WSClient = (function (window, document, undefined) {
    
@@ -11096,14 +11167,14 @@ START: muddler_client.js
               document.querySelector('#terminal').style.bottom = "30px";
               document.querySelector('#buttonbar').style.display = 
                   "inline-block";
-              document.querySelector('#output').style.fontSize = "6pt";
+              document.querySelector('#output').style.fontSize = "8pt";
               document.querySelector('#output').style.bottom = "74px";
-              document.querySelector('#bar').style.fontSize = "6pt";
-              document.querySelector('#bartime').style.fontSize= "6pt";
-              obj.style.fontSize = "6pt";
+              document.querySelector('#bar').style.fontSize = "8pt";
+              document.querySelector('#bartime').style.fontSize= "8pt";
+              obj.style.fontSize = "8pt";
               obj.scrollTop = obj.scrollHeight;
               document.querySelector('#input').style.bottom = '4px';
-              sendCommand('/web_size ' + get_xy_size("6pt") + '\r\n');
+              sendCommand('/web_size ' + get_xy_size("8pt") + '\r\n');
            } else if(data === "mobile off") {
               var obj = document.getElementById("output");
               document.querySelector('#terminal').style.bottom = 0;
@@ -12128,7 +12199,7 @@ START: muddler_client.js
    })(window, document);
 START: muddler_client.html
    <!DOCTYPE html>
-   <html><head><meta name="viewport" content="width=device-width, maximum-scale=1" charset="UTF-8">
+   <html><head><meta name="viewport" content="width=device-width, maximum-scale=1 interactive-widget=resizes-content" charset="UTF-8">
 
 
    
