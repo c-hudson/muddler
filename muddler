@@ -1525,7 +1525,7 @@ sub ws_echo
       return;
    }
    $msg =~ s/[\r\n]+$//;
-   loggit("WS[%s]: '%s'",$type,$msg);
+   # loggit("WS[%s]: '%s'",$type,$msg);
    eval {
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
@@ -8160,7 +8160,9 @@ sub cmd_help
 #-# ------------------------------------------------------------------------
 #-# Basic Commands:
 #-#   /dc                 :  Disconnect from current world
-#-#   /help [<entry>]     :  Help for commands, keys, or a command
+#-#   /help [<topic>]     :  Topics can be a muddler command, 
+#-#                          "commands" to list all muddler commands, or
+#-#                          "keys" for help on special keyboard keys. 
 #-#   /list [-c]          :  Lists all saved worlds, -c list open connections
 #-#   /quit               :  Quit Muddler
 #-#   /world [-e] <world> :  switch to an world, -e to edit connection info 
@@ -8767,6 +8769,8 @@ sub world_item_populate
          if(@address{$w}->{$name} == 1) {
             dialog_populate($item,"x");
          }
+      } elsif($name eq "decode") {
+         dialog_populate($item,encoding_translate(@address{$w}->{decode}));
       } else {
          dialog_populate($item,@address{$w}->{$name});
       }
