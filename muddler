@@ -220,6 +220,7 @@ sub command_init
    @command{ps}            = sub { return cmd_ps(@_);                      };
    @command{kill}          = sub { return cmd_kill(@_);                    };
    @command{def}           = sub { return cmd_def(@_);                     };
+   @command{rescan}        = sub { return cmd_rescan(@_);                  };
    @command{undef}         = sub { return cmd_undef(@_);                   };
    @command{listdef}       = sub { return cmd_listdef(@_);                 };
    @command{listworlds}    = sub { return cmd_listworlds(@_);              };
@@ -720,7 +721,10 @@ sub handle_login
       defined @socket{$world}->{do_login} &&
       @socket{$world}->{do_login} &&
       defined @address{$world}->{user} &&
-      defined @address{$world}->{pass}) {
+      defined @address{$world}->{pass} &&
+      ((defined @address{$world}->{connect} &&
+      @address{$world}->{connect} eq "connect") ||
+      !defined @address{$world}->{connect})) {
       out($world,"connect %s %s",
           @address{$world}->{user},
           @address{$world}->{pass}
@@ -747,7 +751,7 @@ sub world_encode
    } elsif(@address{$w}->{decode} =~ /^\s*latin\s*$/) {
       return "iso-8859-1";
    } else {
-      @address{$w}->{decode};
+      return @address{$w}->{decode};
   }
 }
 
@@ -775,6 +779,7 @@ sub socket_connect
       @socket{$world}->{host} = $host;        # update possible changed items
       @socket{$world}->{port} = $port;
       @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
+      @socket{$world}->{prompt_count} = 0;
    } else {
       # define connection with everything that is needed.
       @socket{$world} = { name                => $world,
@@ -787,6 +792,7 @@ sub socket_connect
                           created             => time(),
                           do_login            => (defined $$opt{l}) ? 0 : 1,
                           last_send           => time(),
+                          prompt_count        => 0,
                         };
    }
 
@@ -1287,13 +1293,15 @@ sub socket_disconnect
 
    if(defined @socket_lookup{$s}) {
        delete @socket{@socket_lookup{$s}}->{sock};
+       delete @socket{@socket_lookup{$s}}->{socket_pending};
        delete @socket_lookup{$s};
    } else {
       for my $key (keys %socket) {
          if(defined @socket{$key}->{sock} &&
             @socket{$key}->{sock} eq $s) {
             delete @socket{$key}->{sock};
-            delete @socket_lookup{$key}
+            delete @socket_lookup{$key};
+            delete @socket{$key}->{socket_pending};
          }
       }
    }
@@ -1320,7 +1328,7 @@ sub server_hostname
 {
    my $sock = shift;
    my $ip = $sock->peerhost;                           # contains ip address
-   loggit("IP: $ip\n");
+#   loggit("IP: $ip\n");
 
    my $name = gethostbyaddr(inet_aton($ip),AF_INET);
 
@@ -1471,8 +1479,8 @@ sub allowed
    if(defined @state{p_allow}) {
       for my $host (split(/,/,@state{p_allow})) {
          my $pat = glob2re($host);
-         loggit("Ccheck: %s == $pat",@ws{$ws}->{ip});
-         loggit("   *MATCH*") if(@ws{$ws}->{ip} =~ /$pat/i);
+#         loggit("Ccheck: %s == $pat",@ws{$ws}->{ip});
+#         loggit("   *MATCH*") if(@ws{$ws}->{ip} =~ /$pat/i);
          if(@ws{$ws}->{ip} =~ /$pat/i) {
             return 1;
          } elsif(@ws{$ws}->{hostname} =~ /$pat/i) {
@@ -1587,13 +1595,12 @@ sub io
          my $w = @socket_lookup{$sock};
 
          if(sysread($sock,$buf,10240) <= 0) {
-            socket_disconnect($sock);                     # socket closed
-
             if(defined @socket{$w}->{socket_pending} == 1) {
                history($w,"% Connection timed out to ". name($w) . "-$sock");
             } else {
-               history($w,"% Connection closed to ". name($w) . "-$sock");
+               history($w,"% Connection closed to ". name($w));
             }
+            socket_disconnect($sock);                     # socket closed
          } else {
             if(defined @socket{$w}->{socket_pending}) {
                delete @socket{$w}->{socket_pending};
@@ -1728,6 +1735,7 @@ sub io
    }
 
    # show prompt after 1 second?
+   if(1 == 2) {
    for my $w (keys %socket) {
       if(defined @socket{$w}->{buf} &&
          length(@socket{$w}->{buf}) != 0 && 
@@ -1735,10 +1743,11 @@ sub io
          # loggit("#$w-3# '%s'",@socket{$w}->{buf}) if($w eq "bi");
          # history($w,@socket{$w}->{buf},1,1);
          # loggit("time prompt[$w]: '%s'",@socket{$w}->{buf});
-         prompt($w,@socket{$w}->{buf});
+         # prompt($w,@socket{$w}->{buf});
          draw_input($w);
          delete @socket{$w}->{buf};
       }
+   }
    }
    @state{norelease} = 0;
 
@@ -2458,6 +2467,7 @@ sub add_matches
    return $txt;
 }
 
+
 #
 # gagged
 #    Find output that is gagged and flag it as gagged.
@@ -2526,16 +2536,8 @@ sub gagged
             } elsif(defined @def{$key}->{regexp} && 
                     (!defined @def{$key}->{status} ||
                     @def{$key}->{status} == 1)) {
-               @def{$key}->{badregexp} = 0;
-               eval {
-                  $match = 1 if($str =~ /@def{$key}->{regexp}/);
-                  @reg{1} = $1;@reg{2} = $2;@reg{3} = $3;@reg{4} = $4;
-                  @reg{5} = $5;@reg{6} = $6;@reg{7} = $7;@reg{8} = $8;
-                  @reg{9} = $9;
-                  @def{$key}->{badregexp} = 1;
-               };
 
-               if($match) {
+               if(safe_match($str,@def{$key}->{regexp},\%reg)) {
                   if(@def{$key}->{atr} =~ /g/) {
                       $$txt{gagged} = 1;
                       $$txt{keepalive} = 1 if defined @def{$key}->{keepalive};
@@ -3421,6 +3423,14 @@ sub get_original_txt
    }
 }
 
+sub hightime
+{
+   my ($epoch, $microsecs) = Time::HiRes::gettimeofday();
+
+   return strftime("%d-%m-%Y %H:%M:%S.%06d",localtime($epoch)) . "." .
+      sprintf("%06d",$microsecs);
+}
+
 sub draw_output
 {
    my $conn = shift;
@@ -3455,9 +3465,10 @@ sub draw_output_world_new
    }
    my $start = $pos;
 
+   my $foo = 0;
    for(;$cnt <= $x && $pos >= 0;$pos--) {   # walk history
       if(!$$h[$pos]->{gagged} && $$h[$pos]->{internal} != 1) {  # skip?
-         if($$h[$pos]->{txt} eq "") {                          # empty line hack
+         if($$h[$pos]->{txt} eq "") {                        # empty line hack
             unshift(@out,"");
             $cnt++;
          } else {                            # cycle wrapped line
@@ -3468,7 +3479,7 @@ sub draw_output_world_new
                $str = $$h[$pos]->{txt};
             }
             for my $line (reverse ansi_wrap($str,$y)) {
-               if($cnt >= $x) {
+               if($cnt > $x) {
                   last;
                } else {
                   unshift(@out,txt($line));
@@ -3516,7 +3527,23 @@ sub prompt
 
    if($#_ == 0) {
       my $p = ansi_init(@_[0]);
-      @socket{$w}->{prompt} = $p if(ansi_length($p) > 0);
+      if(ansi_length($p) > 0) {
+         @socket{$w}->{prompt} = $p;
+         if(@socket{$w}->{prompt_count} < 3) {
+            if(defined @address{$w}->{connect} &&
+               is_in(@address{$w}->{connect},"prompt","MOO_prompt")) {
+               if(@socket{$w}->{prompt_count} == 0) {
+                  out($w,"%s",@address{$w}->{user});
+               } elsif(@socket{$w}->{prompt_count} == 1) {
+                  out($w,"%s",@address{$w}->{pass});
+               } elsif(@socket{$w}->{prompt_count} == 2 &&
+                  @address{$w}->{connect} eq "MOO_prompt") {
+                  out($w,"%s",@address{$w}->{user});
+               }
+           }
+         }
+      }
+      @socket{$w}->{prompt_count}++;
    } elsif(has_prompt($w)) {
       return ansi_substr(@socket{$w}->{prompt},0,@state{size_y} - 10);
    }
@@ -3860,9 +3887,9 @@ sub key_dump
    my ($conn,$txt,$force) = @_;
    my $w = world($conn);
 
-   shu($conn,-1); 
+  # shu($conn,-1); 
   # loggit("size_x: %s, size_y: %s, offset: '%s'",input_x(),input_y(),line_pos());
-   return;
+#   return;
    my $input = input();
    for my $i (0 .. $#$input) {
       LOGGIT("$i : '%s'\n",join('',@{$$input[$i]}));
@@ -5251,6 +5278,10 @@ sub draw_bar
    $hr -= 12 if($hr > 12);
    $hr = 12 if $hr == 0;
    my $cnt = activity_count();
+   my $connecting =
+      (defined @socket{@state{world}} && 
+         defined @socket{@state{world}}->{socket_pending} &&
+         @socket{@state{world}}->{socket_pending} == 1) ? 1 :0;
 
    if(is_remote()) {
       if(@state{size_x}.@state{size_y} ne @state{bar_size} ||
@@ -5288,7 +5319,8 @@ sub draw_bar
       @state{bar_name} ne name(@state{world}) &&
       @state{bar_more} eq pending(@state{world}) &&
       @state{bar_pos} eq hist_pos(@state{world}) &&
-      @state{size_x}.@state{size_y} eq @state{bar_size}) {
+      @state{size_x}.@state{size_y} eq @state{bar_size} &&
+      @state{connecting} eq $connecting) {
       xy(input_start() - 1,11);
       if(length(@state{bar_name}) > length(name())) {
          PRINTF("%s%s",
@@ -5319,10 +5351,16 @@ sub draw_bar
       @state{bar_pos} = hist_pos(@state{world});
       @state{bar_size} = @state{size_x}.@state{size_y};
       @state{bar_activity} = $cnt;
+      @state{connecting} = $connecting;
+
       # determine activity count, if any.
-      if($cnt >= 1) {
+      if(defined @socket{@state{world}} && 
+         defined @socket{@state{world}}->{socket_pending} &&
+         @socket{@state{world}}->{socket_pending} == 1) {
+         $act = "(Connecting)";
+      } elsif($cnt >= 1) {
          $act = sprintf("(Act%s: %d)",(@state{size_y}<50) ? "" : "ive",$cnt);
-      }
+      } 
 
       my $more = more_bar(@state{world});
       #---
@@ -6012,6 +6050,7 @@ sub world_save
    } else {
       delete @address{$name}->{keepalive};
    }
+   @address{$name}->{connect} = $$data{"Auto Connect Type"};
    @address{$name}->{decode} = encoding_detranslate($$data{Encoding});
    save($conn,"WORLD",$name);
 }
@@ -6558,13 +6597,10 @@ sub cmd_window
    } elsif($txt =~ /^\s*value\s*=\s*(\d+)\s*/) {
       my ($id,$glob,$good) = ($1,trim($'),0);
       my $reg = glob2re($glob);
-      eval {                                      # check if pattern is bad
-         if ("badglob" =~ /$reg/) {
-            # nothing
-         } 
-         $good = 1;
-      };
-      return echo($conn,"%% Invalid pattern '%s' specified",$glob) if(!$good);
+
+      if(safe_match("teststring",$reg) eq undef) {
+         return echo($conn,"%% Invalid pattern '%s' specified",$glob);
+      }
 
       @state{window} = {} if !defined @state{window};
       @state{reverse_window} = {} if !defined @state{reverse_window};
@@ -7044,14 +7080,25 @@ sub cmd_log
 #
 sub safe_match
 {
-   my ($txt,$pat) = @_;
+   my $txt = ansi_remove(shift);
+   my ($pat,$wild) = @_;
+   my $match;
 
    return 1 if $pat eq undef;
-
-   my $match = 0;
    eval {
-      $match = 1 if($txt =~ /^\s*$pat\s*$/);
+      if($txt =~ /$pat/) {
+         if(ref($wild) eq "HASH") {
+            $$wild{1} = $1;$$wild{2} = $2;$$wild{3} = $3;$$wild{4} = $4;
+            $$wild{5} = $5;$$wild{6} = $6;$$wild{7} = $7;$$wild{8} = $8;
+            $$wild{9} = $9;
+         }
+         $match = 1;
+      } else {
+        $match = 0;
+      }
    };
+
+   # return undef if bad regexp, 1 or 0 if match/nomatch
    return $match;
 }
 
@@ -7082,7 +7129,7 @@ sub cmd_showset
    $pat = glob2re($txt) if($txt ne undef);
    for my $key (keys %state) {
       if(@state{$key} !~ /^\s*(0|off)\s*$/ && $key =~ /^(p|set)_/) {
-         if(safe_match($',$pat)) {
+         if(safe_match($',"^\s*$pat\s*\$")) {
             echo($conn,"# %-15s %s",$',@state{$key});
          }
       }
@@ -7565,20 +7612,18 @@ sub cmd_listdef
    for my $key (sort keys %def) {
       my $count = 0;
 
-      loggit("pat: %s -> %s",$key,$pat);
       if(($pat eq undef || $key =~ /^$pat$/i) &&
          (!defined $$opt{w} || lc(@def{$key}->{world}) eq lc($$opt{w}))) {
-        loggit("   *MATCHED*");
         for my $line (ansi_wrap(@def{$key}->{txt},$cwin - $nmax - $wmax - 7)) {
            if($count++ == 0) {
-               history(world($conn),sprintf("%-*s %4s %-*s %s",
+               history(world($conn),sprintf("%-*s %4s %-*s '%s'",
                     $nmax,$key,
                     @def{$key}->{atr},
                     $wmax,@def{$key}->{world},
                     txt($line)
                    ),0);
             } else {
-               history(world($conn),sprintf("%-*s %4s %-*s %s",
+               history(world($conn),sprintf("%-*s %4s %-*s '%s'",
                     $nmax,"",
                     "",
                     $wmax,"",
@@ -7684,10 +7729,7 @@ sub cmd_def
    my ($opt,$reg,$name,$value) = ({},undef,undef,undef);
    
 
-   loggit("txt1: '%s'",$txt);
    my $str = getopt("m:n:E:t:h:b:B:p:c:w:T:Fa:P:fiIq1s:L",$txt,$opt);
-   loggit("txt2: '%s'",$str);
-   
 
    if($str =~ /=/) {
       $name = trim($`);
@@ -7733,8 +7775,6 @@ sub cmd_def
       @def{$name}->{ttl} = $$opt{s} if defined $$opt{s};
       @def{$name}->{cmd} = trim($value) if(trim($value) ne undef);
       @def{$name}->{hits} = 1 if $$opt{1};
-   } else {
-      loggit("Got here");
    }
 }
 
@@ -7761,16 +7801,11 @@ sub cmd_undef
    }
 
    for my $key (sort keys %def) {
-      eval {
-         if($key =~ /^$pat$/i) {
-            $name = $key;
-            $count++;
-            delete @def{$key};
-         }
-      };
-      if($@) {
-         return echo($conn,"%% UNDEF: Aborting, Invalid pattern '%s'");
-      }
+      if(safe_match($key,"^$pat\$")) {
+         $name = $key;
+         $count++;
+         delete @def{$key};
+      } 
    }
 
    if($count == 1) {
@@ -8456,15 +8491,15 @@ sub cmd_quote
 
       open($fd,"$' |") ||
          return echo($conn,"%% Unable to run commmand '$''.");
-   } elsif($txt =~ /^([^!`']+)'\s*/) {
+   } elsif($txt =~ /^([^!`']*)'\s*/) {
       $pre = $1;
       open($fd,"< $'") ||
-         return echo($conn,"%% Unable to open file '$txt' for reading.");
-   } elsif($txt =~ /^([^!`']+)`\s*/) {
+         return echo($conn,"%% Unable to open file '$'' for reading.");
+   } elsif($txt =~ /^([^!`']*)`\s*/) {
       $pre = $1;
       return echo($conn,"%% Quoting muddler commands not supported yet");
    } else {
-      return echo($conn,"%% QUOTE: missing command character");
+      return echo($conn,"%% QUOTE: missing command character ($txt)");
    }
 
   
@@ -8542,35 +8577,63 @@ sub cmd_recall
 
    $pat = glob2re($pat);
    for(my $i=$#{@history{@state{world}}};$i >= 0 && $count > 0;$i--) {
-      eval {
-         if(($gagged || !$gagged && !@history{$w}->[$i]->{gagged}) &&
-            @history{$w}->[$i]->{internal} == 0&& 
-            ansi_remove(@history{@state{world}}->[$i]->{txt}) =~ /$pat/) {
+      if(($gagged || !$gagged && !@history{$w}->[$i]->{gagged}) &&
+         @history{$w}->[$i]->{internal} == 0 && 
+         safe_match(@history{@state{world}}->[$i]->{txt},$pat)) {
 
-            # order will be backwards, so store.
-            if($$opt{t}) {
-               $ts = "[" . ts(@history{$w}->[$i]->{ts}) . "] ";
-            } else {
-               $ts = undef;
-            }
-
-            if($gagged && defined @history{$w}->[$i]->{original}) {
-               unshift(@out,$ts . @history{$w}->[$i]->{original});
-            } else {
-               unshift(@out,$ts . @history{$w}->[$i]->{txt});
-            }
-
-            $count--;
+         # order will be backwards, so store.
+         if($$opt{t}) {
+            $ts = "[" . ts(@history{$w}->[$i]->{ts}) . "] ";
+         } else {
+            $ts = undef;
          }
-      };
-      if($@) {
-         LOGGIT("ERROR: $@\n");
+
+         if($gagged) {
+            unshift(@out,$ts . @history{$w}->[$i]->{txt});
+         } else {
+            unshift(@out,$ts . @history{$w}->[$i]->{txt});
+         }
+         $count--;
       }
    }
    for my $i (0 .. $#out) {
 #      echo_wrap(@out[$i]);                       # output in correct order
       history(world($conn),@out[$i]);              # output in correct order
    }
+}
+
+sub cmd_rescan
+{
+#-# summary: Apply any new gags to the recall buffer
+#-# ------------------------------------------------------------------------
+#-#      Rescans the current history buffer for any lines that should
+#-#      be gagged based upon the current defined gags. This is useful
+#-#      if new rules were put in place.
+#-#
+#-# Example:
+#-#      /rescan
+#-# ------------------------------------------------------------------------
+   my ($conn,$txt) = @_;
+   my $w = world($conn);
+   my $count = 0;
+
+   return echo($conn,"%% Not connected to a world.") if(no_world());
+
+   for(my $i=$#{@history{@state{world}}};$i >= 0;$i--) {
+      if(!@history{$w}->[$i]->{gagged}) {
+         for my $key (keys %def) {
+            if(@def{$key}->{atr} =~ /g/ && 
+               (@def{$key}->{world} eq undef ||
+               lc(@def{$key}->{world}) eq lc($w)) &&
+               safe_match(@history{$w}->[$i]->{txt},@def{$key}->{regexp})) {
+               loggit("  * MATCHED *");
+               @history{$w}->[$i]->{gagged} = 1;
+               $count++;
+            }
+         }
+      }
+   }
+   echo($conn,"%% $count records were newly gagged.");
 }
 
 #
@@ -8738,7 +8801,8 @@ sub cmd_world
    } elsif(is_remote()) {
       wc_out("/world %s\n",$txt);
    } elsif(!defined @address{lc($txt)} || $txt eq "muddler") {
-      return echo($conn,"% CONNECT: no such world '%s'",$txt);
+      #return echo($conn,"% CONNECT: no such world '%s'",$txt);
+      world_dialog_create($conn,$txt);
    } elsif(defined @socket{lc($txt)} && defined @socket{lc($txt)}->{sock}) {
       # loggit("# switch");
       switch_world($conn,lc($txt));
@@ -8798,6 +8862,7 @@ sub world_dialog_create
                "Port:word," .
                "KeepAlive CMD:text," .
                "Encoding:cycle." . join(".",encoding_values()) .",".
+               "Auto Connect Type:cycle.connect.prompt.MOO_prompt," .
                "Use SSL to connnect:check," .
                "Log output to $w\.log:check",
                ["Cancel:dialog_cancel",
@@ -8808,7 +8873,8 @@ sub world_dialog_create
    # populate dialog box data structure with values
    dialog_populate($i++,$w);
 
-   for my $id (split(",","user,pass,host,port,keepalive,decode,ssl,log")) {
+   for my $id ("user","pass","host","port","keepalive","decode","connect",
+               "ssl","log") {
       world_item_populate($i++,$w,$id);
    }
 
