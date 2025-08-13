@@ -2852,13 +2852,15 @@ sub loggit_world
 
     if(!defined @state{"$w.log"}) {
        if(defined @address{$w}->{decode}) {
-          open($log,">>:". world_encode($w), "$w.log") || return;
+          open($log,">> :encoding(". world_encode($w).")", "$w.log") || return;
        } else {
           open($log,">> $w.log") || return;
        }
+       @state{"$w.log"} = $log;
     } else {
        $log = @state{"$w.log"};
     }
+    $log->autoflush(1);
 
     if($txt =~ /\e/) {
        printf($log "[%s] %s\n",ts(),txt(ansi_init($txt)));
