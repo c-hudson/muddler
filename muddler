@@ -145,38 +145,41 @@ sub key_init
    for my $key (keys %key) {
       undef(@key{$key});
    }
-   @key{def}                  = sub { return key_default(@_);          };
-   @key{1}                    = sub { return key_ctl_a(@_);            };
-   @key{2}                    = sub { return key_left(@_);             };
-   @key{4}                    = sub { return key_dump(@_);             };
-   @key{5}                    = sub { return key_ctl_e(@_);            };
-   @key{6}                    = sub { return key_right(@_);            };
-   @key{8}                    = sub { return key_delete(@_);           };
-   @key{9}                    = sub { return key_tab(@_);              };
-   @key{10}                   = sub { return key_return(@_);           };
-   @key{12}                   = sub { return key_ctl_l(@_);            };
-   @key{14}                   = sub { return key_ctl_n(@_);            };
-   @key{16}                   = sub { return key_ctl_p(@_);            };
-   @key{18}                   = sub { return key_ctl_r(@_);            };
-   @key{21}                   = sub { return key_ctl_u(@_);            };
-   @key{23}                   = sub { return key_ctl_w(@_);            };
-   @key{27}                   = sub { return key_escape(@_);           };
-   @key{127}                  = sub { return key_delete(@_);           };
-   @key{multi}                = sub { return key_multi(@_);            };
-   @key{multi_119}            = sub { return key_esc_w(@_);            };
-   @key{multi_113}            = sub { return key_esc_q(@_);            };
-   @key{multi_106}            = sub { return key_esc_j(@_);            };
-   @key{multi_91_53_126}      = sub { return key_pgup(@_);             };
-   @key{multi_91_54_126}      = sub { return key_pgdn(@_);             };
-   @key{multi_91_65}          = sub { return key_up(@_);               };
-   @key{multi_91_66}          = sub { return key_down(@_);             };
-   @key{multi_91_67}          = sub { return key_right(@_);            };
-   @key{multi_91_68}          = sub { return key_left(@_);             };
-   @key{multi_91_49_59_50_65} = sub { return key_shift_up(@_);         };
-   @key{multi_91_49_59_50_66} = sub { return key_shift_down(@_);       };
-   @key{multi_91_90}          = sub { return key_shift_tab(@_);        };
-   @key{multi_91_49_126}      = sub { return key_home(@_);             };
-   @key{multi_91_52_126}      = sub { return key_end(@_);              };
+   @key{def}                      = sub { return key_default(@_);       };
+   @key{1}                        = sub { return key_ctl_a(@_);         };
+   @key{2}                        = sub { return key_left(@_);          };
+   @key{4}                        = sub { return key_dump(@_);          };
+   @key{5}                        = sub { return key_ctl_e(@_);         };
+   @key{6}                        = sub { return key_right(@_);         };
+   @key{8}                        = sub { return key_delete(@_);        };
+   @key{9}                        = sub { return key_tab(@_);           };
+   @key{10}                       = sub { return key_return(@_);        };
+   @key{12}                       = sub { return key_ctl_l(@_);         };
+   @key{14}                       = sub { return key_ctl_n(@_);         };
+   @key{16}                       = sub { return key_ctl_p(@_);         };
+   @key{18}                       = sub { return key_ctl_r(@_);         };
+   @key{21}                       = sub { return key_ctl_u(@_);         };
+   @key{23}                       = sub { return key_ctl_w(@_);         };
+   @key{27}                       = sub { return key_escape(@_);        };
+   @key{127}                      = sub { return key_delete(@_);        };
+   @key{multi}                    = sub { return key_multi(@_);         };
+   @key{multi_119}                = sub { return key_esc_w(@_);         };
+   @key{multi_113}                = sub { return key_esc_q(@_);         };
+   @key{multi_106}                = sub { return key_esc_j(@_);         };
+   @key{multi_91_53_126}          = sub { return key_pgup(@_);          };
+   @key{multi_91_54_126}          = sub { return key_pgdn(@_);          };
+   @key{multi_91_65}              = sub { return key_up(@_);            };
+   @key{multi_91_66}              = sub { return key_down(@_);          };
+   @key{multi_91_67}              = sub { return key_right(@_);         };
+   @key{multi_91_68}              = sub { return key_left(@_);          };
+   @key{multi_91_49_59_50_65}     = sub { return key_shift_up(@_);      };
+   @key{multi_91_49_59_50_66}     = sub { return key_shift_down(@_);    };
+   @key{multi_91_90}              = sub { return key_shift_tab(@_);     };
+   @key{multi_91_49_126}          = sub { return key_home(@_);          };
+   @key{multi_91_52_126}          = sub { return key_end(@_);           };
+   @key{multi_91_52_126}          = sub { return key_end(@_);           };
+   @key{multi_91_49_59_51_65}     = sub { return key_altup(@_);         };
+   @key{multi_91_49_59_51_66}     = sub { return key_altdown(@_);       };
 
    # populate the gaps so the code knows to traverse through all the
    # characters in the definition instead of just the last one.
@@ -214,6 +217,10 @@ sub command_init
    @command{key_down}      = sub { return key_down(@_);                    };
    @command{key_pgdn}      = sub { return key_pgdn(@_);                    };
    @command{key_pgup}      = sub { return key_pgup(@_);                    };
+   @command{key_altup}     = sub { return key_altup(@_);                   };
+   @command{key_altdown}   = sub { return key_altdown(@_);                 };
+   @command{key_shiftup}   = sub { return key_shiftup(@_);                 };
+   @command{key_shiftdown} = sub { return key_shiftdown(@_);               };
    @command{web_size}      = sub { return cmd_web_size(@_);                };
    @command{repeat}        = sub { return cmd_repeat(@_);                  };
    @command{echo}          = sub { return cmd_echo(@_);                    };
@@ -229,6 +236,7 @@ sub command_init
    @command{update}        = sub { return cmd_update(@_);                  };
    @command{mobile}        = sub { return cmd_mobile(@_);                  };
    @command{setup}         = sub { return cmd_set(@_);                     };
+   @command{keys}          = sub { return cmd_keys(@_);                    };
    @command{log}           = sub { return cmd_log(@_);                     };
    @command{more}          = sub { return cmd_more(@_);                    };
    @command{common}        = sub { return cmd_common(@_);                  };
@@ -274,7 +282,12 @@ sub callback_init
    @call{world_save}            = sub { return world_save(@_) };
    @call{world_connect}         = sub { return world_connect(@_) };
    @call{world_delete}          = sub { return world_delete(@_) };
+   @call{world_help}            = sub { return world_help(@_) };
    @call{set_save}              = sub { return set_save(@_) };
+   @call{key_cancel}            = sub { return key_cancel(@_) };
+   @call{key_save}              = sub { return key_save(@_) };
+   @call{key_help}              = sub { return key_help(@_) };
+   @call{key_help}              = sub { return key_help(@_) };
 }
 
 sub cbreak {
@@ -2450,7 +2463,6 @@ sub add_matches
              my $mime = encode_base64($$reg{$i});
              $mime =~ s/\r|\n//g;
              $txt = $before . $mime . $after;
-             loggit("got here: $txt");
          }
          
          eval {
@@ -3765,12 +3777,20 @@ sub key_end
 
 sub key_shift_up
 {
-  key_up(@_,1);
+   my ($conn,$size) = @_;
+
+   loggit("Shift_key_up: called");
+   return wc_out("/key_shiftup") if(is_remote());
+   handle_up($conn,"Shift Up/Down");
 }
 
 sub key_shift_down
 {
-  key_down(@_,1);
+   my ($conn,$size) = @_;
+
+   return wc_out("/key_shiftdown") if(is_remote());
+
+   handle_down($conn,"Shift Up/Down");
 }
 
 #
@@ -3786,7 +3806,7 @@ sub key_pgup
 
    return wc_out("/key_pgup") if(is_remote());
 
-   scroll_history($conn,-1);
+   handle_up($conn,"PGUP/PGDN");
 }
 
 #
@@ -3800,13 +3820,7 @@ sub key_pgdn
 
    return wc_out("/key_pgdn") if(is_remote());
 
-   my $w = world($conn);
-   if(in_hist($w)) {
-      scroll_history($conn,1);
-   } else {
-      reset_more($w,1);
-      release_some_pending($conn,$w,1);
-   }
+   handle_down($conn,"PGUP/PGDN");
 }
 
 sub print_state
@@ -4337,22 +4351,24 @@ sub key_delete
          } else {
             PRINTF("\b\033[P");                # delete character under cursor
          }
-         for my $i (input_x(1) .. @state{size_x}) {
-            my $pos=((@state{input_offset} + $i - input_start() + 1)
-                    * (@state{size_y} - 1));
-#            loggit("Test1: '%s' != '%s'",$i,input_x(1));
-#            loggit("Test2: '%s' == '%s'",input_x(),input_x(1));
-#           loggit("Test3: '%s' >= '%s'",$#{$$input[-1]},$pos-@state{size_y}+1);
-            if($i != input_x(1) &&                     # not on cursor's line
-               input_x() == input_x(1) &&           # not when moving up line
-               $#{$$input[-1]} >= $pos - @state{size_y} + 1) {     # past EOL
-               xy($i,0);
-               PRINTF("\033[P");
-            }
-#            loggit("Test2: '%s' <= '%s'",$pos,$#{$$input[-1]});
-            if($pos <= $#{$$input[-1]}) {
-               xy($i,@state{size_y} - 1);
-               PRINTF("%s",$$input[-1]->[$pos]);
+
+         if(in_dialog()) {
+            xy(input_x(),dialog_max() + 5 + dialog_input_size());
+            PRINTF("_");
+         } else {
+            for my $i (input_x(1) .. @state{size_x}) {
+               my $pos=((@state{input_offset} + $i - input_start() + 1)
+                       * (@state{size_y} - 1));
+               if($i != input_x(1) &&                  # not on cursor's line
+                  input_x() == input_x(1) &&        # not when moving up line
+                  $#{$$input[-1]} >= $pos - @state{size_y} + 1) {  # past EOL
+                  xy($i,0);
+                  PRINTF("\033[P");
+               }
+               if($pos <= $#{$$input[-1]}) {
+                  xy($i,@state{size_y} - 1);
+                  PRINTF("%s",$$input[-1]->[$pos]);
+               }
             }
          }
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
@@ -4521,6 +4537,8 @@ sub key_default
 
    return if !console();
     update_scroll_region("input");
+
+   return if dialog_raw($conn);
 
    my $input = input();
    # spell checker code
@@ -4703,7 +4721,8 @@ sub key_right
    return if !console();
 
    my $input = input();
-   if(line_pos() > $#{$$input[-1]}) {
+ 
+   if(in_dialog($conn) || line_pos() > $#{$$input[-1]}) {
      # do nothing, already at end of line
    } elsif(input_y() == size_y() - 1 &&              # found end of input buff 
            input_x() == size_x()) {
@@ -4782,6 +4801,83 @@ sub mstate
 }
 
 #
+# input_line_up
+#    move the cursor one line up
+#
+sub input_line_up
+{
+   my $conn = shift;
+
+   if(line_pos() > @state{size_y} -2) {
+      line_pos(line_pos() - @state{size_y} + 1);
+      update_input_offset();
+      draw_input($conn);
+   }
+}
+
+#
+# switch_world_up
+#    Determine what world should be switched to when we cycle up through
+#    the worlds and switch to it.
+#
+sub switch_world_up
+{
+   my ($conn,$txt,$force) = @_;
+   my $w = world($conn);
+   my $flag = 0;
+   my $first;
+
+   if((my $active = get_active($w))) {                    # try most active
+      return switch_world($conn,$active);
+   } else {
+      for my $key (sort {lc($a) cmp lc($b)} keys %socket) {  # alphabetically
+         $first = $key if !defined $first;
+
+         if(defined @socket{$key}->{sock} || $force) {
+            if($key eq $w) {
+               $flag = 1;
+            } elsif($flag) {
+               return switch_world($conn,$key);
+            }
+         }
+      }
+
+      return switch_world($conn,$first);                 # roll over to first
+   }                                                     # when nothing found
+}
+
+#
+# switch_world_down
+#    Determine what world should be switched to when we cycle down through
+#    the worlds and switch to it.
+#
+sub switch_world_down
+{
+   my ($conn,$txt,$force) = @_;
+   my $w = world($conn);
+   my $prev;
+
+   if((my $active = get_active($w))) {                    # try most active
+      return switch_world($conn,$active);
+   } else {
+      for my $key (sort {lc($a) cmp lc($b)} keys %socket) {  # alphabetically
+         if(defined @socket{$key}->{sock} || $force) {
+            # if the world is the first, muddler should switch to the
+            # last world, but we don't know it yet. Let the loop finish
+            # so we can get the last entry and switch to it after the loop
+            # finishes.
+            if($key eq $w and defined $prev) {
+               return switch_world($conn,$prev);
+            }
+            $prev = $key;
+         }
+      }
+      return switch_world($conn,$prev);               # switch to last world 
+   }
+}
+
+
+#
 # key_up
 # 
 sub key_up
@@ -4793,40 +4889,110 @@ sub key_up
 
    return wc_out("/key_up") if(is_remote());
 
-   if(in_dialog()) {
+   if(in_dialog()) {                                   # handle dialog
       if(dialog_x() == 1) {
          dialog_x(dialog_items() + 2);
       } else {
          dialog_x(dialog_x()-1);
       }
       return xy(input_x(),input_y());
-   }
-   
-   if(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
-      if(line_pos() > @state{size_y} - 1) {
-         line_pos(line_pos() - @state{size_y} - 1);
-         update_input_offset();
-         draw_input($conn);
-      }
-      return;
-   } elsif((my $active = get_active($w))) {                 # try most active
-      return switch_world($conn,$active);
    } else {
-      for my $key (sort {$a cmp $b} keys %socket){      # next alphabetically
-         if(defined @socket{$key}->{sock} || $force ||
-            (defined @pending{$key} && $#{@pending{$key}} >= 0)) {
-            $first = $key if !defined $first;
-            if($key eq $w) {
-               $tmp = 1;
-            } elsif($tmp) {
-               return switch_world($conn,$key);
-            }
-         }
-      }
+      handle_up($conn,"Up/Down");
    }
-   # Try first on list if not current world
-   delete @socket{muddler} if($first ne "muddler");
-   switch_world($conn,$first) if(defined $first && $first ne $w);
+}
+
+#
+# handle_up
+#   Generic handle alt/shift/pg up key
+#
+sub handle_up
+{
+   my ($conn,$type) = @_;
+
+   if(@state{"p_key_$type"} eq "InputHistory") {
+      key_ctl_p(@_);
+   } elsif(@state{"p_key_$type"} eq "InputMotion") {
+      input_line_up($conn);
+   } elsif(@state{"p_key_$type"} eq "SwitchWorld") {
+      switch_world_up($conn);
+   } elsif(@state{"p_key_$type"} eq "History") {
+      scroll_history($conn,-1);
+   } else {
+      switch_world_up($conn);
+   }
+}
+
+#
+# handle_up
+#   Generic handle alt/shift/pg down key
+#
+sub handle_down
+{
+   my ($conn,$type) = @_;
+
+   if(@state{"p_key_$type"} eq "InputHistory") {
+      key_ctl_n(@_);
+   } elsif(@state{"p_key_$type"} eq "InputMotion") {
+      input_line_down($conn);
+   } elsif(@state{"p_key_$type"} eq "SwitchWorld") {
+      switch_world_down($conn);
+   } elsif(@state{"p_key_$type"} eq "History") {
+      scroll_history_down($conn);
+   } else {
+      switch_world_down($conn);
+   }
+}
+
+sub key_altup
+{
+   my ($conn,$txt,$force) = @_;
+
+   return wc_out("/key_altup") if(is_remote());
+
+   handle_up($conn,"Alt Up/Down");
+}
+
+sub key_altdown
+{
+   my ($conn,$txt,$force) = @_;
+
+   return wc_out("/key_altdown") if(is_remote());
+
+   handle_down($conn,"Alt Up/Down");
+}
+
+#
+# input_line_down
+#   Move the cursor down one line in the input buffer.
+#
+sub input_line_down
+{
+   my $conn = shift;
+   my $input = input();
+   if(line_pos() + @state{size_y} - 1 > $#{$$input[-1]}) {
+      key_end($conn);
+   } else {
+      line_pos(line_pos() + @state{size_y} - 1);
+      update_input_offset();
+      draw_input($conn);
+   }
+   return;
+}
+
+#
+# scroll_history_down
+#   User has requested that muddler scroll the history down
+#
+sub scroll_history_down
+{
+   my $conn = shift;
+   
+   if(in_hist($conn)) {
+      scroll_history($conn,1);
+   } else {
+      reset_more($conn,1);
+      release_some_pending($conn,world($conn),1);
+   }
 }
 
 #
@@ -4843,39 +5009,15 @@ sub key_down
    return wc_out("/key_up") if(is_remote());
 
    if(in_dialog()) {
-      if(dialog_items() + 3 <= dialog_x() + 1) {
+      if(dialog_items() + dialog_buttons() -1 < dialog_x()) {
          dialog_x(1);
       } else {
-         dialog_x(dialog_x()+1);
+         dialog_x(dialog_x() + 1);
       }
-      return xy(input_x(),input_y());
-   } elsif(@state{p_updown} eq "Cursor Movement" && is_console($conn)) {
-      my $input = input();
-      if(line_pos() + @state{size_y} - 1 > $#{$$input[-1]}) {
-         key_end(@_);
-      } else {
-         line_pos(line_pos() + @state{size_y} - 1);
-         update_input_offset();
-         draw_input($conn);
-      }
-      return;
-   } elsif((my $active = get_active($w))) {                # try most active
-      return switch_world($conn,$active);
+      xy(input_x(),input_y());
    } else {
-      for my $key (reverse sort {$a cmp $b} keys %socket){      # next alpha
-         if(defined @socket{$key}->{sock} || $force ||
-            (defined @pending{$key} && $#{@pending{$key}} >= 0)) {
-            $first = $key if !defined $first;
-            if($key eq $w) {
-               $tmp = 1;
-            } elsif($tmp) {
-               return switch_world($conn,$key);
-            }
-         }
-      }
+      handle_down($conn,"Up/Down");
    }
-   # Try first on list if not current world
-   switch_world($conn,$first) if(defined $first && $first ne $w);
 }
 
 #
@@ -4901,7 +5043,7 @@ sub switch_world
    my ($conn,$world) = @_;
    my $w = world($conn);
 
-   return if $world eq undef;
+   return if($world eq undef || $w eq $world);
 
    mstate($conn,"world_last",$w);
 
@@ -5088,7 +5230,7 @@ sub key_process
    
    @state{key_last} = time();
    for my $ch (split(//,$input)) {
-#      LOGGIT("ch: '%s' -> '%s'",ord($ch),$ch);
+      # LOGGIT("ch: '%s' -> ''",ord($ch),$ch);
       if(defined @key{ord($ch)}) {
          &{@key{ord($ch)}}(@state{world},$ch);
       } elsif(defined @state{multikey}) {
@@ -5777,26 +5919,42 @@ sub dialog_init
    @state{dialog}->{input_x} = 1;
    @state{dialog}->{input_offset} = 1;
 
-   for my $i (split(/,/,$definition)) {                 # find max
-      $count++;
-      my ($name,$type) = split(/:/,$i);
-      if($type eq "check") {
-         $lines++ if($toggle == 0);
-         $toggle = ($toggle + 1) % 2;
-      } else {
+   if($definition =~ /^text:/) {
+      for my $l (ansi_wrap($',@state{size_y}-5)) {
+         $count++;
          $lines++;
+         @state{dialog}->{$count} = {};
+         @state{dialog}->{$count}->{type} = "raw";
+         @state{dialog}->{$count}->{name} = "";
+         @state{dialog}->{$count}->{line_pos} = 0;
+         @state{dialog}->{$count}->{input} = [[ split(//,txt($l)) ]];
+         @state{dialog}->{raw} = 1;
       }
-      my $size = length($name);
-      $max = $size if($max < $size && $type  ne "check");
-      @state{dialog}->{$count} = {};
-      @state{dialog}->{$count}->{type} = $type;
-      @state{dialog}->{$count}->{name} = $name;
-      @state{dialog}->{$count}->{line_pos} = 0;
-      if($type =~ /^cycle\.([^\.]+)/) {
-         @state{dialog}->{$count}->{input} = [[ split(//,$1) ]];
-      } else {
-         @state{dialog}->{$count}->{input} = [[ ]];
+      $count--;
+      $lines--;
+   } else {
+      for my $i (split(/,/,$definition)) {                 # find max
+         $count++;
+         my ($name,$type) = split(/:/,$i);
+         if($type eq "check") {
+            $lines++ if($toggle == 0);
+            $toggle = ($toggle + 1) % 2;
+         } else {
+            $lines++;
+         }
+         my $size = length($name);
+         $max = $size if($max < $size && $type  ne "check");
+         @state{dialog}->{$count} = {};
+         @state{dialog}->{$count}->{type} = $type;
+         @state{dialog}->{$count}->{name} = $name;
+         @state{dialog}->{$count}->{line_pos} = 0;
+         if($type =~ /^cycle\.([^\.]+)/) {
+            @state{dialog}->{$count}->{input} = [[ split(//,$1) ]];
+         } else {
+            @state{dialog}->{$count}->{input} = [[ ]];
+         }
       }
+      @state{dialog}->{raw} = 0;
    }
 
    @state{dialog}->{max} = $max;
@@ -5890,6 +6048,8 @@ sub dialog_draw
                 rjust(join('',@{@state{dialog}->{$i}->{input}->[-1]}),
                       dialog_input_size(),"_")
                );
+      } elsif(dialog_type($i) eq "raw") {
+         printf(" %s\n",dialog_value($i));
       } elsif(dialog_type($i) =~ /^cycle\./) {
          if(dialog_value($i) eq "") {
             dialog_populate($i,cycle_first($i));
@@ -5956,7 +6116,9 @@ sub dialog_x
    return if !in_dialog();
 
    if($#_ == -1) {
-      if(defined @state{dialog} &&
+      if(dialog_raw()) {
+         return dialog_items() + dialog_buttons();
+      } elsif(defined @state{dialog} &&
          defined @state{dialog}->{input_x}) {
          return @state{dialog}->{input_x};
       }
@@ -5964,6 +6126,20 @@ sub dialog_x
       @state{dialog}->{input_x} = shift;
    } else {
       die("dialog_x supports either no or one arguements");
+   }
+}
+
+#
+# dialog_raw
+#   Determine if the dialog is in "raw" display text mode
+#
+sub dialog_raw
+{
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{raw}) {
+      return @state{dialog}->{raw};
+   } else {
+      return 0;
    }
 }
 
@@ -5980,6 +6156,28 @@ sub world_connect
    my $conn = @state{dialog}->{conn};
    world_save();
    cmd_world($conn,$name);
+}
+
+sub world_help
+{
+#-# ------------------------------------------------------------------------
+#-# KeepAlive CMD: Text sent to the world so that your connection is not
+#-#   Dropped. Set this to "none" if you don't want a keep-a-live sent.
+#-# 
+#-# Auto Connect Type: Choose how to auto login to a world.
+#-#   Connect:    uses the 'connect user password' format
+#-#   prompt:     When a prompt is detected, the user is sent for the first
+#-#               prompt, and the password for the second prompt.
+#-#   MOO_prompt: Similar to moo prompt but sends the user name a second
+#-#               time at the third prompt.
+#-# ------------------------------------------------------------------------
+   my $conn = @state{dialog}->{conn};
+
+   my $tmp = @state{dialog};
+   dialog_init($conn,"text:" . @state{help}->{"world_help"},
+               ["Ok:key_cancel"],1);
+   @state{dialog}->{tmp_dialog} = $tmp;
+   draw_screen($conn);
 }
 
 #
@@ -7436,13 +7634,13 @@ sub load
    while(<$file>) {
       my $orig = $_;
       s/\r|\n//g;
-      if(/^([^: ]+):{(.*)}$/) {                # handle new world format
+      if(/^([^:]+):{(.*)}$/) {                # handle new world format
          if($2 eq "%DELETE%") {
             delete @address{$1};
          } else {
             hashsplit($1,$2);
          }
-      } elsif(/^([^: ]+):"(.*)"$/) {               # handle new set format
+      } elsif(/^([^:]+):"(.*)"$/) {               # handle new set format
          if($2 eq "%DELETE%") {
             delete @state{$1};
          } else {
@@ -7518,7 +7716,7 @@ sub is_loggedin
    my ($conn) = @_;
    my $w = world($conn);
 
-   if(defined @socket{$w}->{sock}) {
+   if(defined @socket{$w} && defined @socket{$w}->{sock}) {
       @socket{$w}->{created} = time() if !defined @socket{$w}->{created};
 
       if((@socket{$w}->{do_login} && @socket{$w}->{connected}) ||
@@ -8199,7 +8397,7 @@ sub cmd_help
 #-#   /dc                 :  Disconnect from current world
 #-#   /help [<topic>]     :  Topics can be a muddler command, 
 #-#                          "commands" to list all muddler commands, or
-#-#                          "keys" for help on special keyboard keys. 
+#-#                          "keys" for re-mapping keys and key definitions
 #-#   /list [-c]          :  Lists all saved worlds, -c list open connections
 #-#   /quit               :  Quit Muddler
 #-#   /world [-e] <world> :  switch to an world, -e to edit connection info 
@@ -8221,19 +8419,21 @@ sub cmd_help
                          );
                }
             } else {
-               history(world($conn),sprintf("/%-15s | %s",$item,"n/a"));
+               echo(world($conn),sprintf("/%-15s | %s",$item,"n/a"));
             }
 #         } else {                                     # tf null commands?
 #            history(world($conn),sprintf("/%-15s | %s",$item,"N/A"));
          }
       }
    } elsif(trim($cmd) =~ /^keys{0,1}$/) {
+      echo($conn,"%s",@state{help}->{"cmd_keys"});
+      echo($conn,"\nGeneral Key Bindings:");
       for my $item (sort grep {/^key_/} keys %{@state{summary}}) {
          if($item =~ /^key_/) {
             my $name = $';
             $name =~ s/_/-/;
             $name =~ s/([\w']+)/\u\L$1/g;
-            history(world($conn),sprintf("%-6s | %s",
+            echo(world($conn),sprintf("  %-6s | %s",
                     $name,
                     @state{summary}->{$item}),
                    );
@@ -8844,6 +9044,102 @@ sub world_item_populate
 }
 
 #
+# cmd_keys
+#   create a dialog box for editing key definitions
+#
+sub cmd_keys
+{
+#-# summary: Open window showing output matching pattern.
+#-# ------------------------------------------------------------------------
+#-# /keys
+#-#      Invokes the key binding menu for editing the behavoir of
+#-#      certain keys.
+#-#
+#-#      Key binding menu action defitions:
+#-#         SwitchWorld:  Cycles between the currently connected worlds.
+#-#         InputHistory: Scroll up/down in the keyboard input history.
+#-#         InputMotion:  Move the cursor within the current line
+#-#         History:      Scroll up/down in the world output history
+#-# ------------------------------------------------------------------------
+   my ($conn,$w) = @_;
+   my $item = 1;
+
+   # create dialog box data structure
+
+
+#   loggit(@state{help}->{"world_help"});
+#   dialog_init($conn,"text:" . @state{help}->{"world_help"},
+#               ["Ok:key_cancel"],1);
+#   draw_screen($conn);
+#
+#   return;
+
+   dialog_init($conn,
+      "Right/Left:cycle.SwitchWorld.InputHistory.InputMotion,History" .
+      "Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
+      "Alt Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
+      "Shift Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
+      "PGUP/PGDN:cycle.History.SwitchWorld.InputHistory.InputMotion",
+      ["Cancel:key_cancel","Save:key_save","Help:key_help"],1);
+
+
+   # populate dialog box with data from @state
+   for my $i ("Up/Down","Alt Up/Down") {
+      if(defined @state{"p_key_$i"}) {
+         dialog_populate($item,@state{"p_key_$i"});
+      }
+      $item++;
+   }
+
+   draw_screen($conn);
+}
+
+#
+# key_save
+#   User has hit the save button, so grab the input from the dialog
+#   and save it to the @state variable / disk.
+#
+sub key_save
+{
+   my $data = {};
+   my $conn = @state{dialog}->{conn};
+
+   # copy from dialog to state vars
+   for my $i (0 .. dialog_items()) {
+      @state{"p_key_" . dialog_name($i)} = dialog_value($i);
+      save($conn,"STATE","p_key_" . dialog_name($i));
+   }
+
+   dialog_cancel();
+}
+
+sub key_help
+{
+   my $conn = @state{dialog}->{conn};
+
+   my $tmp = @state{dialog};
+   dialog_init($conn,"text:" . @state{help}->{"cmd_keys"},
+               ["Ok:key_cancel"],1);
+   @state{dialog}->{tmp_dialog} = $tmp;
+   draw_screen($conn);
+}
+
+#
+# key_cancel
+#   User has clicked the cancel button on the key menu.
+#
+sub key_cancel
+{
+   if(defined @state{dialog} &&
+      defined @state{dialog}->{tmp_dialog}) {
+      @state{dialog} = @state{dialog}->{tmp_dialog};
+   } else {
+      delete @state{dialog};
+   }
+   draw_screen(@state{world},1);
+}
+
+#
 # world_dialog_create
 #   create a dialog box for a world.
 #
@@ -8870,7 +9166,8 @@ sub world_dialog_create
                ["Cancel:dialog_cancel",
                 "Save:world_save",
                 "Delete:world_delete",
-                "Connect:world_connect"],1);
+                "Connect:world_connect",
+                "Help:world_help"],1);
 
    # populate dialog box data structure with values
    dialog_populate($i++,$w);
@@ -9028,6 +9325,7 @@ sub get_checksums
    my $ln = 1;
 #
 
+   delete @state{help};
    open($file,$0) ||
      return echo(@state{world},
                  "%% Unable to read source file, /reload disabled"
@@ -9062,7 +9360,7 @@ sub get_checksums
          }
          $pos = undef;
       } elsif($pos ne undef) {
-         if($pos =~ /(key|cmd)_/) {
+#         if($pos =~ /^(key|cmd)_/) {
             if($line =~ /^#-# -+$/) {
                # header ignored
             } elsif($line =~ /^#-# summary: /) {
@@ -9070,7 +9368,7 @@ sub get_checksums
                @state{summary}->{$pos} =~ s/[\r|\n]+$//g;
             } elsif($line =~ /^#-# {0,1}/) {
                @state{help}->{$pos} .= $';
-            }
+#            }
          }
 
          @data{$pos}->{src} .= $line;
@@ -9225,6 +9523,7 @@ sub tick
 
    # keep alive. Send something to a world to keep it alive if nothing has
    # bloggiteen sent / recieved.
+   delete @socket{switch_world_down};
    for my $w (keys %socket) {
       if(is_loggedin($w) &&
          time()-@socket{$w}->{last_send} > @socket{$w}->{next_check} &&
@@ -9259,7 +9558,7 @@ sub tick
 
       # handle results from /quote command as they may need to be handled
       # in the future and not specifically when cmd_quote() is running.
-      if(defined @socket{$w}->{quote}) {
+      if(defined @socket{$w} && defined @socket{$w}->{quote}) {
          my $quote = @socket{$w}->{quote};
 
          while($#$quote > -1 && $$quote[0]->{when} <= time()) {
