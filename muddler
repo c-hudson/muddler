@@ -132,6 +132,9 @@ my %mod = (
    'IPC::Open2'                  => { fatal => 0,
                                       for => 'More secure arguments to /quote'
                                     },
+   'File::Basename'              => { fatal => 0,
+                                      for => 'More secure arguments to /quote'
+                                    },
    
   
 );
@@ -3658,7 +3661,6 @@ sub shu
                loggit("POS2[$#$h]: '%s'",$off + $txt->{end});
                # hist_pos($w,$i,($#out + 1) * $dir);
                # hist_pos_partial($w,$off + $txt->{end});
-               loggit("Got this far");
                return;
             }
          }
@@ -4917,13 +4919,21 @@ sub handle_up
       switch_world_up($conn);
    } elsif(@state{"p_key_$type"} eq "History") {
       scroll_history($conn,-1);
+   } elsif($type eq "Up/Down") {
+      input_line_up($conn);
+   } elsif($type eq "Alt Up/Down") {
+      switch_world_up($conn);
+   } elsif($type eq "Shift Up/Down") {
+      switch_world_up($conn);
+   } elsif($type eq "PGUP/PGDN") {
+      scroll_history($conn,-1);
    } else {
       switch_world_up($conn);
    }
 }
 
 #
-# handle_up
+# handle_down
 #   Generic handle alt/shift/pg down key
 #
 sub handle_down
@@ -4937,6 +4947,14 @@ sub handle_down
    } elsif(@state{"p_key_$type"} eq "SwitchWorld") {
       switch_world_down($conn);
    } elsif(@state{"p_key_$type"} eq "History") {
+      scroll_history_down($conn);
+   } elsif($type eq "Up/Down") {
+      input_line_down($conn);
+   } elsif($type eq "Alt Up/Down") {
+      switch_world_down($conn);
+   } elsif($type eq "Shift Up/Down") {
+      switch_world_down($conn);
+   } elsif($type eq "PGUP/PGDN") {
       scroll_history_down($conn);
    } else {
       switch_world_down($conn);
@@ -7397,21 +7415,42 @@ sub cmd_update
 #-#
 #-# ------------------------------------------------------------------------
    my $conn = shift;
-   my $update;
+   my $w = world($conn);
+   my ($path,$fn,$update);
 
-   open($update,"wget -q -O muddler.tmp --no-cache " .
+   if(module_enabled("File::Basename")) {
+     ($fn , $path) = fileparse($0);
+   }
+    
+   my $info = `file $0`; 
+
+   if($info !~ /Perl script/i) {
+     return echo($w,"Update FAILED: $0 doesn't seem to be a perl script to " .
+                 "be updated. '$info'");
+   }
+   open($update,"wget -q -O '$path\muddler.tmp' --no-cache " .
         "https://github.com/c-hudson/muddler/raw/master/muddler " .
         " |") ||
-      return echo("muddler",
-                  "%% Unable to update muddler at this time. Does wget exist?"
-                 );
+      return echo($w,"%% Unable to update muddler at this time. " .
+                  "Does wget exist?");
    while(<$update>) {
    }
    close($update);
 
-   unlink("muddler");
-   rename("muddler.tmp","muddler");
-   system("chmod u+x muddler");
+   if(!-e "$path\muddler.tmp") {
+     return echo($w,"Update FAILED: Unable to find $path\muddler.tmp as " .
+                 "downloaded by wget.");
+   }
+   unlink($0) ||
+     return echo($w,"Update FAILED: Unable to delete $0 to update");
+   rename("$path\muddler.tmp",$0) ||
+     return echo($w,"Update FAILED: Unable to rename $path\muddler.tmp to $0");
+
+   my $rc = system("chmod u+x $0");
+   if($rc != 0) {
+     return echo($w,"Update FAILED: Unable to add execute permission to $0");
+   }
+
    reload_code($conn);
 }
 
@@ -9075,7 +9114,7 @@ sub cmd_keys
 #   return;
 
    dialog_init($conn,
-      "Right/Left:cycle.SwitchWorld.InputHistory.InputMotion,History" .
+      "Right/Left:cycle.SwitchWorld.InputHistory.InputMotion,History," .
       "Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
       "Alt Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
       "Shift Up/Down:cycle.SwitchWorld.InputHistory.InputMotion.History," .
@@ -9773,6 +9812,11 @@ sub muddler_init
 
    cmd_web("muddler","on",1) if(@state{p_web} == 1);
    spell_init();
+
+   if(defined @state{do_update} && @state{do_update}) {
+      cmd_update("muddler");
+      delete @state{do_update};
+   }
 }
 
 #
@@ -9928,6 +9972,8 @@ for my $i (0 .. $#ARGV) {
       @state{remote} = 1;
    } elsif(@ARGV[$i] =~ /^--test-worlds$/) {
       exit test_worlds();
+   } elsif(@ARGV[$i] =~ /^--update$/) {
+      @state{do_update} = 1;
    } else {
      die("Invalid Option: '@ARGV[$i]'");
    }
