@@ -3783,7 +3783,7 @@ sub key_shift_up
 
    loggit("Shift_key_up: called");
    return wc_out("/key_shiftup") if(is_remote());
-   handle_up($conn,"Shift Up/Down");
+   handle_up($conn,"Shift_Up/Down");
 }
 
 sub key_shift_down
@@ -3792,7 +3792,7 @@ sub key_shift_down
 
    return wc_out("/key_shiftdown") if(is_remote());
 
-   handle_down($conn,"Shift Up/Down");
+   handle_down($conn,"Shift_Up/Down");
 }
 
 #
@@ -4827,12 +4827,21 @@ sub switch_world_up
    my ($conn,$txt,$force) = @_;
    my $w = world($conn);
    my $flag = 0;
-   my $first;
+   my (@list,$first);
 
-   if((my $active = get_active($w))) {                    # try most active
+   if((!defined @state{p_activity} ||
+      state_true("activity")) &&
+      (my $active = get_active($w))) {                    # try most active
       return switch_world($conn,$active);
    } else {
-      for my $key (sort {lc($a) cmp lc($b)} keys %socket) {  # alphabetically
+      if(!defined @state{p_order} || @state{p_order} eq "Alphabetically") {
+        @list = ( sort {lc($a) cmp lc($b)} keys %socket );
+      } else {
+        @list = ( sort {@socket{$a}->{created} <=> @socket{$b}->{created}}
+                  keys %socket );
+      }
+
+      for my $key (@list) {
          $first = $key if !defined $first;
 
          if(defined @socket{$key}->{sock} || $force) {
@@ -4857,12 +4866,20 @@ sub switch_world_down
 {
    my ($conn,$txt,$force) = @_;
    my $w = world($conn);
-   my $prev;
+   my (@list,$prev);
 
-   if((my $active = get_active($w))) {                    # try most active
+   if((!defined @state{p_activity} ||
+      state_true("activity")) &&
+      (my $active = get_active($w))) {                    # try most active
       return switch_world($conn,$active);
    } else {
-      for my $key (sort {lc($a) cmp lc($b)} keys %socket) {  # alphabetically
+      if(!defined @state{p_order} || @state{p_order} eq "Alphabetically") {
+        @list = ( sort {lc($a) cmp lc($b)} keys %socket );
+      } else {
+        @list = ( sort {@socket{$a}->{created} <=> @socket{$b}->{created}}
+                  keys %socket );
+      }
+      for my $key (@list) {
          if(defined @socket{$key}->{sock} || $force) {
             # if the world is the first, muddler should switch to the
             # last world, but we don't know it yet. Let the loop finish
@@ -4900,6 +4917,17 @@ sub key_up
       return xy(input_x(),input_y());
    } else {
       handle_up($conn,"Up/Down");
+   }
+}
+
+sub state_true
+{
+   my $val = shift;
+
+   if(defined @state{"p_$val"} && TRUE(@state{"p_$val"})) {
+      return 1;
+   } else {
+      return 0;
    }
 }
 
@@ -4967,7 +4995,7 @@ sub key_altup
 
    return wc_out("/key_altup") if(is_remote());
 
-   handle_up($conn,"Alt Up/Down");
+   handle_up($conn,"Alt_Up/Down");
 }
 
 sub key_altdown
@@ -4976,7 +5004,7 @@ sub key_altdown
 
    return wc_out("/key_altdown") if(is_remote());
 
-   handle_down($conn,"Alt Up/Down");
+   handle_down($conn,"Alt_Up/Down");
 }
 
 #
@@ -6337,8 +6365,10 @@ sub set_save
              $theme = $val;
              $count++;
           } else {
-             @state{"p_" . @lookup{dialog_name($i)}} = $val;
-             save($conn,"STATE","p_" . @lookup{dialog_name($i)});
+             my $name = @lookup{dialog_name($i)};
+             $name =~ s/ /_/g;
+             @state{"p_$name"} = $val;
+             save($conn,"STATE","p_$name");
              $count++;
           }
        }
@@ -7082,14 +7112,19 @@ sub var_init
    @var{sync}      = { setup=>"All windows show same world",type=>"check",
                        set=>1, chk => "on|off|0|1",
                        fun => sub { switch_world(@_,@state{world}); }      };
-   @var{updown}    = { setup=>"Up/Down Keys",
-                       type=>"cycle.Cycle Worlds.Cursor Movement",
-                       chk => "Cycle Worlds|Cursor Movement", set=>1       };
+#   @var{updown}    = { setup=>"Up/Down Keys",
+#                       type=>"cycle.Cycle Worlds.Cursor Movement",
+#                       chk => "Cycle Worlds|Cursor Movement", set=>1       };
    @var{more}      = { setup=>"Pause for More",type=>"check",set=>1        };
    @var{reconnect} = { setup=>"Auto re-connect",type=>"check",set=>1,
                        chk=>"on|off|0|1"                                   };
    @var{spell}     = { setup=>"Enable Spell Check",type=>"check",set=>1,
                        chk=>"on|off|0|1"                                   };
+   @var{activity}  = { setup=>"Cycle active worlds first",
+                       type=>"check",set=>1,chk=>"on|off|0|1"              };
+   @var{order}     = { setup=>"World Cycle Order",
+                       type=>"cycle.Alphabetically.FirstConnect",
+                       chk => "Alphabetically|firstconnect"                };
 }
 
 sub update_keepalive
@@ -9145,8 +9180,10 @@ sub key_save
 
    # copy from dialog to state vars
    for my $i (0 .. dialog_items()) {
-      @state{"p_key_" . dialog_name($i)} = dialog_value($i);
-      save($conn,"STATE","p_key_" . dialog_name($i));
+      my $name = dialog_name($i);
+      $name =~ s/ /_/g;
+      @state{"p_key_$name"} = dialog_value($i);
+      save($conn,"STATE","p_key_$name");
    }
 
    dialog_cancel();
