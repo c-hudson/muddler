@@ -3765,7 +3765,7 @@ sub update_input_offset
 
    $plen = ansi_length(prompt()) + 1 if(has_prompt());
    my $lines = sprintf("%d",(line_pos() + $plen )/ (@state{size_y}-1));
-   $lines++ if((line_pos() + $plen) % (@state{size_y}-1) >= 0);
+   $lines++ if((line_pos() + $plen) % (@state{size_y}-1) > 0);
    $lines = 1 if $lines < 1;
 
    if($lines > input_end() - input_start() + 1) {
@@ -4509,7 +4509,7 @@ sub input_onscreen
 
    $plen = ansi_length(prompt()) + 1 if(has_prompt());
    my $start = @state{input_offset} * (@state{size_y} -1);
-   my $end  = $start + ((@state{size_y} - 1) * input_size());
+   my $end  = $start + ((@state{size_y} - 1) * input_size()) - $plen;
    loggit("input_onscreen[$plen]: $start -> $end == $pos");
    if($pos >= $start && $pos < $end) {
       return 1;                          # pos is in the input scroll region
