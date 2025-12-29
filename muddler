@@ -791,26 +791,26 @@ sub socket_connect
    # initialize history buffer
    @history{$world} = [] if(!defined @history{$world});
  
-   if(defined @socket{$world}) { # previous connection
-      @socket{$world}->{host} = $host;        # update possible changed items
-      @socket{$world}->{port} = $port;
-      @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
-      @socket{$world}->{prompt_count} = 0;
-   } else {
-      # define connection with everything that is needed.
+   if(!defined @socket{$world}) { # previous connection
+      # define connection with all new things that are needed
       @socket{$world} = { name                => $world,
-                          host                => $host,
-                          port                => $port,
                           more_count          => 0,
                           last_read           => -1,
                           history_pos         => -1,
                           history_pos_partial => -1,
                           created             => time(),
-                          do_login            => (defined $$opt{l}) ? 0 : 1,
-                          last_send           => time(),
-                          prompt_count        => 0,
                         };
    }
+   # update possible changed items
+   @socket{$world}->{host} = $host;
+   @socket{$world}->{port} = $port;
+   @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
+   @socket{$world}->{prompt_count} = 0;
+
+   # update keep-a-live variables to prevent sending before login
+   @socket{$world}->{next_check}=180+sprintf("%d",rand(60 * 5));
+   @socket{$world}->{last_recv} = time();
+   @socket{$world}->{last_send} = time();
 
    if(!defined @address{$world}->{decode}) {      # default to utf8 decoding.
        @address{$world}->{decode} = "UTF-8";
@@ -859,6 +859,8 @@ sub socket_connect
    @socket{$world}->{sock} = $s;
    switch_world($conn,$world);
 
+   # add socket to websocket listener since this is used as our select()
+   # handler. 
    $ws_server->{select_readable}->add( $s );
 
    @socket_lookup{$s} = $world;
@@ -1549,7 +1551,9 @@ sub ws_echo
       return;
    }
    $msg =~ s/[\r\n]+$//;
-   # loggit("WS[%s]: '%s'",$type,$msg);
+   if($msg =~ /^HASH\(/) {
+      loggit("HASH detected: '%s'",code("shortest"));
+   }
    eval {
       $ws->send('',$type . "\r\n" . encode_utf8($msg));
    };
@@ -2284,7 +2288,11 @@ sub history_max
 #
 sub no_world
 {
-   return (!defined @state{world} || @state{world} eq undef) ? 1 : 0;
+   # check all sockets
+   for my $s (keys %socket) {
+      return 0 if(defined @socket{$s}->{sock});
+   }
+   return 1;
 }
 
 #
@@ -2711,7 +2719,7 @@ sub history
       if(defined $$str{keepalive} && $$str{keepalive}) { # do not store keep
          undef($str);                                                # alive
       } else {
-         push(@{@history{$world}},$str) && !$$str{keepalive};  # keep gagged
+         push(@{@history{$world}},$str);                       # keep gagged
       }                                                # for possible review
    } else {
 
@@ -4330,6 +4338,7 @@ sub key_delete
    if(line_pos() < 1) {                             # nothing left to delete
       return;
    } elsif(line_pos() < $#{$$input[-1]}+1) {          # delete in middle
+      loggit("Here: 1");
 
       if((line_pos()-1)-(@state{input_offset}*(@state{size_y} - 1))==-1){
          # at begining of visible buffer, input window needs to be erased
@@ -4337,7 +4346,9 @@ sub key_delete
 
          splice(@{$$input[-1]},line_pos()-1,1);      # remove character
          key_left($ch);
+         loggit("Here: 2");
       } else {                            # deleting in the middle of a line.
+         loggit("Here: 3");
          my $bol =                                 # [find beginning of line] 
              (@state{size_y} - 1) *           # number of characters per line
              (@state{input_offset} +            # number of lines not visible
@@ -4348,9 +4359,11 @@ sub key_delete
          # xy(input_x(),input_y()-1);
          # PRINTF("\033[P");                 # delete ch before cursor
          if(input_y() != $prev_y) {                    # check for wrap-around
+            loggit("Here: 4");
             xy(input_x(),input_y());       # move cursor back in case it moved
             PRINTF("\033[P");                  # delete character under cursor
          } else {
+            loggit("Here: 5");
             PRINTF("\b\033[P");                # delete character under cursor
          }
 
@@ -4378,6 +4391,7 @@ sub key_delete
          xy(input_x(),input_y());                            # return cursor
       }
    } elsif(line_pos() >= 1) {                           # delete at EOL
+      loggit("Here: 4");
       my $prev_y = input_y();
       line_pos(line_pos() - 1);                    # move cursor pos back one
       pop(@{$$input[-1]});                          # remove char from buffer
@@ -4494,8 +4508,9 @@ sub input_onscreen
    return 0 if(!defined $$input[-1]->[$pos]);    # pos larger then array
 
    $plen = ansi_length(prompt()) + 1 if(has_prompt());
-   my $start = @state{input_offset} * (@state{size_y} -1) + $plen;
+   my $start = @state{input_offset} * (@state{size_y} -1);
    my $end  = $start + ((@state{size_y} - 1) * input_size());
+   loggit("input_onscreen[$plen]: $start -> $end == $pos");
    if($pos >= $start && $pos < $end) {
       return 1;                          # pos is in the input scroll region
    } else {
@@ -4612,11 +4627,13 @@ sub key_default
    # display characters after cursor
    $plen = ansi_length(prompt()) + 1 if(has_prompt());
    if(defined @$input[-1] && $#{$$input[-1]} >= line_pos()) {
+      loggit("Adding: after: %s -> %s",line_pos(),input_onscreen(line_pos()));
       for(my $i=line_pos();input_onscreen($i);$i++){
          if(input_eol($conn,$i)) {             # only if not already printed
             PRINTF("\r\n") if(($ret && $i != line_pos() + $plen) or !$ret);
             $ret = 0;
          }
+         loggit("   Adding: add: '%s'",$$input[-1]->[$i]);
          PRINTF("%s",$$input[-1]->[$i]);
       }
       xy(input_x(),input_y());
@@ -4724,7 +4741,7 @@ sub key_right
 
    my $input = input();
  
-   if(in_dialog($conn) || line_pos() > $#{$$input[-1]}) {
+   if(in_dialog($conn) && line_pos() > $#{$$input[-1]}) {
      # do nothing, already at end of line
    } elsif(input_y() == size_y() - 1 &&              # found end of input buff 
            input_x() == size_x()) {
@@ -8865,7 +8882,11 @@ sub cmd_recall
          }
 
          if($gagged) {
-            unshift(@out,$ts . @history{$w}->[$i]->{txt});
+            if(defined @history{$w}->[$i]->{original}) {
+               unshift(@out,$ts . @history{$w}->[$i]->{original});
+            } else {
+               unshift(@out,$ts . @history{$w}->[$i]->{txt});
+            }
          } else {
             unshift(@out,$ts . @history{$w}->[$i]->{txt});
          }
@@ -9608,7 +9629,22 @@ sub tick
             defined @address{$w}->{keepalive} &&
             trim(@address{$w}->{keepalive}) ne "") {
 
-            if(@address{$w}->{keepalive} !~ /^\s*(off|none)\s*$/i) {
+            if(@address{$w}->{keepalive} =~ /##rand##/) {
+               my $tag= "idler_message_" . rand(1000) . "_###";
+               my $str=@address{$w}->{keepalive};
+               $str =~ s/##rand##/$tag/;
+               @def{sprintf("i_%s",$w)} = {
+                    atr       => "g",
+                    txt       => "*$str*",
+                    world     => $w,
+                    keepalive => 1,
+                    regexp    => "(?i)$tag",
+                    # hits      => 1,
+                    created   => time()
+               };
+               out($w,"$str",rand(1000));
+               @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
+            } elsif(@address{$w}->{keepalive} !~ /^\s*(off|none)\s*$/i) {
                @socket{$w}->{next_check}=180+sprintf("%d",rand(60 * 5));
                @state{out_nomore} = 1;
                # loggit("#ka1{$w} %s",@address{$w}->{keepalive});
@@ -12758,7 +12794,12 @@ START: muddler_client.html
      conn.onText = function (text) { output.appendText(text); };
      conn.onHTML = function (html) { output.appendHTML(html); };
      conn.onPueblo = function (html) { output.appendPueblo(html); };
-     conn.onBar = function (html) { bar.clear();bar.appendText(html); };
+     conn.onBar = function (html) {
+        var title = document.querySelector('title');
+        title.innerText = html;
+        bar.clear();
+        bar.appendText(html);
+     };
      conn.onBarTime = function (html) { bartime.clear();bartime.appendText(html); };
      conn.onPrompt = function (text) { cmdprompt.clear(); cmdprompt.appendText(text + '\r\n'); };
      
