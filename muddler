@@ -41,8 +41,8 @@ my %http_data;                                 # store websocket client pages
 my %def;                                        # tf style define information
 my %pid;                                              # internal process list
 my %telnet_ch;
-my $client;                                                # websocket client
 my $wc;                                                    # websocket client
+my $wc_buf = '';                                     # websocket client buffer
 my %var;                                                 # settable variables
 my %call;                               # call back commands for dialog usage
 my @options = qw(
@@ -51,6 +51,11 @@ my @options = qw(
     TTYPE EOR TUID OUTMRK TTYLOC VT3270REGIME X3PAD NAWS TSPEED LFLOW LINEMODE
     XDISPLOC OLD_ENVIRON AUTHENTICATION ENCRYPT NEW_ENVIRON
 );
+$options[69]  = 'MSDP';
+$options[70]  = 'MSSP';
+$options[86]  = 'MCCP2';
+$options[91]  = 'MXP';
+$options[201] = 'GMCP';
 
 my %state = (
    line_pos        => 0,           # character position on the current line
@@ -77,12 +82,7 @@ my %state = (
 #                                    cpan => "perl -MCPAN -e \"install " .
 #                                           "Net::WebSocket::Server\"",
 my %mod = (
-   'Term::ReadKey'               => { fatal => 0,
-                                      pkg => "libterm-readkey-perl",
-                                      for => 'screen size detection'
-                                    },
-   'Net::WebSocket::Server'      => { fatal => 0,
-                                      cpan => "yes",
+   'Digest::SHA'                 => { fatal => 0,
                                       for => 'web gui'
                                     },
    'Encode'                      => { fatal => 0,
@@ -113,18 +113,8 @@ my %mod = (
    'Text::ParseWords'            => { fatal => 0,
                                       for => 'tf compat'
                                     },
-   'IO::Socket::Timeout'         => { fatal => 0,
-                                      for => 'ssl websockets',
-                                      pkg => "libio-socket-timeout-perl"
-                                    },
-   'Protocol::WebSocket::Client' => { fatal => 0,
-                                        for => 'remote console',
-                                    },
    'MIME::Base64'                => { fatal => 0,
                                       for => 'file transfer',
-                                    },
-   'Data::Dumper'                => { fatal => 0,
-                                      for => 'remote console'
                                     },
    'Time::HiRes'                 => { fatal => 1,
                                       for => 'Accurate Prompt Detection'
@@ -179,7 +169,6 @@ sub key_init
    @key{multi_91_49_59_50_66}     = sub { return key_shift_down(@_);    };
    @key{multi_91_90}              = sub { return key_shift_tab(@_);     };
    @key{multi_91_49_126}          = sub { return key_home(@_);          };
-   @key{multi_91_52_126}          = sub { return key_end(@_);           };
    @key{multi_91_52_126}          = sub { return key_end(@_);           };
    @key{multi_91_49_59_51_65}     = sub { return key_altup(@_);         };
    @key{multi_91_49_59_51_66}     = sub { return key_altdown(@_);       };
@@ -343,7 +332,7 @@ sub load_modules
    my $type;
 
    for my $key (keys %mod) {
-      if(!defined @state{"mod_@mod{$key}"} || @state{"mod_@mod{$key}"} == -1) {
+      if(!defined @state{"mod_$key"} || @state{"mod_$key"} == -1) {
          @state{"mod_$key"} = 1;
 
          if(defined @mod{$key}->{extra}) {
@@ -806,6 +795,9 @@ sub socket_connect
    @socket{$world}->{port} = $port;
    @socket{$world}->{do_login} = (defined $$opt{l}) ? 0 : 1,
    @socket{$world}->{prompt_count} = 0;
+   @socket{$world}->{telnet_mode} = 'normal';
+   @socket{$world}->{telnet_sb_buffer} = '';
+   @socket{$world}->{telnet_opts} = {};
 
    # update keep-a-live variables to prevent sending before login
    @socket{$world}->{next_check}=180+sprintf("%d",rand(60 * 5));
@@ -860,8 +852,10 @@ sub socket_connect
    switch_world($conn,$world);
 
    # add socket to websocket listener since this is used as our select()
-   # handler. 
-   $ws_server->{select_readable}->add( $s );
+   # handler.
+   if(defined $ws_server && defined $ws_server->{select_readable}) {
+      $ws_server->{select_readable}->add( $s );
+   }
 
    @socket_lookup{$s} = $world;
    delete @socket{muddler};
@@ -909,28 +903,32 @@ sub wc_init
          ($host,$port) = ("127.0.0.1",9001);
     }
 
-    $wc = IO::Socket::SSL->new(PeerAddr => $host,
-                                  PeerPort => $port,
-                                  Proto => 'tcp',
-                                  SSL_startHandshake => 0,
-                                     #($proto eq 'wss' ? 1 : 0),
-                                  Blocking => 1) or
-       err("Failed to connect to $host on port $port:  $@");
+    if(module_enabled("IO::Socket::SSL")) {
+       $wc = IO::Socket::SSL->new(PeerAddr => $host,
+                                     PeerPort => $port,
+                                     Proto => 'tcp',
+                                     SSL_startHandshake => 0,
+                                     Blocking => 1) or
+          err("Failed to connect to $host on port $port:  $@");
+    } else {
+       $wc = IO::Socket::INET->new(PeerAddr => $host,
+                                      PeerPort => $port,
+                                      Proto => 'tcp',
+                                      Blocking => 1) or
+          err("Failed to connect to $host on port $port:  $@");
+    }
 
-   $client = Protocol::WebSocket::Client->new(
-       url => "ws://$host:$port");
+   # perform WebSocket handshake
+   ws_client_handshake($wc, $host, $port) or
+      err("WebSocket handshake failed with $host:$port");
 
-   # setup handlers
-   $client->on( write   => sub { wc_write(@_); } );
-   $client->on( connect => sub { wc_connect(@_); } );
-   $client->on( error   => sub { wc_error(@_); } );
-   $client->on( read    => sub { wc_read(@_); } );
+   $wc_buf = '';
 
    # add connection to the listener
    $ws_server->{select_readable}->add($wc);
 
-   # connect to the server
-   $client->connect;
+   # run the connect handler
+   wc_connect();
 }
 
 sub test_worlds
@@ -972,7 +970,6 @@ sub wc_write
 
 sub wc_connect
 {
-   my ($client,$txt) = @_;
 
    # the y size has 3 characters removed from it for better rendering,
    # but isn't needed when doing the internal client.. so remove the
@@ -990,7 +987,7 @@ sub wc_connect
 
 sub wc_error
 {
-   my ($client,$buf) = @_;
+   my $buf = shift;
 
    LOGGIT("WC_ERROR: '%s'\n",$buf);
 }
@@ -999,21 +996,21 @@ sub wc_out
 {
    my ($fmt,@args) = @_;
 
-   return if(!defined $client);
-   $client->write(sprintf("t$fmt",@args));
+   return if(!defined $wc);
+   eval { syswrite($wc, ws_frame_encode_masked(0x1, sprintf("t$fmt",@args))); };
 }
 
 sub wc_responce
 {
    my ($fmt,@args) = @_;
 
-   return if(!defined $client);
-   $client->write(sprintf("r$fmt",@args));
+   return if(!defined $wc);
+   eval { syswrite($wc, ws_frame_encode_masked(0x1, sprintf("r$fmt",@args))); };
 }
 
 sub wc_read
 {
-   my ($client,$buf) = @_;
+   my (undef,$buf) = @_;
 
    my $tmp=$buf;
    $tmp =~ s/\r|\n//g;
@@ -1036,7 +1033,7 @@ sub wc_read
    } elsif($buf =~ /^r\r\n/) {
       my ( $id,$hash ) = undump($');
       @address{$id} = $hash;
-      world_dialog_create($client,$id,1);
+      world_dialog_create("muddler",$id,1);
    } elsif($buf =~ /^b\r\n/) {
       @state{remote_bar} = $';
       @state{remote_bar} =~ s/ /_/g;
@@ -1053,7 +1050,7 @@ sub is_enabled
     if(is_in($opt,"DO_SGA","DO_TTYPE","DO_NAWS","DO_ECHO","DONT_MXP",
              "DONT_MSP","WONT_MXP","WONT_MSP","WILL_SGA","WILL_TTYPE",
              "WILL_NAWS","WILL_ECHO")) {
-       return 0;
+       return 1;
     } else {
        return 0;
     }
@@ -1126,7 +1123,7 @@ sub fansi_decode
     my ($w,$txt) = @_;
     my $out;
 
-   for my $i (0 .. length($txt)) {
+   for my $i (0 .. (length($txt)-1)) {
       if(is_in(ord(substr($txt,$i,1)),0,7,10,13,27)) {
          $out .= substr($txt,$i,1);
       } else {
@@ -1147,7 +1144,7 @@ sub fansi_detect_client
    my $w = shift;
    my $id = (scalar keys %def) + 1;
 
-   @def{sprintf("fansi_06s",$id)} = {
+   @def{sprintf("fansi_%06s",$id)} = {
        regexp  => "^Detecting client\.\.\.\$",
        world   => world($w),
        ttl     => 2,
@@ -1213,12 +1210,23 @@ sub telnet_ch_init
       sub {
          my ($world,$opt, $mode) = @_;
          # loggit("tch: $world -> DO [$opt,$mode]");
- 
+
+         # negotiation loop prevention: skip if already responded to this
+         my $neg_key = ord($mode) . "_" . ord($opt);
+         if(defined @socket{$world}->{telnet_opts} &&
+            defined @socket{$world}->{telnet_opts}->{$neg_key}) {
+            return (undef, 'normal');
+         }
+         @socket{$world}->{telnet_opts}->{$neg_key} = 1;
+
          my $wopt = $options[ord($opt)] || ord($opt);
          if(is_enabled((@state{ord($mode)} || ord($mode)) . "_" .
              ($options[ord($opt)] || ord($opt)))) {
-            if ($mode eq @state{DO})   { 
+            if ($mode eq @state{DO})   {
                 out_noret($world,@state{IAC}.@state{WILL}.$opt);
+                if(ord($opt) == 31) { # NAWS - send size immediately
+                   _send_naws($world);
+                }
             } elsif ($mode eq @state{DONT}) {
                 out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
@@ -1228,13 +1236,13 @@ sub telnet_ch_init
             }
          } else {
             if ($mode eq @state{DONT}) {
-               out_noret($world,@state{IAC}.@state{WILL}.$opt);
+               out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{DO}) {
                out_noret($world,@state{IAC}.@state{WONT}.$opt);
             } elsif ($mode eq @state{WILL}) {
                out_noret($world,@state{IAC}.@state{DONT}.$opt);
             } elsif ($mode eq @state{WONT}) {
-               out_noret($world,@state{IAC}.@state{DO}  .$opt);
+               out_noret($world,@state{IAC}.@state{DONT}.$opt);
             }
          }
          return (undef, 'normal');
@@ -1245,7 +1253,7 @@ sub telnet_ch_init
          my ($world,$c) = @_;
          # loggit("tch: $world -> sb [$c]");
          return (undef, 'sbiac') if $c eq @state{IAC};
-         @state{telnet_sb_buffer} .= $c;
+         @socket{$world}->{telnet_sb_buffer} .= $c;
          return;
        };
 
@@ -1255,19 +1263,20 @@ sub telnet_ch_init
           # loggit("tch: $world -> sbiac [$c]");
 
           if ($c eq @state{IAC}) {
-              @state{telnet_sb_buffer} .= @state{IAC};
+              @socket{$world}->{telnet_sb_buffer} .= @state{IAC};
               return (undef, @state{SB});
           }
 
           if ($c eq @state{SE}) {
-              _telnet_complex_callback(@state{telnet_sb_buffer});
-              @state{telnet_sb_buffer} = '';
+              _telnet_complex_callback($world, @socket{$world}->{telnet_sb_buffer});
+              @socket{$world}->{telnet_sb_buffer} = '';
               return (undef, 'normal');
           }
 
-          # IAC followed by something other than IAC and SE.. what??
-          require Carp;
-          Carp::croak "Invalid telnet stream: IAC SE ... IAC $c (chr ".chr($c).") ...";
+          # IAC followed by something other than IAC and SE
+          loggit("Invalid telnet stream: IAC SB ... IAC %s (ord %d)", $c, ord($c));
+          @socket{$world}->{telnet_sb_buffer} = '';
+          return (undef, 'normal');
       };
    $telnet_ch{@state{DONT}} = 
        $telnet_ch{@state{WILL}} = 
@@ -1275,29 +1284,76 @@ sub telnet_ch_init
        $telnet_ch{@state{DO}};
 }
 
+sub _telnet_complex_callback
+{
+   my ($world, $buf) = @_;
+   return if !defined $buf || length($buf) < 1;
+
+   my $opt = ord(substr($buf, 0, 1));
+
+   if($opt == 24) { # TTYPE
+      # Server sends SB TTYPE SEND(1) SE, respond with SB TTYPE IS(0) <type> SE
+      if(length($buf) >= 2 && ord(substr($buf, 1, 1)) == 1) {
+         my $ttype = "ANSI";
+         out_noret($world,
+            @state{IAC} . @state{SB} . chr(24) . chr(0) . $ttype .
+            @state{IAC} . @state{SE});
+      }
+   } elsif($opt == 31) { # NAWS
+      _send_naws($world);
+   }
+}
+
+sub _send_naws
+{
+   my ($world) = @_;
+   return if !defined @socket{$world} || !defined @socket{$world}->{sock};
+
+   # size_y = columns, size_x = rows (naming is inverted in this codebase)
+   my $cols = @state{size_y} || 80;
+   my $rows = @state{size_x} || 24;
+
+   my $data = @state{IAC} . @state{SB} . chr(31);
+   # Pack width and height as 2 bytes each (network byte order)
+   for my $val ($cols, $rows) {
+      my $hi = int($val / 256);
+      my $lo = $val % 256;
+      # Escape 0xFF bytes per telnet protocol
+      $data .= chr($hi);
+      $data .= @state{IAC} if $hi == 255;
+      $data .= chr($lo);
+      $data .= @state{IAC} if $lo == 255;
+   }
+   $data .= @state{IAC} . @state{SE};
+
+   out_noret($world, $data);
+}
+
 sub _parse
 {
     my ($world,$in) = @_;
     my $out = '';
 
+    my $mode = @socket{$world}->{telnet_mode} || 'normal';
+
     # optimization: if we're in normal mode then we can quickly move all the
     # input up to the first IAC into the output buffer.
-    if (@state{telnet_mode} eq 'normal') {
+    if ($mode eq 'normal') {
         # if there is no IAC then we can skip telnet entirely
         $in =~ s/^([^@state{IAC}]*)//o;
         return $1 if length $in == 0;
         $out = $1;
     }
 
-    
+
     for my $c (split '', $in) {
-        # loggit("_parse: '%s' -> '%s' @state{telnet_mode}",ord($c),$c);
-        my ($o, $m) = $telnet_ch{@state{telnet_mode}}->
-            ($world,$c, @state{telnet_mode});
+        $mode = @socket{$world}->{telnet_mode} || 'normal';
+        my ($o, $m) = $telnet_ch{$mode}->
+            ($world,$c, $mode);
 
         $out .= $o;
 #        defined $o and $out .= $o;
-        defined $m and @state{telnet_mode} = $m;
+        defined $m and @socket{$world}->{telnet_mode} = $m;
     }
 
     return $out;
@@ -1307,11 +1363,17 @@ sub socket_disconnect
 {
    my $s = shift;
 
-   $ws_server->{select_readable}->remove( $s );
+   if(defined $ws_server && defined $ws_server->{select_readable}) {
+      $ws_server->{select_readable}->remove( $s );
+   }
 
    if(defined @socket_lookup{$s}) {
-       delete @socket{@socket_lookup{$s}}->{sock};
-       delete @socket{@socket_lookup{$s}}->{socket_pending};
+       my $w = @socket_lookup{$s};
+       delete @socket{$w}->{sock};
+       delete @socket{$w}->{socket_pending};
+       delete @socket{$w}->{telnet_opts};
+       delete @socket{$w}->{telnet_mode};
+       delete @socket{$w}->{telnet_sb_buffer};
        delete @socket_lookup{$s};
    } else {
       for my $key (keys %socket) {
@@ -1320,6 +1382,9 @@ sub socket_disconnect
             delete @socket{$key}->{sock};
             delete @socket_lookup{$key};
             delete @socket{$key}->{socket_pending};
+            delete @socket{$key}->{telnet_opts};
+            delete @socket{$key}->{telnet_mode};
+            delete @socket{$key}->{telnet_sb_buffer};
          }
       }
    }
@@ -1418,12 +1483,12 @@ sub ws_init
                "failed: $!");
           return 0;
       }
-      IO::Socket::Timeout->enable_timeouts_on($ws_listen);
-      IO::Socket::Timeout->enable_timeouts_on($http_listen);
-      $ws_listen->read_timeout(.5);
-      $ws_listen->write_timeout(.5);
-      $http_listen->read_timeout(.5);
-      $http_listen->write_timeout(.5);
+      # 0.5 second timeout as struct timeval
+      my $timeout = pack('l!l!', 0, 500000);  # 0 sec, 500000 usec
+      setsockopt($ws_listen,   SOL_SOCKET, SO_RCVTIMEO, $timeout);
+      setsockopt($ws_listen,   SOL_SOCKET, SO_SNDTIMEO, $timeout);
+      setsockopt($http_listen, SOL_SOCKET, SO_RCVTIMEO, $timeout);
+      setsockopt($http_listen, SOL_SOCKET, SO_SNDTIMEO, $timeout);
 
       $ctx = IO::Socket::SSL::SSL_Context->new(
           SSL_server => 1,
@@ -1476,13 +1541,434 @@ sub ws_init
    return 1;
 }
 
+#
+# Built-in WebSocket implementation (RFC 6455)
+# Replaces Net::WebSocket::Server dependency using only core modules
+# (Digest::SHA core since 5.9.3, MIME::Base64 core since 5.6)
+#
+
+#
+# ws_handshake
+#    Perform RFC 6455 WebSocket handshake on an accepted socket.
+#    Returns 1 on success, 0 on failure.
+#
+sub ws_handshake
+{
+   my $sock = shift;
+   my $buf = '';
+   my $sel = IO::Select->new($sock);
+
+   # Read HTTP upgrade request with 2s timeout
+   while(1) {
+      last if $buf =~ /\r\n\r\n/;
+      return 0 unless $sel->can_read(2);
+      my $n = sysread($sock, my $chunk, 4096);
+      return 0 unless $n && $n > 0;
+      $buf .= $chunk;
+      return 0 if length($buf) > 16384;  # sanity limit
+   }
+
+   # Parse headers
+   my ($request, @header_lines) = split(/\r\n/, $buf);
+   return 0 unless $request =~ m{^GET\s+\S+\s+HTTP/1\.1$}i;
+
+   my %headers;
+   for my $line (@header_lines) {
+      last if $line eq '';
+      if($line =~ /^([^:]+):\s*(.*)$/) {
+         $headers{lc($1)} = $2;
+      }
+   }
+
+   # Validate WebSocket upgrade request
+   return 0 unless ($headers{'upgrade'} // '') =~ /websocket/i;
+   return 0 unless ($headers{'connection'} // '') =~ /upgrade/i;
+   my $key = $headers{'sec-websocket-key'};
+   return 0 unless defined $key && $key =~ /\S/;
+
+   # Compute Sec-WebSocket-Accept per RFC 6455
+   my $magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+   my $accept = MIME::Base64::encode_base64(
+      Digest::SHA::sha1($key . $magic), ''
+   );
+
+   # Send 101 Switching Protocols response
+   my $response = "HTTP/1.1 101 Switching Protocols\r\n" .
+                  "Upgrade: websocket\r\n" .
+                  "Connection: Upgrade\r\n" .
+                  "Sec-WebSocket-Accept: $accept\r\n" .
+                  "\r\n";
+
+   local $SIG{PIPE} = 'IGNORE';
+   my $written = syswrite($sock, $response);
+   return 0 unless defined $written;
+
+   return 1;
+}
+
+#
+# ws_frame_decode
+#    Decode incoming WebSocket frames from a connection's read buffer.
+#    Reads available data, parses frames, and fires appropriate callbacks.
+#
+sub ws_frame_decode
+{
+   my $conn = shift;
+   my $sock = $conn->{socket};
+
+   # Read available data into buffer
+   my $n = sysread($sock, my $chunk, 65536);
+   if(!defined $n || $n == 0) {
+      $conn->{on_disconnect}->($conn) if $conn->{on_disconnect};
+      return;
+   }
+   $conn->{read_buf} .= $chunk;
+
+   # Process all complete frames in buffer
+   while(length($conn->{read_buf}) >= 2) {
+      my $buf = $conn->{read_buf};
+      my $offset = 0;
+
+      # Parse first two bytes
+      my ($b1, $b2) = unpack('CC', substr($buf, 0, 2));
+      $offset = 2;
+
+      my $fin    = ($b1 & 0x80) >> 7;
+      my $opcode = $b1 & 0x0F;
+      my $masked = ($b2 & 0x80) >> 7;
+      my $len    = $b2 & 0x7F;
+
+      # Extended payload length
+      if($len == 126) {
+         return if length($buf) < $offset + 2;
+         $len = unpack('n', substr($buf, $offset, 2));
+         $offset += 2;
+      } elsif($len == 127) {
+         return if length($buf) < $offset + 8;
+         # Use two 32-bit reads for portability (avoid 64-bit pack issues)
+         my ($hi, $lo) = unpack('NN', substr($buf, $offset, 8));
+         $len = ($hi << 32) | $lo;
+         $offset += 8;
+      }
+
+      # Masking key (4 bytes if masked)
+      my $mask_key = '';
+      if($masked) {
+         return if length($buf) < $offset + 4;
+         $mask_key = substr($buf, $offset, 4);
+         $offset += 4;
+      }
+
+      # Payload
+      return if length($buf) < $offset + $len;
+      my $payload = substr($buf, $offset, $len);
+      $offset += $len;
+
+      # Unmask payload
+      if($masked && length($mask_key) == 4) {
+         my @mask = unpack('C4', $mask_key);
+         my @data = unpack('C*', $payload);
+         for my $i (0 .. $#data) {
+            $data[$i] ^= $mask[$i % 4];
+         }
+         $payload = pack('C*', @data);
+      }
+
+      # Consume processed bytes from buffer
+      $conn->{read_buf} = substr($buf, $offset);
+
+      # Handle opcodes
+      if($opcode == 0x8) {         # close
+         # Send close frame back
+         eval { syswrite($sock, ws_frame_encode(0x8, '')); };
+         $conn->{on_disconnect}->($conn) if $conn->{on_disconnect};
+         return;
+      } elsif($opcode == 0x9) {    # ping -> pong
+         eval { syswrite($sock, ws_frame_encode(0xA, $payload)); };
+      } elsif($opcode == 0xA) {    # pong -> ignore
+         next;
+      } elsif($opcode == 0x0) {    # continuation frame
+         $conn->{fragments} .= $payload;
+         if($fin) {
+            my $msg = $conn->{fragments};
+            $conn->{fragments} = '';
+            $conn->{on_utf8}->($conn, $msg) if $conn->{on_utf8};
+         }
+      } elsif($opcode == 0x1 || $opcode == 0x2) {  # text or binary
+         if($fin) {
+            $conn->{on_utf8}->($conn, $payload) if $conn->{on_utf8};
+         } else {
+            $conn->{fragments} = $payload;
+         }
+      }
+   }
+}
+
+#
+# ws_frame_encode
+#    Encode a WebSocket frame. Server-to-client frames are NOT masked per
+#    RFC 6455.  Returns the complete binary frame.
+#
+sub ws_frame_encode
+{
+   my ($opcode, $payload) = @_;
+   my $frame = '';
+
+   # FIN=1, opcode
+   $frame .= pack('C', 0x80 | $opcode);
+
+   # Payload length (no mask bit for server->client)
+   my $len = length($payload);
+   if($len < 126) {
+      $frame .= pack('C', $len);
+   } elsif($len <= 65535) {
+      $frame .= pack('Cn', 126, $len);
+   } else {
+      $frame .= pack('CNN', 127, ($len >> 32) & 0xFFFFFFFF,
+                                   $len        & 0xFFFFFFFF);
+   }
+
+   $frame .= $payload;
+   return $frame;
+}
+
+#
+# ws_frame_encode_masked
+#    Encode a WebSocket frame with client-side masking per RFC 6455.
+#    Clients MUST mask all frames sent to the server.
+#
+sub ws_frame_encode_masked
+{
+   my ($opcode, $payload) = @_;
+   my $frame = '';
+
+   # FIN=1, opcode
+   $frame .= pack('C', 0x80 | $opcode);
+
+   # Payload length with mask bit set
+   my $len = length($payload);
+   if($len < 126) {
+      $frame .= pack('C', 0x80 | $len);
+   } elsif($len <= 65535) {
+      $frame .= pack('Cn', 0x80 | 126, $len);
+   } else {
+      $frame .= pack('CNN', 0x80 | 127, ($len >> 32) & 0xFFFFFFFF,
+                                          $len        & 0xFFFFFFFF);
+   }
+
+   # Random 4-byte mask key
+   my $mask_key = pack('C4', map { int(rand(256)) } 1..4);
+   $frame .= $mask_key;
+
+   # Mask payload
+   my @mask = unpack('C4', $mask_key);
+   my @data = unpack('C*', $payload);
+   for my $i (0 .. $#data) {
+      $data[$i] ^= $mask[$i % 4];
+   }
+   $frame .= pack('C*', @data);
+
+   return $frame;
+}
+
+#
+# ws_client_handshake
+#    Perform RFC 6455 WebSocket client handshake. Sends HTTP Upgrade
+#    request and validates server response. Returns 1 on success, 0 on failure.
+#
+sub ws_client_handshake
+{
+   my ($sock, $host, $port) = @_;
+
+   # Generate random 16-byte key, base64-encoded
+   my $raw_key = pack('C16', map { int(rand(256)) } 1..16);
+   my $ws_key = MIME::Base64::encode_base64($raw_key, '');
+
+   # Send HTTP Upgrade request
+   my $request = "GET / HTTP/1.1\r\n" .
+                 "Host: $host:$port\r\n" .
+                 "Upgrade: websocket\r\n" .
+                 "Connection: Upgrade\r\n" .
+                 "Sec-WebSocket-Key: $ws_key\r\n" .
+                 "Sec-WebSocket-Version: 13\r\n" .
+                 "\r\n";
+
+   syswrite($sock, $request) or return 0;
+
+   # Read response with 5s timeout
+   my $sel = IO::Select->new($sock);
+   my $buf = '';
+   while(1) {
+      last if $buf =~ /\r\n\r\n/;
+      return 0 unless $sel->can_read(5);
+      my $n = sysread($sock, my $chunk, 4096);
+      return 0 unless $n && $n > 0;
+      $buf .= $chunk;
+      return 0 if length($buf) > 16384;
+   }
+
+   # Validate 101 response
+   return 0 unless $buf =~ m{^HTTP/1\.1 101 }i;
+
+   # Validate Sec-WebSocket-Accept
+   my $magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+   my $expected = MIME::Base64::encode_base64(
+      Digest::SHA::sha1($ws_key . $magic), ''
+   );
+   return 0 unless $buf =~ /Sec-WebSocket-Accept:\s*(\S+)/i;
+   return 0 unless $1 eq $expected;
+
+   return 1;
+}
+
+#
+# ws_client_read
+#    Read and decode WebSocket frames from the remote console connection.
+#    Buffers partial frames; calls wc_read() for each complete message.
+#
+sub ws_client_read
+{
+   my $data = shift;
+   $wc_buf .= $data;
+
+   # Process all complete frames in buffer
+   while(length($wc_buf) >= 2) {
+      my $offset = 0;
+
+      # Parse first two bytes
+      my ($b1, $b2) = unpack('CC', substr($wc_buf, 0, 2));
+      $offset = 2;
+
+      my $fin    = ($b1 & 0x80) >> 7;
+      my $opcode = $b1 & 0x0F;
+      my $masked = ($b2 & 0x80) >> 7;
+      my $len    = $b2 & 0x7F;
+
+      # Extended payload length
+      if($len == 126) {
+         return if length($wc_buf) < $offset + 2;
+         $len = unpack('n', substr($wc_buf, $offset, 2));
+         $offset += 2;
+      } elsif($len == 127) {
+         return if length($wc_buf) < $offset + 8;
+         my ($hi, $lo) = unpack('NN', substr($wc_buf, $offset, 8));
+         $len = ($hi << 32) | $lo;
+         $offset += 8;
+      }
+
+      # Masking key (4 bytes if masked — server shouldn't mask, but handle it)
+      my $mask_key = '';
+      if($masked) {
+         return if length($wc_buf) < $offset + 4;
+         $mask_key = substr($wc_buf, $offset, 4);
+         $offset += 4;
+      }
+
+      # Payload
+      return if length($wc_buf) < $offset + $len;
+      my $payload = substr($wc_buf, $offset, $len);
+      $offset += $len;
+
+      # Unmask payload if needed
+      if($masked && length($mask_key) == 4) {
+         my @mask = unpack('C4', $mask_key);
+         my @data = unpack('C*', $payload);
+         for my $i (0 .. $#data) {
+            $data[$i] ^= $mask[$i % 4];
+         }
+         $payload = pack('C*', @data);
+      }
+
+      # Consume processed bytes
+      $wc_buf = substr($wc_buf, $offset);
+
+      # Handle opcodes
+      if($opcode == 0x8) {         # close
+         err("%% Fatal : websocket close frame received from remote session");
+      } elsif($opcode == 0x9) {    # ping -> pong
+         eval { syswrite($wc, ws_frame_encode_masked(0xA, $payload)); };
+      } elsif($opcode == 0xA) {    # pong -> ignore
+         next;
+      } elsif($opcode == 0x1 || $opcode == 0x2) {  # text or binary
+         wc_read(undef, $payload);
+      }
+   }
+}
+
+#
+# ws_conn_new
+#    Create a new WebSocket connection object wrapping a raw TCP/SSL socket.
+#    Returns a Muddler::WSConn blessed hashref.
+#
+sub ws_conn_new
+{
+   my $sock = shift;
+
+   my $conn = bless {
+      socket        => $sock,
+      read_buf      => '',
+      fragments     => '',
+      on_ready      => undef,
+      on_utf8       => undef,
+      on_disconnect => undef,
+      disconnecting => 0,
+   }, 'Muddler::WSConn';
+
+   return $conn;
+}
+
+#
+# Muddler::WSConn — minimal WebSocket connection object
+#
+package Muddler::WSConn;
+
+sub on
+{
+   my ($self, %events) = @_;
+   $self->{on_ready}      = $events{ready}      if exists $events{ready};
+   $self->{on_utf8}       = $events{utf8}       if exists $events{utf8};
+   $self->{on_disconnect} = $events{disconnect}  if exists $events{disconnect};
+}
+
+sub recv
+{
+   my $self = shift;
+   main::ws_frame_decode($self);
+}
+
+sub send
+{
+   my ($self, $type, $data) = @_;
+   my $frame = main::ws_frame_encode(0x1, $data);
+   local $SIG{PIPE} = 'IGNORE';
+   syswrite($self->{socket}, $frame);
+}
+
+sub disconnect
+{
+   my $self = shift;
+   return if $self->{disconnecting};
+   $self->{disconnecting} = 1;
+
+   # Send close frame
+   eval {
+      local $SIG{PIPE} = 'IGNORE';
+      syswrite($self->{socket}, main::ws_frame_encode(0x8, ''));
+   };
+
+   # Fire disconnect callback
+   $self->{on_disconnect}->($self) if $self->{on_disconnect};
+}
+
+package main;
+
 sub ws_disconnect
 {
    my $conn = shift;
    my $sock;
 
-   eval {             # don't know how to test if $conn{sock} is valid
-      $sock = $conn->{sock};
+   eval {             # don't know how to test if $conn{socket} is valid
+      $sock = $conn->{socket};
       $ws_server->{select_readable}->remove( $sock );
       delete $ws_server->{conns}{$sock};
    };
@@ -1688,9 +2174,14 @@ sub io
              };
          }
 
-         my $conn = new Net::WebSocket::Server::Connection(
-                    socket => $s, server => $ws_server);
-   
+         # Perform WebSocket handshake
+         if(!ws_handshake($s)) {
+            $s->close();
+            next;
+         }
+
+         my $conn = ws_conn_new($s);
+
          $ws_server->{conns}{$s} = { conn     => $conn,
                                      lastrecv => time,
                                      ip       => $s->peerhost,
@@ -1698,6 +2189,7 @@ sub io
                                    };
          $ws_server->{select_readable}->add( $s );
          $ws_server->{on_connect}($ws_server, $conn );
+
          @ws{$conn} = {};
          @ws{$conn}->{conn} = $conn;
          @ws{$conn}->{start} = time();
@@ -1707,6 +2199,10 @@ sub io
          @ws{$conn}->{port} = @state{p_port} + 1;
          @ws{$conn}->{world} = @state{world};
          @ws{$conn}->{active} = 1;            # assume window/tab is active
+
+         # Trigger ready callback after @ws{$conn} is initialized
+         # (ws_login_screen -> ws_echo checks @ws{$conn} existence)
+         $conn->{on_ready}->($conn) if $conn->{on_ready};
       } elsif($sock == $http_listen) {
          my $s;
          eval {
@@ -1744,7 +2240,7 @@ sub io
          if(sysread($sock,$buf,10240) <= 0) {
             err("%% Fatal : connection closed to remote muddler session");
          } else {
-            $client->read($buf);
+            ws_client_read($buf);
          }
       } else {
          LOGGIT("filehandle $sock became readable, but no handler took " .
@@ -1795,28 +2291,57 @@ sub io
 
 sub http_data_init
 {
-   my ($end,$pos);
-   my ($fn,$src);
+   my ($pos, $src, $fn);
 
    delete @http_data{keys %http_data};
-   # PAR archive will have the PAR_0 environment variable set
-   if(@ENV{PAR_0}) {                              # read data from data segment
+
+   # Try reading embedded __DATA__ content
+   if($ENV{PAR_0}) {
       return if defined @state{par_http_data_init};
-      $src = do { local $/; <main::DATA> };          # note: will not change
+      $src = do { local $/; <main::DATA> };
       @state{par_http_data_init} = 1;
    } else {
-      open($fn,$0) || return;                                 # read from file
-      $src = do { local $/; <$fn> };                # which lets file change
+      open($fn, "<", $0) || return;
+      $src = do { local $/; <$fn> };
       close($fn);
    }
 
-   for my $line (split(/\n/,$src)) {
-      s/\r//g;
-      if($line =~ /^START: (.*)\s*$/) {
-         ($pos,$end) = ($1,"__$2__");
-      } elsif($pos ne undef) {
-         s/^   //;
+   # Parse START: delimited sections from __DATA__
+   my $in_data = 0;
+   for my $line (split(/\n/, $src)) {
+      $line =~ s/\r//g;
+      if(!$in_data) {
+         $in_data = 1 if $line eq '__DATA__';
+         next;
+      }
+      if($line =~ /^START:\s+(.*?)\s*$/) {
+         $pos = $1;
+      } elsif(defined $pos) {
+         $line =~ s/^   //;
          @http_data{$pos} .= $line . "\n";
+      }
+   }
+
+   # Fall back to individual files on disk if no embedded data found
+   return if keys %http_data;
+
+   my $dir;
+   if(defined &File::Basename::dirname) {
+      $dir = File::Basename::dirname($0);
+   } else {
+      ($dir) = ($0 =~ /^(.*)\//) ? $1 : ".";
+   }
+
+   my @files = qw(muddler_ansi.css muddler_dark_ansi.css muddler_style.css
+                   muddler_client.js muddler_client.html);
+
+   for my $name (@files) {
+      my $path = "$dir/$name";
+      if(open($fn, "<", $path)) {
+         @http_data{$name} = do { local $/; <$fn> };
+         close($fn);
+      } else {
+         LOGGIT("http_data_init: could not read %s: %s", $path, $!);
       }
    }
 }
@@ -1885,14 +2410,14 @@ sub http_process_line
    if($txt =~ /^GET (.*) HTTP\/([\d\.]+)$/i) {              # record details
       $$data{get} = $1;
    } elsif($txt =~ /^([\w\-]+): /) {
-      http_error($sock,"%s","POST REQUEST TO BIG") if($' > 4096);
+      http_error($sock,"%s","POST REQUEST TO BIG") if(length($') > 4096);
       $$data{"VAR_" . lc($1)} = $';
    } elsif($txt =~ /^\s*$/ && defined $$data{get}) {         # end of request
       $$data{get} =~ s/\// /g;
       $$data{get} =~ s/^\s+|\s+$//g;
 
       # initial request of no path or an m and/or d (mobile or dark)
-      if($$data{get} eq undef || $$data{get} =~ /^([m|d]{1,2})$/) {
+      if($$data{get} eq undef || $$data{get} =~ /^([md]{1,2})$/) {
          my $tmp = @http_data{"muddler_client.html"};
          my $port = @state{p_port} + 1;
          $tmp =~ s/__PORT__/$port/;
@@ -2069,26 +2594,6 @@ sub ws_process
       out(world($conn),"%s",$input);
    }
 #   unshift(@input,@state{line});                        # store keyboard history
-}
-
-sub ws_all
-{
-   my ($type,$txt) = @_;
-
-   return if !web();
-   my $hash = $ws_server->{conns};
-
-   for my $key ( keys %$hash) {
-      my $client = $$hash{$key}->{conn};
-      next if(@ws{$client}->{auth} eq 0);
-
-      eval {
-          ws_echo($client,$type,$txt);
-      };
-      if($@) {
-         ws_disconnect($client);
-      }
-   }
 }
 
 sub lord
@@ -2803,13 +3308,13 @@ sub min_visible
    my $min = 0;
 
    # console is on world, start with that.
-   $min = output_end() if($world eq @state{world}); 
+   $min = output_end() if($world eq @state{world});
 
    for my $key (keys %ws) {                      # now try websocket clients
       if(ref(@ws{$key}) ne "HASH") {
          delete @ws{$key};
-      } elsif(@ws{$key}->{world} eq $world && 
-              (@ws{$key}->{size_x} < $min || 
+      } elsif(@ws{$key}->{world} eq $world &&
+              (@ws{$key}->{size_x} < $min ||
               $min eq 0)
              ) {
          $min = @ws{$key}->{size_x};
@@ -3058,8 +3563,8 @@ sub release_some_pending
 
    # loggit("ew: '%s'",join("\n",@orig));
    echo_world($w,join("\n",@out),join("\n",@orig));
-   return $#out + 1;
    draw_bar();
+   return $#out + 1;
 }
 
 
@@ -3113,8 +3618,8 @@ sub input_x
          return input_start() + dialog_x_actual();
       }
    } else {
-      $plen = ansi_length(prompt()) + 1 if(has_prompt());
-      my $x = input_start() + 
+      $plen = prompt_width();
+      my $x = input_start() +
               sprintf("%d",(line_pos() + $plen - $offset -
                            ((@state{size_y} - 1) * @state{input_offset})) /
                            (@state{size_y} - 1));
@@ -3146,7 +3651,7 @@ sub input_y_actual
       }
       return dialog_max() + 5 + $pos;
    } else {
-      my $plen = (has_prompt()) ? (ansi_length(prompt()) + 1) : 0;
+      my $plen = prompt_width();
       $pos = 1 + (($offset  + $plen) % (@state{size_y} - 1));
       return $pos;
    }
@@ -3542,6 +4047,25 @@ sub has_prompt
 }
 
 #
+# prompt_width
+#    Returns the display width of the current prompt plus the separator space.
+#    Cached per input cycle for consistency across all input positioning
+#    functions.
+#
+sub prompt_width
+{
+   if(defined @state{_prompt_width_cache}) {
+      return @state{_prompt_width_cache};
+   }
+   if(has_prompt()) {
+      @state{_prompt_width_cache} = ansi_length(prompt()) + 1;
+   } else {
+      @state{_prompt_width_cache} = 0;
+   }
+   return @state{_prompt_width_cache};
+}
+
+#
 # prompt
 #    store or return the current prompt used by worlds with prompts.
 #    aka talkers.
@@ -3553,6 +4077,7 @@ sub prompt
    if($#_ == 0) {
       my $p = ansi_init(@_[0]);
       if(ansi_length($p) > 0) {
+         delete @state{_prompt_width_cache};
          @socket{$w}->{prompt} = $p;
          if(@socket{$w}->{prompt_count} < 3) {
             if(defined @address{$w}->{connect} &&
@@ -3585,6 +4110,7 @@ sub draw_input
    my $conn = shift;
 
    return if(!console());
+   delete @state{_prompt_width_cache};
 
    if(is_console($conn) || is_remote()) {
       update_scroll_region("input");
@@ -3761,9 +4287,8 @@ sub key_home
 #
 sub update_input_offset
 {
-   my $plen = 0;
+   my $plen = prompt_width();
 
-   $plen = ansi_length(prompt()) + 1 if(has_prompt());
    my $lines = sprintf("%d",(line_pos() + $plen )/ (@state{size_y}-1));
    $lines++ if((line_pos() + $plen) % (@state{size_y}-1) > 0);
    $lines = 1 if $lines < 1;
@@ -4016,16 +4541,8 @@ sub key_ctl_r
 
 sub get_console_size
 {
-   # screen seems to have some sort of bug where it stop sending winch
-   # signals after a month of use but yet GetTerminalSize is still returning
-   # the correct size. So update the screen size when a control-l is done as
-   # a "work around". This shouldn't cause an impact on cpu usage.
-   if(module_enabled("Term::ReadKey")) {
-      (@state{size_y},@state{size_x}) = GetTerminalSize();
-   } else {
-      (@state{size_x},@state{size_y}) = 
-         `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
-   }
+   (@state{size_x},@state{size_y}) =
+      `stty size`=~/(\d+)\s+(\d+)/?($1,$2):(80,25);
 }
 
 #
@@ -4121,18 +4638,18 @@ sub key_ctl_u
 sub key_ctl_w
 {
 #-# summary: Delete the last word before the cursor
-   my $count = 0;
+   my ($conn,$key) = @_;
    my $i;
 
    my $input = input();
    # delete any initial spaces
    for($i = line_pos()-1;$i >= 0 && $$input[-1]->[$i] eq " ";$i--) {
-      key_delete();
+      key_delete($conn);
    }
 
    # delete any non-spaces after the spaces
    for(;$i >= 0 && $$input[-1]->[$i] ne " ";$i--) {
-      key_delete();
+      key_delete($conn);
    }
 }
 
@@ -4149,6 +4666,7 @@ sub key_escape
       dialog_cancel();
    }
    @state{multikey} = [];
+   @state{multikey_time} = Time::HiRes::time();
 }
 
 #
@@ -4214,12 +4732,12 @@ sub out
    
 sub out_noret
 {
-   my ($world,$fmt,@args) = @_;
+   my ($world,$data) = @_;
 
-   return;
    if(defined @socket{$world} && defined @socket{$world}->{sock}) {
+      local $SIG{PIPE} = 'IGNORE';
       my $sock = @socket{$world}->{sock};
-      printf($sock $fmt, @args);
+      print $sock $data;
       @socket{$world}->{last_send} = time();
    }
 }
@@ -4300,8 +4818,9 @@ sub input_lines
 
 sub input_on_line
 {
-    my $result = sprintf("%d",line_pos() / (@state{size_y} - 1));
-    return $result + 1 if(line_pos() % (@state{size_y} - 1) >= 1);
+    my $plen = prompt_width();
+    my $result = sprintf("%d",(line_pos() + $plen) / (@state{size_y} - 1));
+    return $result + 1 if((line_pos() + $plen) % (@state{size_y} - 1) >= 1);
     return $result;
 }
 
@@ -4312,9 +4831,13 @@ sub input_on_line
 sub max_input
 {
    my $input = input();
-    my $result = sprintf("%d",($#{$$input[-1]}+1) / (@state{size_y} - 1));
-    return $result + 1 if(($#{$$input[-1]}+1) % (@state{size_y} - 1) >= 0);
-    return $result;
+   my $plen = prompt_width();
+   my $chars = $#{$$input[-1]} + 1 + $plen;
+   my $cols = @state{size_y} - 1;
+   my $lines = int($chars / $cols);
+   $lines++ if($chars % $cols > 0);
+   $lines = 1 if $lines < 1;
+   return $lines;
 }
 
 
@@ -4507,7 +5030,7 @@ sub input_onscreen
    my $input = input();
    return 0 if(!defined $$input[-1]->[$pos]);    # pos larger then array
 
-   $plen = ansi_length(prompt()) + 1 if(has_prompt());
+   $plen = prompt_width();
    my $start = @state{input_offset} * (@state{size_y} -1);
    my $end  = $start + ((@state{size_y} - 1) * input_size()) - $plen;
    loggit("input_onscreen[$plen]: $start -> $end == $pos");
@@ -4625,7 +5148,7 @@ sub key_default
    }
 
    # display characters after cursor
-   $plen = ansi_length(prompt()) + 1 if(has_prompt());
+   $plen = prompt_width();
    if(defined @$input[-1] && $#{$$input[-1]} >= line_pos()) {
       loggit("Adding: after: %s -> %s",line_pos(),input_onscreen(line_pos()));
       for(my $i=line_pos();input_onscreen($i);$i++){
@@ -4670,14 +5193,19 @@ sub key_ctl_e
    my ($conn,$key) = @_;
 
    input_lines();
-   return;
    my $original = @state{input_offset};
 
    # determine the number of lines that aren't being shown for offset
    my $input = input();
-   if($#{$$input[-1]} / (@state{size_y} - 1)+1 > input_size()) {
-      @state{input_offset} = sprintf("%d",$#{$$input[-1]} / (@state{size_y}
-          - 1) + 1 - input_size());
+   my $plen = prompt_width();
+   my $chars = $#{$$input[-1]} + 1 + $plen;
+   my $cols = @state{size_y} - 1;
+   my $lines = int($chars / $cols);
+   $lines++ if($chars % $cols > 0);
+   $lines = 1 if $lines < 1;
+
+   if($lines > input_size()) {
+      @state{input_offset} = $lines - input_size();
    } else {
       @state{input_offset} = 0;
    }
@@ -4740,10 +5268,10 @@ sub key_right
    return if !console();
 
    my $input = input();
- 
-   if(in_dialog($conn) && line_pos() > $#{$$input[-1]}) {
+
+   if(line_pos() > $#{$$input[-1]}) {
      # do nothing, already at end of line
-   } elsif(input_y() == size_y() - 1 &&              # found end of input buff 
+   } elsif(input_y() == size_y() - 1 &&              # found end of input buff
            input_x() == size_x()) {
       @state{input_offset}++;                       # move focus one line down
       line_pos(line_pos() + 1);
@@ -4769,7 +5297,7 @@ sub input_line
    my $stop = $start + @state{size_y} - 2;
 
    if(has_prompt()) {
-      my $plen = ansi_length(prompt()) + 1;
+      my $plen = prompt_width();
       $stop -= $plen;
       if($line == 1) {
          return txt(prompt()) ." ". join('',@{$$input[$pos]}[$start .. $stop]);
@@ -5069,7 +5597,7 @@ sub key_down
    my $w = world($conn);
    my ($tmp, $first);
 
-   return wc_out("/key_up") if(is_remote());
+   return wc_out("/key_down") if(is_remote());
 
    if(in_dialog()) {
       if(dialog_items() + dialog_buttons() -1 < dialog_x()) {
@@ -5258,6 +5786,7 @@ sub key_multi
 
    if($#$array >= 10) {             # shouldn't happen but protect against it
       delete @state{multikey};
+      delete @state{multikey_time};
       key_process($ch);                       # process character generically
    }
 
@@ -5265,10 +5794,12 @@ sub key_multi
    if(defined @key{"multi_" . join("_",@$array)}) {
       if(ref(@key{"multi_" . join("_",@$array)}) eq "CODE") {
          delete @state{multikey};
+         delete @state{multikey_time};
          return &{@key{"multi_" . join('_',@$array)}}(@state{world},$ch);
       }
    } else {                                                        # error?
       delete @state{multikey};
+      delete @state{multikey_time};
       key_process($ch);                       # process character generically
    }
 }
@@ -5290,7 +5821,13 @@ sub key_process
    }
    return unless defined $input;
 
-   
+   # Clear stale escape sequences (ESC pressed alone > 0.5s ago)
+   if(defined @state{multikey} && defined @state{multikey_time} &&
+      Time::HiRes::time() - @state{multikey_time} > 0.5) {
+      delete @state{multikey};
+      delete @state{multikey_time};
+   }
+
    @state{key_last} = time();
    for my $ch (split(//,$input)) {
       # LOGGIT("ch: '%s' -> ''",ord($ch),$ch);
@@ -5836,7 +6373,8 @@ sub key_esc_q
          if(!defined @state{suggest}) {                   # no saved results
             @state{speller} = Text::Aspell->new if(!defined @state{speller});
             if(!@state{speller}->check($2)) {             # not spelled right
-               @state{suggest} = [ (@state{speller}->suggest($2))[0.. 4] ];
+               @state{suggest} =
+                  [ grep { defined $_ } (@state{speller}->suggest($2))[0.. 4] ];
            
                @state{suggest_pos} = 0;                      # show results
                echo($conn,"%s : %s",$2,join(", ",@{@state{suggest}}));
@@ -5854,7 +6392,7 @@ sub key_esc_q
          }
 
          for my $i (1 .. length($2 . $3 . $4)) {
-            key_delete();
+            key_delete($conn);
          }
 
          @state{suggest_pos}++;
@@ -5863,7 +6401,7 @@ sub key_esc_q
          }
 
          for my $ch (split('',@{@state{suggest}}[@state{suggest_pos}]."$3$4")){
-            key_default($conn,$ch);
+            key_default($conn,$ch,1);
          }
       }
    }
@@ -6682,10 +7220,6 @@ sub cmd_request_info
    my ($conn,$txt) = (shift,lc(trim(shift)));
    my $out;
 
-   if(!module_enabled("Data::Dumper")) {
-      return echo($conn,"%% remote /editor disabled due to missing " .
-         "Data::Dumper module");
-   }
    if(!module_enabled("MIME::Base64")) {
       return echo($conn,"%% file transfers disabled due to missing " .
          "MIME::Base64 module");
@@ -7480,7 +8014,7 @@ sub cmd_update
      return echo($w,"Update FAILED: $0 doesn't seem to be a perl script to " .
                  "be updated. '$info'");
    }
-   open($update,"wget -q -O '$path\muddler.tmp' --no-cache " .
+   open($update,"wget -q -O '$path/muddler.tmp' --no-cache " .
         "https://github.com/c-hudson/muddler/raw/master/muddler " .
         " |") ||
       return echo($w,"%% Unable to update muddler at this time. " .
@@ -7948,7 +8482,7 @@ sub cmd_list
 
    if(defined $$opt{c}) {
       cmd_listsockets($conn);
-   } elsif(defined $$opt{c}) {
+   } elsif(defined $$opt{d}) {
       cmd_def($conn,$txt);
    } else {
       cmd_listworlds($conn,$txt);
@@ -8352,11 +8886,8 @@ sub nvl
 
 sub use_secure
 {
-   # required for ssl so the socket doesn't hang too long on a non SSL connect
-   if(!module_enabled("IO::Socket::Timeout")) {
-      return 0;
-   } elsif(defined @state{p_key} && trim(@state{p_key}) ne "" &&
-           defined @state{p_cert} && trim(@state{p_key}) ne "") {
+   if(defined @state{p_key} && trim(@state{p_key}) ne "" &&
+      defined @state{p_cert} && trim(@state{p_cert}) ne "") {
       return 1;
    } else {
       return 0;
@@ -8384,9 +8915,9 @@ sub cmd_web
       return echo($conn,
                   "%% Web/Websocket is disabled when --remote is enabled."
                  );
-   } elsif(!module_enabled("Net::WebSocket::Server")) {
+   } elsif(!module_enabled("Digest::SHA") || !module_enabled("MIME::Base64")) {
       return echo($conn,"%% Web interface disabled due to missing " .
-         "Net::WebSocket::Server module");
+         "Digest::SHA or MIME::Base64 module");
    } elsif($status eq "") {
       return echo($conn,"%% Sorry, the web settings editor is only " .
          "compatible with the console.") if(is_web($conn));
@@ -9798,17 +10329,21 @@ sub muddler_init
    if(module_enabled("Encode")) {
       binmode(STDOUT, ":encoding(UTF-8)");
    }
-   if(module_enabled("Net::WebSocket::Server") && !is_remote()) {
-      $ws_server = Net::WebSocket::Server->new(
-         tick_period => 1,
-         on_connect => 
-            sub { my( $serv, $conn ) = @_;
-                  $conn->on( ready =>      sub{ ws_login_screen(@_); },
-                             utf8  =>      sub{ ws_process( @_, 0 ); },
-                             disconnect => sub{ ws_disconnect(@_);   },
-                           );
-             },
-         );
+   if(!is_remote()) {
+      $ws_server = {
+         select_readable  => IO::Select->new(),
+         select_writeable => undef,
+         conns            => {},
+         watch_readable   => {},
+         on_connect       => sub {
+            my ($serv, $conn) = @_;
+            $conn->on(
+               ready      => sub { ws_login_screen(@_); },
+               utf8       => sub { ws_process(@_, 0); },
+               disconnect => sub { ws_disconnect(@_); },
+            );
+         },
+      };
    }
    listener_init();
    callback_init();
@@ -9871,6 +10406,7 @@ sub muddler_init
    @state{241} = 'NOP';
    @state{249} = 'GO';
 
+   @state{NOP} = chr(241);
    @state{GO} = chr(249);
    @state{WILL} = chr(251);
    @state{WONT} = chr(252);
@@ -9975,6 +10511,13 @@ sub change_window_size
 #      }
 #      draw_screen(@state{world},1);
    }
+
+   # notify all connected MUDs of new window size via NAWS
+   for my $w (keys %socket) {
+      if(defined @socket{$w}->{sock}) {
+         _send_naws($w);
+      }
+   }
 }
 
 
@@ -10044,6 +10587,7 @@ for my $i (0 .. $#ARGV) {
    } elsif(@ARGV[$i] =~ /^--remote$/) {
       @state{remote} = 1;
    } elsif(@ARGV[$i] =~ /^--test-worlds$/) {
+      load_modules();
       exit test_worlds();
    } elsif(@ARGV[$i] =~ /^--update$/) {
       @state{do_update} = 1;
@@ -10054,13 +10598,6 @@ for my $i (0 .. $#ARGV) {
 
 load_modules();
 
-ws_init() if !console();
-
-if(!module_enabled("Net::WebSocket::Server") || is_remote()) {
-   $ws_server = {};
-   $ws_server->{select_readable} = IO::Select->new();
-}
-
 eval {
    muddler_init();
 };
@@ -10068,6 +10605,14 @@ eval {
 if($@) {
    LOGGIT($@);
    err("FATAL: $@");
+}
+
+# ws_init must come after muddler_init so $ws_server is initialized
+ws_init() if !console();
+
+if(is_remote()) {
+   $ws_server = {};
+   $ws_server->{select_readable} = IO::Select->new();
 }
 
 if(defined @state{modules}) {
@@ -10102,7 +10647,7 @@ START: muddler_ansi.css
        -o-animation: blink .75s linear infinite;
        animation: blink .75s linear infinite;
    }
-
+   
    /* standard 16 foreground colors */
    .ansi-30 { color: black; }
    .ansi-1-30 { color: gray; }
@@ -10120,8 +10665,8 @@ START: muddler_ansi.css
    .ansi-1-36 { color: aqua; }
    .ansi-37 { color: black; }
    .ansi-1-37 { color: black; } 
-
-
+   
+   
    /* standard 16 background colors */
    .ansi-40 { background-color: black; }
    .ansi-1-40 { background-color: gray; }
@@ -10659,7 +11204,7 @@ START: muddler_ansi.css
    .ansi-48-5-253 { background-color: #dadada; }
    .ansi-48-5-254 { background-color: #e4e4e4; }
    .ansi-48-5-255 { background-color: #eeeeee; }
-
+   
 START: muddler_dark_ansi.css
    .ansi-4 { text-decoration: underline; }
    
@@ -11223,8 +11768,8 @@ START: muddler_dark_ansi.css
    .ansi-48-5-253 { background-color: #dadada; }
    .ansi-48-5-254 { background-color: #e4e4e4; }
    .ansi-48-5-255 { background-color: #eeeeee; }
-__ANSI__
-
+   __ANSI__
+   
 START: muddler_style.css
    html, body {
      left: 0px;
@@ -11305,7 +11850,7 @@ START: muddler_style.css
      top: 0;
      bottom: 71px; /* 6em */
      line-height: 110%;
-#     word-spacing: 20;
+   #     word-spacing: 20;
      background: white; 
      font-size: 10pt;
    }
@@ -11342,7 +11887,7 @@ START: muddler_style.css
      vertical-align: middle;
      text-align: right;
    }
-
+   
    #prompt {
      overflow: hidden;
      white-space: pre-wrap;
@@ -11377,7 +11922,7 @@ START: muddler_style.css
      right: 0;
      height: 30px;
      display: none;
-/*     position: absolute;
+   /*     position: absolute;
      margin: 0;
      background: white;
      color: black;
@@ -11392,9 +11937,9 @@ START: muddler_style.css
      height: 30px;
      float: left;
      position: absolute; */
-#     display: none;
+   #     display: none;
    }
-
+   
    .triangle {
        border: 2px solid gray;
        position: fixed;
@@ -11413,7 +11958,7 @@ START: muddler_style.css
       right:0;
       z-index: 2; 
    }
-
+   
    .inner-triangle span {
       position:absolute;
       top: -50px;
@@ -11424,41 +11969,41 @@ START: muddler_style.css
       display: block;
       z-index: 10;
    }
-
+   
 START: muddler_client.js
    //////////////////////////////////////////////////////////////////
    // WebSockClient for PennMUSH
    // There is no license. Just make a neato game with it.
    //////////////////////////////////////////////////////////////////
    
-
+   
    // tell the actual client that the window is no longer focused
    function window_blurred() {
-       input.onEnter('/blurred')
+       if (typeof input !== 'undefined' && input.onEnter) input.onEnter('/blurred')
    }
-
+   
    // tell the actual client that the window is focused
    function window_focused() {
-       input.onEnter('/focused')
+       if (typeof input !== 'undefined' && input.onEnter) input.onEnter('/focused')
    }
-
+   
    window.addEventListener('blur', window_blurred);
    window.addEventListener('focus', window_focused);
-
+   
    // block scrolling on mobile
    function blockMove() { 
       event.preventDefault() ;
    }
-
-//   window.addEventListener("orientationchange", function() {
+   
+   //   window.addEventListener("orientationchange", function() {
       // window.scrollTo(0, document.documentElement.offsetHeight + 1000)
       // window.scrollTo(0, document.body.scrollHeight + 100);
       // nestedElement.scrollTo(0, nestedElement.scrollHeight);
-//   });
-
+   //   });
+   
    // history.scrollRestoration = "manual";
-
-
+   
+   
    var WSClient = (function (window, document, undefined) {
    
      //////////////////////////////////////////////////////////////////
@@ -11467,8 +12012,8 @@ START: muddler_client.js
      //////////////////////////////////////////////////////////////////
    
      // MU* protocol carried over the WebSocket API.
-
-
+   
+   
      function displaywheel(e){
          var evt=window.event || e //equalize event object
          var delta=evt.detail? evt.detail*(-500) : evt.wheelDelta 
@@ -11480,16 +12025,16 @@ START: muddler_client.js
              input.onEnter('/key_pgup 5');
          }
      }
- 
+    
      var mousewheelevt=(/Firefox/i.test(navigator.userAgent))? "DOMMouseScroll" : "mousewheel" //FF doesn't recognize mousewheel as of FF3.x
- 
+    
      if (document.attachEvent) //if IE (and Opera depending on user setting)
          document.attachEvent("on"+mousewheelevt, displaywheel)
      else if (document.addEventListener) //WC3 browsers
          document.addEventListener(mousewheelevt, displaywheel, false)
-
+   
       var t
-
+   
       window.onresize = () => {
           clearTimeout(t); 
           t = setTimeout(() => { t = undefined; resEnded() }, 500);
@@ -11498,17 +12043,17 @@ START: muddler_client.js
       function resEnded() { 
           input.onEnter('/web_size ' + get_xy_size() + '\r\n' );
       }
-
+   
       function get_xy_size() {
          var out = document.getElementById('output')
          var css = getComputedStyle(out,null);
          var ff  = css.getPropertyValue("font-family");
          var fs  = css.getPropertyValue("font-size");
          var temp = document.createElement('span');
-
+   
          temp.style = "margin:0px;padding:0px;font-family:"+ff+
                       ";font-size:" + fs;
-
+   
          temp.innerText = "0123456789";
          var element = document.body.appendChild(temp);
          var x = Math.round(out.offsetHeight / (temp.offsetHeight-2));
@@ -11538,7 +12083,7 @@ START: muddler_client.js
    
      Connection.reconnect = function (that) {
        const now = +new Date();
-
+   
           that.reconnect();
      };
      
@@ -11560,7 +12105,7 @@ START: muddler_client.js
      Connection.onmessage = function (that, evt) {
        that.onMessage && that.onMessage(evt.data[0], evt.data.substring(1));
      };
-
+   
      Connection.prototype.reconnect = function () {
        var that = this;
        
@@ -11573,7 +12118,7 @@ START: muddler_client.js
        console.log('URL: ' + this.url);
        this.socket = new window.WebSocket(this.url);
        this.isOpen = false;
-
+   
        this.socket.onopen = function (evt) {
          Connection.onopen(that, evt);
        };
@@ -11624,7 +12169,7 @@ START: muddler_client.js
        case Connection.CHANNEL_BAR:
          this.onBar && this.onBar(data);
          break;
-
+   
        case Connection.CHANNEL_BARTIME:
          this.onBarTime && this.onBarTime(data);
          break;
@@ -11644,12 +12189,12 @@ START: muddler_client.js
        case Connection.CHANNEL_PROMPT:
          this.onPrompt && this.onPrompt(data);
          break;
-  
+     
        case Connection.CHANNEL_DO:
            data = data.replace(/[\r\n]+/g, '').trim();
-
+   
            // console.log("request: " + data);
-
+   
            if(data === "mobile on") {
               document.querySelector('#bar').style.bottom = "52px";
               document.querySelector('#bartime').style.bottom = "52px";
@@ -11670,9 +12215,9 @@ START: muddler_client.js
               document.querySelector('#terminal').style.bottom = 0;
               document.querySelector('#buttonbar').style.display = "none";
               document.querySelector('#output').style.fontSize = "10pt";
-//              obj.style.fontSize = "10pt";
+   //              obj.style.fontSize = "10pt";
               obj.scrollTop = obj.scrollHeight;
-
+   
               document.querySelector('#bar').style.bottom = "50px";
               document.querySelector('#bartime').style.bottom = "50px";
               document.querySelector('#terminal').style.bottom = "0px";
@@ -11680,7 +12225,7 @@ START: muddler_client.js
               document.querySelector('#input').style.bottom = '0px';
               document.querySelector('#bar').style.fontSize = "11pt";
               document.querySelector('#bartime').style.fontSize= "11pt";
-
+   
               sendCommand('/web_size ' + get_xy_size("10pt") + '\r\n');
            } else if(data === "theme light") {
               document.querySelector('.ansi-37').style.color='black';
@@ -12387,7 +12932,7 @@ START: muddler_client.js
            return 0;
         }
      };
-
+   
      UserInput.ctl_l = function( that, key) {
         if(key.code === 76 && key.ctrl) {
            return 1;
@@ -12395,7 +12940,7 @@ START: muddler_client.js
            return 0;
         }
      };
- 
+    
      UserInput.isKeyCycleForward = function(that, key) {
        if (that && that.keyCycleForward) {
          return that.keyCycleForward(key);
@@ -12572,7 +13117,7 @@ START: muddler_client.js
                    alt: e.altKey };
    
        var prevent = true;
-//       console.log('key: ' + key.code);
+   //       console.log('key: ' + key.code);
       
        if(UserInput.ctl_u(that,key)) {
           that.root.value = '';
@@ -12690,8 +13235,8 @@ START: muddler_client.js
 START: muddler_client.html
    <!DOCTYPE html>
    <html><head><meta name="viewport" content="width=device-width, maximum-scale=1 interactive-widget=resizes-content" charset="UTF-8">
-
-
+   
+   
    
    <link rel="stylesheet" href="muddler_ansi.css">
    <link rel="stylesheet" href="muddler_style.css">
@@ -12756,14 +13301,14 @@ START: muddler_client.html
          }
        }
      }
-  
+     
      function get_xy_size() {
          var out = document.getElementById('output')
          var css = getComputedStyle(out,null);
          var ff  = css.getPropertyValue("font-family");
          var fs  = css.getPropertyValue("font-size");
          var temp = document.createElement('span');
-
+   
          temp.style = "margin:0px;padding:0px;font-family:"+ff+
                       ";font-size:" + fs;
         
@@ -12774,7 +13319,7 @@ START: muddler_client.html
          temp.parentNode.removeChild(temp);
          return x + "," + y + "," + fs + "-" + ff + "=1";
      }
-
+   
      // just log a standard message on these socket status events
      conn.onOpen = function (evt) { 
          output.appendMessage('logMessage', '%% Connected.');
